@@ -1527,6 +1527,122 @@ class Compiler
     [@nd_name[expr], nt]
   end
 
+  # Try to evaluate a predicate expression at compile time. Returns
+  # "TRUE" / "FALSE" when the result is known statically; "" when it
+  # depends on runtime state. Currently handles `<typed>.is_a?(Klass)` /
+  # `kind_of?(Klass)` / `instance_of?(Klass)` where the receiver's
+  # static type clearly does or does not match the queried class —
+  # this lets compile_if_expr / infer_type(IfNode) skip the dead arm
+  # so the typed-friendly arm doesn't get widened to poly via unify.
+  def static_predicate_value(pred_id)
+    if pred_id < 0
+      return ""
+    end
+    pt = @nd_type[pred_id]
+    if pt == "ParenthesesNode"
+      pb = @nd_body[pred_id]
+      if pb >= 0
+        ps = get_stmts(pb)
+        if ps.length == 1
+          return static_predicate_value(ps[0])
+        end
+      end
+      return ""
+    end
+    if pt != "CallNode"
+      return ""
+    end
+    pname = @nd_name[pred_id]
+    if pname != "is_a?" && pname != "kind_of?" && pname != "instance_of?"
+      return ""
+    end
+    expr = @nd_receiver[pred_id]
+    if expr < 0
+      return ""
+    end
+    args = @nd_arguments[pred_id]
+    if args < 0
+      return ""
+    end
+    arg_ids = get_args(args)
+    if arg_ids.length < 1
+      return ""
+    end
+    arg0 = arg_ids[0]
+    klass = ""
+    if @nd_type[arg0] == "ConstantReadNode"
+      klass = @nd_name[arg0]
+    elsif @nd_type[arg0] == "ConstantPathNode"
+      klass = resolve_const_ref_name(arg0)
+    end
+    if klass == ""
+      return ""
+    end
+    rt = infer_type(expr)
+    # Skip when the recv is itself poly — cls_id varies at runtime.
+    if rt == "poly"
+      return ""
+    end
+    # User-class instance: walk the parent chain.
+    if is_obj_type(rt) == 1
+      cname = rt[4, rt.length - 4]
+      if is_class_or_ancestor(cname, klass) == 1
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    # Built-in primitive type → answer directly.
+    if rt == "int"
+      if klass == "Integer" || klass == "Numeric" || klass == "Comparable" || klass == "Object" || klass == "Kernel" || klass == "BasicObject"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "string"
+      if klass == "String" || klass == "Comparable" || klass == "Object" || klass == "Kernel" || klass == "BasicObject"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "float"
+      if klass == "Float" || klass == "Numeric" || klass == "Comparable" || klass == "Object" || klass == "Kernel" || klass == "BasicObject"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "symbol"
+      if klass == "Symbol" || klass == "Comparable" || klass == "Object" || klass == "Kernel" || klass == "BasicObject"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "bool"
+      if klass == "TrueClass" || klass == "FalseClass" || klass == "Object" || klass == "Kernel" || klass == "BasicObject"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "nil"
+      if klass == "NilClass" || klass == "Object" || klass == "Kernel" || klass == "BasicObject"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "int_array" || rt == "str_array" || rt == "float_array" || rt == "sym_array" || rt == "ptr_array" || rt == "poly_array"
+      if klass == "Array" || klass == "Object" || klass == "Kernel" || klass == "BasicObject" || klass == "Enumerable"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    if rt == "range"
+      if klass == "Range" || klass == "Object" || klass == "Kernel" || klass == "BasicObject" || klass == "Enumerable"
+        return "TRUE"
+      end
+      return "FALSE"
+    end
+    ""
+  end
+
   def set_var_type(name, vtype)
     i = @scope_names.length - 1
     while i >= 0
@@ -27440,15 +27556,19 @@ class Compiler
 
   def compile_if_expr(nid)
     cond = compile_cond_expr(@nd_predicate[nid])
+    unified_t = infer_type(nid)
     then_val = "0"
+    then_t = "nil"
     body = @nd_body[nid]
     if body >= 0
       stmts = get_stmts(body)
       if stmts.length > 0
+        then_t = infer_type(stmts.last)
         then_val = compile_expr(stmts.last)
       end
     end
     else_val = "0"
+    else_t = "nil"
     sub = @nd_subsequent[nid]
     if sub >= 0
       if @nd_type[sub] == "ElseNode"
@@ -27456,11 +27576,29 @@ class Compiler
         if eb >= 0
           es = get_stmts(eb)
           if es.length > 0
+            else_t = infer_type(es.last)
             else_val = compile_expr(es.last)
           end
         end
       else
+        else_t = infer_type(sub)
         else_val = compile_if_expr(sub)
+      end
+    end
+    # When the if-expression's unified type is `poly` but the
+    # branches have concrete types, the raw C ternary
+    # `(cond ? sp_IntArray * : sp_PtrArray *)` mixes pointer types
+    # and the C compiler rejects the assignment to sp_RbVal.
+    # Box each branch into sp_RbVal so the ternary's two arms
+    # share a type. Keeps the static infer_type(IfNode) → poly
+    # contract that downstream dispatch (e.g. .each on poly recv)
+    # relies on.
+    if unified_t == "poly"
+      if then_t != "poly"
+        then_val = box_value_to_poly(then_t, then_val)
+      end
+      if else_t != "poly"
+        else_val = box_value_to_poly(else_t, else_val)
       end
     end
     "(" + cond + " ? " + then_val + " : " + else_val + ")"
@@ -31997,6 +32135,14 @@ class Compiler
         idx = compile_expr_as_string(arg_ids[0])
       else
         idx = compile_expr(arg_ids[0])
+        # Auto-unbox poly index for typed-array recv. The block-param
+        # iteration over a poly recv (compile_each_block's poly arm)
+        # delivers `lv_<bp>` as sp_RbVal, but a downstream
+        # `@arr[bp] = v` against a typed array expects an mrb_int.
+        idx_t = infer_type(arg_ids[0])
+        if idx_t == "poly" && (rt == "int_array" || rt == "float_array" || rt == "str_array" || rt == "sym_array" || is_ptr_array_type(rt) == 1 || rt == "poly_array")
+          idx = "(" + idx + ").v.i"
+        end
       end
     end
     if arg_ids.length >= 2
@@ -33288,6 +33434,53 @@ class Compiler
       pop_redo_label
       pop_scope
       @indent = @indent - 1
+      emit("  }")
+    end
+    if rt == "poly"
+      # Poly receiver — dispatch on cls_id at runtime to pick the right
+      # iteration shape. Common shape: a `<typed>.is_a?(C) ? wrap : <typed>`
+      # ternary unifies to poly even when the live arm is a known
+      # concrete array. Without this branch, compile_each_block falls
+      # off the end and the iteration body is dropped silently.
+      # Block param is delivered as poly (sp_RbVal) regardless of the
+      # underlying array's element type, since poly is the widest fit.
+      poly_tmp = new_temp
+      idx_tmp = new_temp
+      val_tmp = new_temp
+      emit("  sp_RbVal " + poly_tmp + " = " + rc + ";")
+      emit("  if (" + poly_tmp + ".tag == SP_TAG_OBJ) {")
+      emit("    mrb_int " + idx_tmp + "_len = 0;")
+      emit("    if (" + poly_tmp + ".cls_id == SP_BUILTIN_RANGE) " + idx_tmp + "_len = ((sp_Range *)" + poly_tmp + ".v.p)->last - ((sp_Range *)" + poly_tmp + ".v.p)->first + 1;")
+      emit("    else if (" + poly_tmp + ".cls_id == SP_BUILTIN_INT_ARRAY) " + idx_tmp + "_len = sp_IntArray_length((sp_IntArray *)" + poly_tmp + ".v.p);")
+      emit("    else if (" + poly_tmp + ".cls_id == SP_BUILTIN_FLT_ARRAY) " + idx_tmp + "_len = sp_FloatArray_length((sp_FloatArray *)" + poly_tmp + ".v.p);")
+      emit("    else if (" + poly_tmp + ".cls_id == SP_BUILTIN_STR_ARRAY) " + idx_tmp + "_len = sp_StrArray_length((sp_StrArray *)" + poly_tmp + ".v.p);")
+      emit("    else if (" + poly_tmp + ".cls_id == SP_BUILTIN_SYM_ARRAY) " + idx_tmp + "_len = sp_IntArray_length((sp_IntArray *)" + poly_tmp + ".v.p);")
+      emit("    else if (" + poly_tmp + ".cls_id == SP_BUILTIN_PTR_ARRAY) " + idx_tmp + "_len = sp_PtrArray_length((sp_PtrArray *)" + poly_tmp + ".v.p);")
+      emit("    else if (" + poly_tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY) " + idx_tmp + "_len = sp_PolyArray_length((sp_PolyArray *)" + poly_tmp + ".v.p);")
+      emit("    for (mrb_int " + idx_tmp + " = 0; " + idx_tmp + " < " + idx_tmp + "_len; " + idx_tmp + "++) {")
+      emit("      sp_RbVal " + val_tmp + " = sp_box_nil();")
+      emit("      if (" + poly_tmp + ".cls_id == SP_BUILTIN_RANGE) " + val_tmp + " = sp_box_int(((sp_Range *)" + poly_tmp + ".v.p)->first + " + idx_tmp + ");")
+      emit("      else if (" + poly_tmp + ".cls_id == SP_BUILTIN_INT_ARRAY) " + val_tmp + " = sp_box_int(sp_IntArray_get((sp_IntArray *)" + poly_tmp + ".v.p, " + idx_tmp + "));")
+      emit("      else if (" + poly_tmp + ".cls_id == SP_BUILTIN_FLT_ARRAY) " + val_tmp + " = sp_box_float(sp_FloatArray_get((sp_FloatArray *)" + poly_tmp + ".v.p, " + idx_tmp + "));")
+      emit("      else if (" + poly_tmp + ".cls_id == SP_BUILTIN_STR_ARRAY) " + val_tmp + " = sp_box_str(sp_StrArray_get((sp_StrArray *)" + poly_tmp + ".v.p, " + idx_tmp + "));")
+      emit("      else if (" + poly_tmp + ".cls_id == SP_BUILTIN_SYM_ARRAY) " + val_tmp + " = sp_box_sym((sp_sym)sp_IntArray_get((sp_IntArray *)" + poly_tmp + ".v.p, " + idx_tmp + "));")
+      emit("      else if (" + poly_tmp + ".cls_id == SP_BUILTIN_PTR_ARRAY) " + val_tmp + " = sp_box_obj(sp_PtrArray_get((sp_PtrArray *)" + poly_tmp + ".v.p, " + idx_tmp + "), 0);")
+      emit("      else if (" + poly_tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY) " + val_tmp + " = sp_PolyArray_get((sp_PolyArray *)" + poly_tmp + ".v.p, " + idx_tmp + ");")
+      if has_bp == 1
+        emit("      sp_RbVal lv_" + bp1 + " = " + val_tmp + ";")
+      end
+      @indent = @indent + 2
+      push_scope
+      if has_bp == 1
+        declare_var(bp1, "poly")
+      end
+      redo_label = push_redo_label
+      emit_redo_label(redo_label)
+      compile_stmts_body(@nd_body[@nd_block[nid]])
+      pop_redo_label
+      pop_scope
+      @indent = @indent - 2
+      emit("    }")
       emit("  }")
     end
     @in_loop = old
