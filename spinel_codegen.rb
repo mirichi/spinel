@@ -309,6 +309,23 @@ class Compiler
     @rescue_cls_stack = "".split(",")
     @rescue_msg_stack = "".split(",")
     @rescue_depth = 0
+    # Stack of ensure-clause node IDs (encoded as strings) currently in
+    # scope. Each entry corresponds to an enclosing `begin..ensure..end`
+    # whose body is being compiled. When `return` is emitted from inside
+    # the body, each ensure body is replayed (innermost-first) before
+    # the C `return`, so writebacks in `ensure` execute on early return.
+    @ensure_stack = "".split(",")
+    # Number of `sp_exc_top++` pushes emitted along the static
+    # fall-through path leading to the current emit point but not
+    # yet matched by an emitted `sp_exc_top--`. An early `return`
+    # emits `sp_exc_top -= N` to balance them, so the caller doesn't
+    # longjmp into our stale stack frame after we've returned.
+    @setjmp_depth = 0
+    # Counter used to mint unique snapshot variable names
+    # (`_ensure_cls_<n>`, `_ensure_msg_<n>`) for re-raising the
+    # in-flight exception after an ensure body runs on the
+    # exception path of a `begin..ensure..end`.
+    @ensure_emit_depth = 0
     # Exception variable bindings: parallel stacks of (var_name, cls_var).
     # A `rescue => e` binds `e` to the message string and registers it
     # here so that `e.message`, `e.class`, `e.to_s`, and `e.inspect`
@@ -8062,6 +8079,12 @@ class Compiler
     while k < elems.length
       scan_ivars(ci, elems[k])
       k = k + 1
+    end
+    if @nd_rescue_clause[nid] >= 0
+      scan_ivars(ci, @nd_rescue_clause[nid])
+    end
+    if @nd_ensure_clause[nid] >= 0
+      scan_ivars(ci, @nd_ensure_clause[nid])
     end
   end
 
@@ -30503,6 +30526,14 @@ class Compiler
           emit("  " + arr_tmp + "->_" + k.to_s + " = " + compile_expr(arg_ids[k]) + ";")
           k = k + 1
         end
+        # Replay any in-scope `ensure` bodies before the return.
+        # Ruby semantics: return value is already materialized, ensure
+        # may mutate locals/ivars but does not affect the saved value.
+        # `sp_exc_top -= N` undoes the setjmps we pushed; emit it once
+        # before the replays so a nested `return` inside an ensure
+        # body doesn't double-pop.
+        emit_setjmp_depth_unwind
+        emit_ensure_replays
         if @in_gc_scope == 1
           emit("  SP_GC_RESTORE();")
         end
@@ -30510,21 +30541,43 @@ class Compiler
         return
       end
       if arg_ids.length > 0
+        # `pre_return_unwind` = needs `sp_exc_top -= N;` and/or
+        # ensure-body replays. When neither, we can leave the
+        # original simple `return <expr>;` shape alone.
+        pre_return_unwind = 0
+        if @ensure_stack.length > 0
+          pre_return_unwind = 1
+        end
+        if @setjmp_depth > 0
+          pre_return_unwind = 1
+        end
         if @current_method_return == "poly"
           ret_expr = box_expr_to_poly(arg_ids[0])
           if @in_gc_scope == 1
             tmp = new_temp
             emit("  sp_RbVal " + tmp + " = " + ret_expr + ";")
+            emit_setjmp_depth_unwind
+            emit_ensure_replays
             emit("  SP_GC_RESTORE();")
             emit("  return " + tmp + ";")
           else
-            emit("  return " + ret_expr + ";")
+            if pre_return_unwind == 1
+              tmp = new_temp
+              emit("  sp_RbVal " + tmp + " = " + ret_expr + ";")
+              emit_setjmp_depth_unwind
+              emit_ensure_replays
+              emit("  return " + tmp + ";")
+            else
+              emit("  return " + ret_expr + ";")
+            end
           end
           return
         end
         rt = infer_type(arg_ids[0])
         # return nil in a nullable pointer method → return NULL
         if rt == "nil" && is_nullable_pointer_type(@current_method_return) == 1
+          emit_setjmp_depth_unwind
+          emit_ensure_replays
           if @in_gc_scope == 1
             emit("  SP_GC_RESTORE();")
           end
@@ -30532,13 +30585,24 @@ class Compiler
           return
         end
         if @in_gc_scope == 1
-          # Save return value, restore GC, then return
+          # Save return value, run ensure replays (which may mutate
+          # ivars/locals), restore GC, then return the saved value.
           tmp = new_temp
           emit("  " + c_type(rt) + " " + tmp + " = " + compile_expr(arg_ids[0]) + ";")
+          emit_setjmp_depth_unwind
+          emit_ensure_replays
           emit("  SP_GC_RESTORE();")
           emit("  return " + tmp + ";")
         else
-          emit("  return " + compile_expr(arg_ids[0]) + ";")
+          if pre_return_unwind == 1
+            tmp = new_temp
+            emit("  " + c_type(rt) + " " + tmp + " = " + compile_expr(arg_ids[0]) + ";")
+            emit_setjmp_depth_unwind
+            emit_ensure_replays
+            emit("  return " + tmp + ";")
+          else
+            emit("  return " + compile_expr(arg_ids[0]) + ";")
+          end
         end
         return
       end
@@ -30557,6 +30621,8 @@ class Compiler
     # NULLed the instance on the early-return branch; in the void
     # `sp_<C>_initialize` form it was a `void function should not
     # return a value` C error.
+    emit_setjmp_depth_unwind
+    emit_ensure_replays
     if @in_gc_scope == 1
       emit("  SP_GC_RESTORE();")
     end
@@ -36093,6 +36159,24 @@ class Compiler
       end
     end
 
+    # Outer setjmp wraps the body (and any rescue chain) so the ensure
+    # clause runs on the exception path too. Without this, a `raise`
+    # from inside the body would unwind past us with `ensure` skipped.
+    ensure_cls_var = ""
+    ensure_msg_var = ""
+    if has_ensure
+      @ensure_emit_depth = @ensure_emit_depth + 1
+      ensure_cls_var = "_ensure_cls_" + @ensure_emit_depth.to_s
+      ensure_msg_var = "_ensure_msg_" + @ensure_emit_depth.to_s
+      emit("  const char *" + ensure_cls_var + " = (const char *)0;")
+      emit("  const char *" + ensure_msg_var + " = (const char *)0;")
+      emit("  sp_exc_top++;")
+      emit("  if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {")
+      @indent = @indent + 1
+      @setjmp_depth = @setjmp_depth + 1
+      @ensure_stack.push(@nd_ensure_clause[nid].to_s)
+    end
+
     if has_retry == 1
       emit("  for (;;) {")
       @indent = @indent + 1
@@ -36100,6 +36184,7 @@ class Compiler
 
     if has_rescue
       emit("  sp_exc_top++;")
+      @setjmp_depth = @setjmp_depth + 1
       emit("  if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {")
       @indent = @indent + 1
       compile_stmts_body(@nd_body[nid])
@@ -36119,6 +36204,7 @@ class Compiler
         @indent = @indent - 1
       end
       emit("  }")
+      @setjmp_depth = @setjmp_depth - 1
     else
       compile_stmts_body(@nd_body[nid])
     end
@@ -36129,10 +36215,77 @@ class Compiler
     end
 
     if has_ensure
+      @ensure_stack.pop
+      # End of the if-success branch: pop our setjmp and close the
+      # brace. After this the codegen is conceptually back at the
+      # surrounding scope — drop the depth bump even though more
+      # code (the else branch and fall-through ensure) is still
+      # being emitted; both run with sp_exc_top already restored.
+      emit("  sp_exc_top--;")
+      @indent = @indent - 1
+      @setjmp_depth = @setjmp_depth - 1
+      emit("  } else {")
+      @indent = @indent + 1
+      # Exception path: pop our setjmp, snapshot the in-flight
+      # exception (because nested raises inside the ensure body
+      # would clobber sp_last_exc_cls / sp_exc_msg), run the
+      # ensure body, then re-raise so the exception keeps
+      # propagating. If the ensure body contains its own `return`,
+      # the re-raise becomes dead code — that's the explicit
+      # "ensure overrides exception with return" semantics.
+      emit("  sp_exc_top--;")
+      emit("  " + ensure_cls_var + " = (const char *)sp_last_exc_cls;")
+      emit("  " + ensure_msg_var + " = sp_exc_msg[sp_exc_top];")
       ec = @nd_ensure_clause[nid]
       if ec >= 0
         compile_stmts_body(@nd_body[ec])
       end
+      emit("  sp_raise_cls(" + ensure_cls_var + ", " + ensure_msg_var + ");")
+      @indent = @indent - 1
+      emit("  }")
+      # Normal-path ensure (fall-through after success branch).
+      if ec >= 0
+        compile_stmts_body(@nd_body[ec])
+      end
+      @ensure_emit_depth = @ensure_emit_depth - 1
+    end
+  end
+
+  # Replay all in-scope ensure bodies inline (innermost-first) ahead
+  # of an early-exit `return`. Each ensure is popped from the stack
+  # *before* its body is emitted, so a nested `return` inside the
+  # ensure body sees only the *outer* ensures still active and
+  # doesn't replay the same ensure recursively. Stack is restored
+  # afterwards so the caller continues with the same view.
+  #
+  # @setjmp_depth is stashed to 0 during the replay because the
+  # caller is responsible for emitting `sp_exc_top -= N` *once*
+  # before the replays — a nested `return` inside an ensure body
+  # would otherwise re-emit that decrement and over-pop the stack.
+  def emit_ensure_replays
+    if @ensure_stack.length == 0
+      return
+    end
+    saved_setjmp_depth = @setjmp_depth
+    @setjmp_depth = 0
+    popped = "".split(",")
+    while @ensure_stack.length > 0
+      ec_str = @ensure_stack.pop
+      popped.push(ec_str)
+      compile_stmts_body(@nd_body[ec_str.to_i])
+    end
+    while popped.length > 0
+      @ensure_stack.push(popped.pop)
+    end
+    @setjmp_depth = saved_setjmp_depth
+  end
+
+  # Emit the `sp_exc_top -= N;` that an early `return` needs in
+  # order to leave sp_exc_top balanced. Called immediately before
+  # `emit_ensure_replays` at every `return` emission site.
+  def emit_setjmp_depth_unwind
+    if @setjmp_depth > 0
+      emit("  sp_exc_top -= " + @setjmp_depth.to_s + ";")
     end
   end
 
