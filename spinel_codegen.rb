@@ -2380,6 +2380,16 @@ class Compiler
       end
       return "int"
     end
+    if t == "InstanceVariableOrWriteNode" || t == "InstanceVariableAndWriteNode"
+      # `(@x ||= expr)` / `(@x &&= expr)` evaluates to @x's slot type
+      # (union of the prior value and the rhs, but Spinel widens those
+      # via update_ivar_type already, so reading the slot type is the
+      # same answer).
+      if @current_class_idx >= 0
+        return cls_ivar_type(@current_class_idx, @nd_name[nid])
+      end
+      return "int"
+    end
     if t == "InstanceVariableReadNode"
       if @current_class_idx >= 0
         return cls_ivar_type(@current_class_idx, @nd_name[nid])
@@ -8063,6 +8073,36 @@ class Compiler
         add_ivar(ci, iname, "int")
       end
     end
+    # `@x ||= expr` / `@x &&= expr`: register the slot when first
+    # encountered. The rhs type seeds the ivar; without registration
+    # the struct comes out without the slot and any subsequent read
+    # ground out at the int default.
+    if @nd_type[nid] == "InstanceVariableOrWriteNode" || @nd_type[nid] == "InstanceVariableAndWriteNode"
+      iname = @nd_name[nid]
+      expr_first = @nd_expression[nid]
+      if ivar_exists(ci, iname) == 0 && ivar_exists_in_ancestor(ci, iname) == 1
+        vtype = infer_ivar_init_type(expr_first)
+        if vtype != "int" && vtype != "nil"
+          update_ivar_type(ci, iname, vtype)
+        end
+      elsif ivar_exists(ci, iname) == 0
+        vtype = infer_ivar_init_type(expr_first)
+        # ||= reads @x first; pre-register a nil observation so the
+        # `nil + T → T?` rule fires when a later writer-scan widens.
+        add_ivar(ci, iname, "nil", 0)
+        if vtype != "int" && vtype != "nil"
+          update_ivar_type(ci, iname, vtype)
+        end
+      else
+        expr = @nd_expression[nid]
+        if expr >= 0 && @nd_type[expr] != "NilNode"
+          vtype = infer_ivar_init_type(expr)
+          if vtype != "int" && vtype != "nil"
+            update_ivar_type(ci, iname, vtype)
+          end
+        end
+      end
+    end
     # Multi-write to ivars: `@a, @b = expr1, expr2` (or `[expr1, expr2]`).
     # Without this branch, ivars assigned only via destructuring never get
     # registered and the struct comes out missing them.
@@ -12210,6 +12250,23 @@ class Compiler
               ci_idx = ci_idx + 1
             end
           elsif at != "int" && at != "nil"
+            update_ivar_type(@current_class_idx, iname, at)
+          end
+        end
+      end
+    end
+    # `@x ||= expr` / `@x &&= expr`: writer-scan the rhs the same as a
+    # plain `@x = expr` so the slot widens from its `nil` seed to the
+    # rhs's actual type (`infer_type` resolves CallNode return types,
+    # unlike `infer_ivar_init_type` used at registration time).
+    if @nd_type[nid] == "InstanceVariableOrWriteNode" || @nd_type[nid] == "InstanceVariableAndWriteNode"
+      if @current_class_idx >= 0
+        iname = @nd_name[nid]
+        expr_id = @nd_expression[nid]
+        if expr_id >= 0
+          at = infer_type(expr_id)
+          record_ivar_observation(@current_class_idx, iname, at, expr_id)
+          if at != "int" && at != "nil"
             update_ivar_type(@current_class_idx, iname, at)
           end
         end
@@ -20817,6 +20874,15 @@ class Compiler
         mi3 = mi3 + 1
       end
       return "(" + ivar_lhs(iname_w) + " = " + val + ")"
+    end
+    if t == "InstanceVariableOrWriteNode" || t == "InstanceVariableAndWriteNode"
+      # Expression form of `@x ||= …` / `@x &&= …`. Method bodies
+      # whose last statement is one of these reach `compile_expr`
+      # via the return-value path, so we need a value-producing
+      # form. Run the statement-style emit for the side effect, then
+      # surface `@x`'s post-assign value as the expression result.
+      compile_stmt(nid)
+      return ivar_lhs(@nd_name[nid])
     end
     if t == "LocalVariableWriteNode"
       # `local = expr` used as an expression (e.g. inside a chained
@@ -29973,6 +30039,42 @@ class Compiler
       if mod_ivar == 0
         emit("  " + ivar_lhs(iname) + " = " + val + ";")
       end
+      return
+    end
+    # `@x ||= expr`: `@x = expr` only when @x is currently nil/false.
+    # Lower to `if (!@x) { @x = expr; }`. For pointer-typed slots
+    # (sp_Foo *, const char *, ...) the C `!ptr` check is exact; for
+    # an int slot we treat 0 as falsy (Spinel's int slot has no
+    # separate nil/false state). The `&&= expr` form is the dual.
+    # Compile the rhs INSIDE the conditional block so any auxiliary
+    # emits land in the conditional body — matches Ruby's
+    # short-circuit semantics where the rhs (and its side effects)
+    # only run when the lhs is falsy.
+    if t == "InstanceVariableOrWriteNode" || t == "InstanceVariableAndWriteNode"
+      ivor_iname = @nd_name[nid]
+      ivor_lhs = ivar_lhs(ivor_iname)
+      ivor_expr_id = @nd_expression[nid]
+      ivor_ivar_t = ""
+      if @current_class_idx >= 0
+        ivor_ivar_t = cls_ivar_type(@current_class_idx, ivor_iname)
+      end
+      ivor_cond = ""
+      if base_type(ivor_ivar_t) == "poly"
+        ivor_cond = "(" + ivor_lhs + ").tag == SP_TAG_NIL || ((" + ivor_lhs + ").tag == SP_TAG_BOOL && (" + ivor_lhs + ").v.i == 0)"
+      else
+        ivor_cond = "!(" + ivor_lhs + ")"
+      end
+      if t == "InstanceVariableAndWriteNode"
+        ivor_cond = "!(" + ivor_cond + ")"
+      end
+      emit("  if (" + ivor_cond + ") {")
+      ivor_val = compile_expr(ivor_expr_id)
+      ivor_val_t = infer_type(ivor_expr_id)
+      if base_type(ivor_ivar_t) == "poly" && ivor_val_t != "" && ivor_val_t != "poly"
+        ivor_val = box_value_to_poly(ivor_val_t, ivor_val)
+      end
+      emit("    " + ivor_lhs + " = " + ivor_val + ";")
+      emit("  }")
       return
     end
     if t == "InstanceVariableOperatorWriteNode"
