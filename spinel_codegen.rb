@@ -1230,7 +1230,8 @@ class Compiler
     end
     if @current_method_name != ""
       cls_idx = @current_method_name.index("_cls_")
-      if cls_idx >= 0
+      # CRuby returns nil when not found; spinel runtime returns -1.
+      if cls_idx != nil && cls_idx >= 0
         return @current_method_name[0, cls_idx]
       end
     end
@@ -7102,7 +7103,8 @@ class Compiler
                 mp = ""
               else
                 idx = mp.rindex("_")
-                if idx < 0
+                # CRuby returns nil when not found; spinel runtime returns -1.
+                if idx == nil || idx < 0
                   mp = ""
                 else
                   mp = mp[0, idx]
