@@ -5482,6 +5482,8 @@ class Compiler
       return "sp_SymPolyHash *"
     end
     if t == "poly_poly_hash"
+      @needs_poly_poly_hash = 1
+      @needs_rb_value = 1
       return "sp_PolyPolyHash *"
     end
     if t == "sym_array"
@@ -19670,6 +19672,9 @@ class Compiler
                       elsif promoted == "sym_poly_hash"
                         @needs_sym_poly_hash = 1
                         @needs_rb_value = 1
+                      elsif promoted == "poly_poly_hash"
+                        @needs_poly_poly_hash = 1
+                        @needs_rb_value = 1
                       end
                     end
                   end
@@ -20147,22 +20152,49 @@ class Compiler
   end
 
   # ---- Main emission ----
+  # Emit the cls_id-aware obj hash/eql dispatch shims that
+  # sp_PolyPolyHash uses for OBJ-tag keys. The default runtime
+  # behavior is pointer identity; this dispatch overrides it for
+  # classes whose `eql?` semantics are content-based:
+  #
+  # - sp_Method (when the class is in scope): equal iff bound
+  #   receiver + fn_ptr match — covers `obj.method(:foo)` dedup.
+  # - sp_IntArray (SP_BUILTIN_INT_ARRAY = -1): element-wise content
+  #   compare — covers `entries[[a, b]] ||= ...` array-keyed Hash
+  #   patterns.
   def emit_method_eql_dispatch
     return unless @needs_poly_poly_hash == 1
-    return if find_class_idx("Method") < 0
-    method_cid = find_class_idx("Method").to_s
+    has_method = find_class_idx("Method") >= 0
+    method_cid = has_method ? find_class_idx("Method").to_s : ""
     emit_raw("static mrb_int sp_method_obj_hash_dispatch(int cls_id, void *p) {")
-    emit_raw("  if (cls_id == " + method_cid + ") {")
-    emit_raw("    sp_Method *m = (sp_Method *)p;")
-    emit_raw("    return ((mrb_int)(uintptr_t)m->iv_self_obj * 31) ^ (mrb_int)m->iv_fn_ptr;")
+    if has_method
+      emit_raw("  if (cls_id == " + method_cid + ") {")
+      emit_raw("    sp_Method *m = (sp_Method *)p;")
+      emit_raw("    return ((mrb_int)(uintptr_t)m->iv_self_obj * 31) ^ (mrb_int)m->iv_fn_ptr;")
+      emit_raw("  }")
+    end
+    emit_raw("  if (cls_id == SP_BUILTIN_INT_ARRAY) {")
+    emit_raw("    sp_IntArray *a = (sp_IntArray *)p;")
+    emit_raw("    mrb_int h = 5381;")
+    emit_raw("    for (mrb_int i = 0; i < a->len; i++) h = ((h << 5) + h) ^ sp_IntArray_get(a, i);")
+    emit_raw("    return h;")
     emit_raw("  }")
     emit_raw("  return (mrb_int)((uintptr_t)p);")
     emit_raw("}")
     emit_raw("static mrb_bool sp_method_obj_eql_dispatch(int cls_id, void *a, void *b) {")
-    emit_raw("  if (cls_id == " + method_cid + ") {")
-    emit_raw("    sp_Method *ma = (sp_Method *)a;")
-    emit_raw("    sp_Method *mb = (sp_Method *)b;")
-    emit_raw("    return ma->iv_self_obj == mb->iv_self_obj && ma->iv_fn_ptr == mb->iv_fn_ptr;")
+    if has_method
+      emit_raw("  if (cls_id == " + method_cid + ") {")
+      emit_raw("    sp_Method *ma = (sp_Method *)a;")
+      emit_raw("    sp_Method *mb = (sp_Method *)b;")
+      emit_raw("    return ma->iv_self_obj == mb->iv_self_obj && ma->iv_fn_ptr == mb->iv_fn_ptr;")
+      emit_raw("  }")
+    end
+    emit_raw("  if (cls_id == SP_BUILTIN_INT_ARRAY) {")
+    emit_raw("    sp_IntArray *aa = (sp_IntArray *)a;")
+    emit_raw("    sp_IntArray *bb = (sp_IntArray *)b;")
+    emit_raw("    if (aa->len != bb->len) return FALSE;")
+    emit_raw("    for (mrb_int i = 0; i < aa->len; i++) if (sp_IntArray_get(aa, i) != sp_IntArray_get(bb, i)) return FALSE;")
+    emit_raw("    return TRUE;")
     emit_raw("  }")
     emit_raw("  return FALSE;")
     emit_raw("}")
@@ -20183,10 +20215,12 @@ class Compiler
     end
     # poly_poly_hash uses sp_obj_hash_hook / sp_obj_eql_hook for cls_id-
     # aware OBJ-tag dispatch. The hooks default to identity; install
-    # the codegen-emitted Method-aware shim so equivalent
+    # the codegen-emitted dispatch shim so equivalent
     # `obj.method(:foo)` instances (fresh allocations, but same iv_self_obj
-    # + iv_fn_ptr) dedup as eql? in @cache[m] ||= m style use.
-    if @needs_poly_poly_hash == 1 && find_class_idx("Method") >= 0
+    # + iv_fn_ptr) dedup as eql? in @cache[m] ||= m style use, and
+    # IntArray keys (e.g. `entries[[a, b]] ||= ...`) compare by
+    # element-wise content rather than pointer identity.
+    if @needs_poly_poly_hash == 1
       emit_raw("  sp_obj_hash_hook = sp_method_obj_hash_dispatch;")
       emit_raw("  sp_obj_eql_hook = sp_method_obj_eql_dispatch;")
     end
