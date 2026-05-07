@@ -18206,6 +18206,22 @@ class Compiler
                   if @nd_type[eid] == "ArrayNode" && (is_ptr_array_type(et) == 1 || et == "poly_array")
                     inner_iv = compile_array_literal_as_poly(eid)
                     emit_raw("  sp_PolyArray_push(" + tmp_iv + ", sp_box_poly_array(" + inner_iv + "));")
+                  elsif is_ptr_array_type(et) == 1
+                    # Same 3D+ erasure but the element is a non-ArrayNode
+                    # expression (e.g. `Array.new(N) { ... }` returning a
+                    # typed `<X>_ptr_array`). Convert at runtime so each
+                    # inner element keeps its real cls_id —
+                    # `arr[b][i][j]` chains correctly.
+                    ev = compile_expr(eid)
+                    inner_t_iv = ptr_array_elem_type(et)
+                    conv_iv = new_temp
+                    ii_iv = new_temp
+                    emit_raw("  sp_PolyArray *" + conv_iv + " = sp_PolyArray_new();")
+                    emit_raw("  for (mrb_int " + ii_iv + " = 0; " + ii_iv + " < sp_PtrArray_length(" + ev + "); " + ii_iv + "++) {")
+                    inner_get_iv = "(" + c_type(inner_t_iv) + ")sp_PtrArray_get(" + ev + ", " + ii_iv + ")"
+                    emit_raw("    sp_PolyArray_push(" + conv_iv + ", " + box_value_to_poly(inner_t_iv, inner_get_iv) + ");")
+                    emit_raw("  }")
+                    emit_raw("  sp_PolyArray_push(" + tmp_iv + ", sp_box_poly_array(" + conv_iv + "));")
                   else
                     ev = compile_expr(eid)
                     ebox = et == "poly" ? ev : box_value_to_poly(et, ev)
@@ -28846,6 +28862,22 @@ class Compiler
       if @nd_type[eid] == "ArrayNode" && (is_ptr_array_type(et) == 1 || et == "poly_array")
         inner = compile_array_literal_as_poly(eid)
         emit("  sp_PolyArray_push(" + tmp + ", sp_box_poly_array(" + inner + "));")
+      elsif is_ptr_array_type(et) == 1
+        # Non-ArrayNode whose static type is a typed `<X>_ptr_array`
+        # (e.g. `Array.new(N) { ... }` returning int_array_ptr_array).
+        # Convert at runtime so each inner element keeps its real
+        # cls_id (sp_box_int_array etc.) — `arr[i][j][k]` chains
+        # correctly through the next-level dispatch.
+        val = compile_expr(eid)
+        inner_t = ptr_array_elem_type(et)
+        conv = new_temp
+        ii = new_temp
+        emit("  sp_PolyArray *" + conv + " = sp_PolyArray_new();")
+        emit("  for (mrb_int " + ii + " = 0; " + ii + " < sp_PtrArray_length(" + val + "); " + ii + "++) {")
+        inner_get = "(" + c_type(inner_t) + ")sp_PtrArray_get(" + val + ", " + ii + ")"
+        emit("    sp_PolyArray_push(" + conv + ", " + box_value_to_poly(inner_t, inner_get) + ");")
+        emit("  }")
+        emit("  sp_PolyArray_push(" + tmp + ", sp_box_poly_array(" + conv + "));")
       else
         val = compile_expr(eid)
         emit("  sp_PolyArray_push(" + tmp + ", " + box_value_to_poly(et, val) + ");")
@@ -28913,6 +28945,23 @@ class Compiler
         if @nd_type[elems[k]] == "ArrayNode" && (is_ptr_array_type(et) == 1 || et == "poly_array")
           val = compile_array_literal_as_poly(elems[k])
           emit("  sp_PolyArray_push(" + tmp + ", sp_box_poly_array(" + val + "));")
+        elsif is_ptr_array_type(et) == 1
+          # Same 3D+ erasure but the element is a non-ArrayNode
+          # expression (e.g. `Array.new(N) { ... }` returning a
+          # typed `<X>_ptr_array`). compile_array_literal_as_poly
+          # only walks ArrayNodes — emit a runtime conversion that
+          # iterates the typed PtrArray and tags each inner with
+          # its real cls_id (sp_box_int_array etc.).
+          val = compile_expr(elems[k])
+          inner_t = ptr_array_elem_type(et)
+          conv = new_temp
+          ii = new_temp
+          emit("  sp_PolyArray *" + conv + " = sp_PolyArray_new();")
+          emit("  for (mrb_int " + ii + " = 0; " + ii + " < sp_PtrArray_length(" + val + "); " + ii + "++) {")
+          inner_get = "(" + c_type(inner_t) + ")sp_PtrArray_get(" + val + ", " + ii + ")"
+          emit("    sp_PolyArray_push(" + conv + ", " + box_value_to_poly(inner_t, inner_get) + ");")
+          emit("  }")
+          emit("  sp_PolyArray_push(" + tmp + ", sp_box_poly_array(" + conv + "));")
         else
           val = compile_expr(elems[k])
           emit("  sp_PolyArray_push(" + tmp + ", " + box_value_to_poly(et, val) + ");")
@@ -29671,6 +29720,22 @@ class Compiler
           if @nd_type[eid] == "ArrayNode" && (is_ptr_array_type(et) == 1 || et == "poly_array")
             inner = compile_array_literal_as_poly(eid)
             emit("  sp_PolyArray_push(" + tmp_arr + ", sp_box_poly_array(" + inner + "));")
+          elsif is_ptr_array_type(et) == 1
+            # Same 3D+ erasure but the element is a non-ArrayNode
+            # expression (e.g. `Array.new(N) { ... }` returning a
+            # typed `<X>_ptr_array`). Convert at runtime so each
+            # inner element keeps its real cls_id —
+            # `arr[b][i][j]` chains correctly.
+            ev = compile_expr(eid)
+            inner_t_pa = ptr_array_elem_type(et)
+            conv_pa = new_temp
+            ii_pa = new_temp
+            emit("  sp_PolyArray *" + conv_pa + " = sp_PolyArray_new();")
+            emit("  for (mrb_int " + ii_pa + " = 0; " + ii_pa + " < sp_PtrArray_length(" + ev + "); " + ii_pa + "++) {")
+            inner_get_pa = "(" + c_type(inner_t_pa) + ")sp_PtrArray_get(" + ev + ", " + ii_pa + ")"
+            emit("    sp_PolyArray_push(" + conv_pa + ", " + box_value_to_poly(inner_t_pa, inner_get_pa) + ");")
+            emit("  }")
+            emit("  sp_PolyArray_push(" + tmp_arr + ", sp_box_poly_array(" + conv_pa + "));")
           else
             ev = compile_expr(eid)
             ebox = et == "poly" ? ev : box_value_to_poly(et, ev)
