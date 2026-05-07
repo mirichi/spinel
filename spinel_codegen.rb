@@ -8343,6 +8343,9 @@ class Compiler
             if rname == "StringIO"
               return "stringio"
             end
+            if rname == "Fiber"
+              return "fiber"
+            end
             return "obj_" + rname
           end
         end
@@ -20743,7 +20746,7 @@ class Compiler
       return "0"
     end
     if t == "SelfNode"
-      return "self"
+      return self_expr
     end
     if t == "LocalVariableReadNode"
       return fiber_var_ref(@nd_name[nid])
@@ -21546,6 +21549,135 @@ class Compiler
   end
 
 
+  # Detect whether a Fiber.new block body references `self` — directly
+  # (`SelfNode`), via `@ivar` reads/writes, or via a no-receiver method
+  # call inside a class body. Used by `compile_fiber_new` to decide
+  # whether to thread an explicit `self` capture through the fiber's
+  # `_cap` struct so the body's emitted C can resolve `self->iv_X` and
+  # `sp_<Class>_<method>(self)` call sites without the surrounding
+  # method's `self` parameter.
+  def fiber_body_uses_self(nid)
+    if nid < 0
+      return 0
+    end
+    t = @nd_type[nid]
+    if t == "SelfNode"
+      return 1
+    end
+    if t == "InstanceVariableReadNode" || t == "InstanceVariableWriteNode"
+      return 1
+    end
+    if t == "InstanceVariableOperatorWriteNode" || t == "InstanceVariableTargetNode"
+      return 1
+    end
+    if t == "InstanceVariableAndWriteNode" || t == "InstanceVariableOrWriteNode"
+      return 1
+    end
+    # Stop at nested lambda/fiber boundaries (their own body captures self separately)
+    if t == "LambdaNode"
+      return 0
+    end
+    if t == "CallNode"
+      mn = @nd_name[nid]
+      if mn == "new"
+        rv = @nd_receiver[nid]
+        if rv >= 0 && constructor_class_name(rv) == "Fiber"
+          return 0
+        end
+      end
+      # Bare (no receiver) call inside class context implicitly uses self
+      if @nd_receiver[nid] < 0 && @current_class_idx >= 0
+        return 1
+      end
+    end
+    if @nd_body[nid] >= 0
+      if fiber_body_uses_self(@nd_body[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_receiver[nid] >= 0
+      if fiber_body_uses_self(@nd_receiver[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_expression[nid] >= 0
+      if fiber_body_uses_self(@nd_expression[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_predicate[nid] >= 0
+      if fiber_body_uses_self(@nd_predicate[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_subsequent[nid] >= 0
+      if fiber_body_uses_self(@nd_subsequent[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_else_clause[nid] >= 0
+      if fiber_body_uses_self(@nd_else_clause[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_arguments[nid] >= 0
+      if fiber_body_uses_self(@nd_arguments[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_rescue_clause[nid] >= 0
+      if fiber_body_uses_self(@nd_rescue_clause[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_ensure_clause[nid] >= 0
+      if fiber_body_uses_self(@nd_ensure_clause[nid]) == 1
+        return 1
+      end
+    end
+    stmts_list = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts_list.length
+      if fiber_body_uses_self(stmts_list[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    args_list = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args_list.length
+      if fiber_body_uses_self(args_list[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    conds_list = parse_id_list(@nd_conditions[nid])
+    k = 0
+    while k < conds_list.length
+      if fiber_body_uses_self(conds_list[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    elems_list = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < elems_list.length
+      if fiber_body_uses_self(elems_list[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    blk = @nd_block[nid]
+    if blk >= 0
+      if @nd_body[blk] >= 0
+        if fiber_body_uses_self(@nd_body[blk]) == 1
+          return 1
+        end
+      end
+    end
+    0
+  end
+
   def scan_fiber_free_vars(nid, params, locals, free_vars, free_var_types)
     if nid < 0
       return
@@ -21730,6 +21862,23 @@ class Compiler
       scan_fiber_free_vars(body, all_plist, all_names, free_vars, free_var_types)
     end
 
+    # Capture `self` when the body references the enclosing instance
+    # (explicit `self`, ivar reads/writes, or no-receiver method calls
+    # that resolve to `self.<m>`). Without this, `_fiber_body_N`'s
+    # emitted body references a `self` that isn't a parameter and won't
+    # compile. Only add the capture inside an instance-method context;
+    # value-type classes pass `self` by value, and that path needs a
+    # different capture shape we don't generate yet.
+    self_captured = 0
+    if @current_class_idx >= 0 && @cls_is_value_type[@current_class_idx] != 1
+      if body >= 0 && fiber_body_uses_self(body) == 1
+        self_type = "obj_" + @cls_names[@current_class_idx]
+        free_vars.push("self")
+        free_var_types.push(self_type)
+        self_captured = 1
+      end
+    end
+
     fid = @fiber_counter
     @fiber_counter = @fiber_counter + 1
     fname = "_fiber_body_" + fid.to_s
@@ -21764,11 +21913,15 @@ class Compiler
     saved_fiber_capture_types = @fiber_capture_types
     saved_hp_names_len = @heap_promoted_names.length
     saved_hp_cells_len = @heap_promoted_cells.length
+    saved_self_override = @self_override
     @out_lines = "".split(",")
     @indent = 1
     @in_fiber_body = 1
     @fiber_captures = free_vars
     @fiber_capture_types = free_var_types
+    if self_captured == 1
+      @self_override = "(*_cap->self)"
+    end
 
     push_scope
     if bp != ""
@@ -21798,11 +21951,16 @@ class Compiler
           compile_stmt(last)
           emit("  _fb->yielded_value = sp_box_nil();")
         else
-          if @nd_type[last] == "LocalVariableWriteNode" || @nd_type[last] == "LocalVariableOperatorWriteNode"
+          last_t_check = @nd_type[last]
+          if last_t_check == "LocalVariableWriteNode" || last_t_check == "LocalVariableOperatorWriteNode" ||
+             last_t_check == "InstanceVariableWriteNode" || last_t_check == "InstanceVariableOperatorWriteNode" ||
+             last_t_check == "InstanceVariableOrWriteNode" || last_t_check == "InstanceVariableAndWriteNode"
             compile_stmt(last)
+            emit("  _fb->yielded_value = sp_box_nil();")
+          else
+            last_val = compile_expr(last)
+            emit("  _fb->yielded_value = " + box_val_to_poly(last_val, last_type) + ";")
           end
-          last_val = compile_expr(last)
-          emit("  _fb->yielded_value = " + box_val_to_poly(last_val, last_type) + ";")
         end
       end
     end
@@ -21818,6 +21976,7 @@ class Compiler
     @in_fiber_body = saved_in_fiber_body
     @fiber_captures = saved_fiber_captures
     @fiber_capture_types = saved_fiber_capture_types
+    @self_override = saved_self_override
     # Restore heap promoted lists to saved length
     while @heap_promoted_names.length > saved_hp_names_len
       @heap_promoted_names.pop
@@ -21831,35 +21990,54 @@ class Compiler
       return "sp_Fiber_new(" + fname + ")"
     end
 
-    # Heap-promote captured variables (allocate cells if not already promoted)
+    # Heap-promote captured variables (allocate cells if not already promoted).
+    # Track this fiber's cell-per-capture in a local map so a cross-method
+    # `self` capture (different C function each time) doesn't accidentally
+    # reuse a stale `_hcell_self_<n>` from a sibling fiber site that lives
+    # in a different C scope.
+    local_cells = "".split(",")
     k = 0
     while k < free_vars.length
       vn = free_vars[k]
-      already_promoted = 0
-      # Check outer scope heap promotions
-      ci = 0
-      while ci < @heap_promoted_names.length
-        if @heap_promoted_names[ci] == vn
-          already_promoted = 1
-        end
-        ci = ci + 1
-      end
-      # Check if variable is already a heap pointer from enclosing fiber capture
-      if already_promoted == 0 && @in_fiber_body == 1 && fiber_capture_index(vn) >= 0
-        # Reuse the enclosing fiber's capture pointer (_cap->vn is already a heap cell)
-        cell = "_cap->" + vn
-        @heap_promoted_names.push(vn)
-        @heap_promoted_cells.push(cell)
-        already_promoted = 1
-      end
-      if already_promoted == 0
-        cell = "_hcell_" + vn + "_" + fid.to_s
+      cell = ""
+      if vn == "self"
+        # `self` resolves to the enclosing C function's parameter, which
+        # differs per method (e.g. `sp_X_new`'s `self` and `sp_X_initialize`'s
+        # `self` are distinct C variables). Skip the persistent
+        # @heap_promoted_names lookup — its cells live in another scope.
+        cell = "_hcell_self_" + fid.to_s
         ct = c_type(free_var_types[k])
         emit("  " + ct + " *" + cell + " = (" + ct + "*)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
-        emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
-        @heap_promoted_names.push(vn)
-        @heap_promoted_cells.push(cell)
+        emit("  *" + cell + " = self;")
+      else
+        already_promoted = 0
+        # Check outer scope heap promotions
+        ci = 0
+        while ci < @heap_promoted_names.length
+          if @heap_promoted_names[ci] == vn
+            already_promoted = 1
+            cell = @heap_promoted_cells[ci]
+          end
+          ci = ci + 1
+        end
+        # Check if variable is already a heap pointer from enclosing fiber capture
+        if already_promoted == 0 && @in_fiber_body == 1 && fiber_capture_index(vn) >= 0
+          # Reuse the enclosing fiber's capture pointer (_cap->vn is already a heap cell)
+          cell = "_cap->" + vn
+          @heap_promoted_names.push(vn)
+          @heap_promoted_cells.push(cell)
+          already_promoted = 1
+        end
+        if already_promoted == 0
+          cell = "_hcell_" + vn + "_" + fid.to_s
+          ct = c_type(free_var_types[k])
+          emit("  " + ct + " *" + cell + " = (" + ct + "*)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
+          emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
+          @heap_promoted_names.push(vn)
+          @heap_promoted_cells.push(cell)
+        end
       end
+      local_cells.push(cell)
       k = k + 1
     end
 
@@ -21870,15 +22048,7 @@ class Compiler
     k = 0
     while k < free_vars.length
       vn = free_vars[k]
-      # Find the cell for this variable
-      ci = 0
-      cell = ""
-      while ci < @heap_promoted_names.length
-        if @heap_promoted_names[ci] == vn
-          cell = @heap_promoted_cells[ci]
-        end
-        ci = ci + 1
-      end
+      cell = local_cells[k]
       emit("  " + cap_ptr + "->" + vn + " = " + cell + ";")
       k = k + 1
     end
