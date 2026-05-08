@@ -648,6 +648,17 @@ static const char *sp_re_match_str = NULL;
 static const char *sp_re_match_pre = NULL;
 static const char *sp_re_match_post = NULL;
 
+/* ARGV runtime: argv[i] strings are dup'd via sp_str_dup_external on
+   main() entry, which allocates from the str-heap with mark byte
+   0xfe. Without explicit marking they get reaped on the first
+   sp_str_sweep, leaving sp_argv.data[i] as a dangling pointer that
+   later `ARGV[i]` reads dereference. The exact length boundary
+   triggering the segfault depends on malloc's reuse pattern (so the
+   bug surfaces non-deterministically by string length), but the
+   underlying issue is unconditional. */
+typedef struct{const char**data;mrb_int len;}sp_Argv;
+static sp_Argv sp_argv;
+
 /* Mark the regex globals as live during GC. Each holds a pointer to a
    string allocated via sp_str_alloc_raw on the str-heap; without this
    sp_str_sweep would reap them on the next collect, leaving dangling
@@ -660,6 +671,7 @@ static void sp_re_mark_globals(void) {
   sp_mark_string(sp_re_match_str);
   sp_mark_string(sp_re_match_pre);
   sp_mark_string(sp_re_match_post);
+  for (mrb_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
 }
 
 static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
