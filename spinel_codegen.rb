@@ -29065,7 +29065,13 @@ class Compiler
       return "sp_box_bool(" + val + ")"
     end
     if at == "nil"
-      return "sp_box_nil()"
+      # `val` may be a side-effecting call (e.g. an arm in a
+      # cls_id-dispatched table where the user-defined override
+      # returns nil because its body is a `puts` / similar). Drop
+      # the value but keep the side effect via the comma operator;
+      # otherwise the generated dispatch silently elides the call
+      # for any subclass whose method's static return type is nil.
+      return "((void)(" + val + "), sp_box_nil())"
     end
     if at == "symbol"
       return "sp_box_sym(" + val + ")"
