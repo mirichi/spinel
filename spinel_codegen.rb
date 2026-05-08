@@ -25593,6 +25593,13 @@ class Compiler
       end
       return "(" + rc + ".last - " + rc + ".first + 1)"
     end
+    # `(a..b).any?/all?/none?/one? { |i| ... }` — the array-shape
+    # predicate emitter already iterates ranges via emit_iter_open;
+    # just route to it. Without this, the call falls through to the
+    # unresolved-call warning and emits literal 0.
+    if (mname == "any?" || mname == "all?" || mname == "none?" || mname == "one?") && @nd_block[nid] >= 0
+      return compile_array_predicate_block(nid, rc, "range", mname)
+    end
     ""
   end
 
