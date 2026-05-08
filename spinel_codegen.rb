@@ -29322,6 +29322,26 @@ class Compiler
                 next
               end
             end
+            # When the param expects `sp_<C> *` but the arg's static
+            # type is `int` (typically a local catching a method
+            # whose return widened to mrb_int because the union
+            # collapsed somewhere upstream — e.g.
+            # `parent = article` after a `nil.return` narrows
+            # parent's declared type but the call site below still
+            # passes `lv_parent` raw), insert the same cast that
+            # compile_int_class_fallback_expr already inserts at
+            # property-access sites. Without this, gcc errors
+            # `incompatible integer to pointer conversion`.
+            if is_obj_type(ptypes[k]) == 1
+              arg_at = infer_type(positional_ids[k])
+              if arg_at == "int"
+                bt_arg = base_type(ptypes[k])
+                arg_cname = bt_arg[4, bt_arg.length - 4]
+                result = result + "(sp_" + arg_cname + " *)" + compile_expr(positional_ids[k])
+                k = k + 1
+                next
+              end
+            end
           end
           result = result + compile_expr(positional_ids[k])
         else
