@@ -17967,14 +17967,10 @@ class Compiler
 
   # ---- Forward declarations ----
   def emit_forward_decls
-    # ARGV (sp_argv) is referenced from any function that uses
-    # `ARGV.length` / `ARGV[i]`, so the declaration has to precede
-    # all function bodies — not just main()'s.  emit_main keeps the
-    # runtime initialization (`sp_argv.len = argc - 1; ...`) where
-    # main() can fill it in from `argc` / `argv`.
-    emit_raw("typedef struct{const char**data;mrb_int len;}sp_Argv;")
-    emit_raw("static sp_Argv sp_argv;")
-    emit_raw("")
+    # ARGV (sp_argv) is declared in lib/sp_runtime.h so the runtime's
+    # sp_re_mark_globals can mark its strings during GC; emit_main
+    # fills in `sp_argv.len = argc - 1; sp_argv.data = ...` from main().
+
     # Emit block helper functions accumulated during collection
     if @block_funcs != ""
       emit_raw(@block_funcs)

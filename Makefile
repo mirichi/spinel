@@ -277,6 +277,8 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(PARSE_STAMP) 
 	bin=$$tmpdir/test_bin$(EXE); \
 	exp=$$tmpdir/expected; \
 	act=$$tmpdir/actual; \
+	args=""; \
+	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 	rm -f "$@.diff"; \
 	./spinel_parse$(EXE) "$<" "$$ast" 2>/dev/null && \
 	./spinel_codegen$(EXE) "$$ast" "$$cfile" 2>/dev/null && \
@@ -286,14 +288,14 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(PARSE_STAMP) 
 	  if [ -f "$<.expected" ]; then \
 	    LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
 	  else \
-	    $(TIMEOUT10) $(REF_RUBY) "$<" >"$$exp" 2>/dev/null; \
+	    $(TIMEOUT10) $(REF_RUBY) "$<" $$args >"$$exp" 2>/dev/null; \
 	    ruby_rc=$$?; \
 	    if [ $$ruby_rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-	      $(TIMEOUT10) ruby "$<" >"$$exp" 2>/dev/null; \
+	      $(TIMEOUT10) ruby "$<" $$args >"$$exp" 2>/dev/null; \
 	    fi; \
 	    LC_ALL=C sed 's/\r$$//' "$$exp" >"$$exp.n"; \
 	  fi; \
-	  $(TIMEOUT10) "$$bin" >"$$act" 2>/dev/null; \
+	  $(TIMEOUT10) "$$bin" $$args >"$$act" 2>/dev/null; \
 	  LC_ALL=C sed 's/\r$$//' "$$act" >"$$act.n"; \
 	  if cmp -s "$$exp.n" "$$act.n"; then \
 	    echo PASS > "$@"; \
