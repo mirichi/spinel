@@ -2060,7 +2060,11 @@ class Compiler
       end
       cx = find_class_idx(rname)
       if cx >= 0
-        return "class_" + rname
+        # Issue #404 Phase 1: class constant in value position.
+        # Class constants used as method-call receivers go through
+        # find_class_idx directly via constructor_class_name and
+        # never call infer_type on the receiver.
+        return "class"
       end
       return "int"
     end
@@ -2073,7 +2077,8 @@ class Compiler
         end
         cx = find_class_idx(cpname)
         if cx >= 0
-          return "class_" + cpname
+          # Issue #404 Phase 1: class constant in value position.
+          return "class"
         end
       end
       parent = @nd_receiver[nid]
