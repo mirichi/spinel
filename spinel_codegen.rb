@@ -5081,7 +5081,7 @@ class Compiler
        m == "slice" || m == "fetch" || m == "dig" ||
        m == "freeze" || m == "frozen?" || m == "dup" || m == "clone" ||
        m == "hash" || m == "class" || m == "tap" ||
-       m == "==" || m == "!=" || m == "eql?" || m == "equal?" ||
+       m == "==" || m == "!=" || m == "eql?" || m == "equal?" || m == "<=>" ||
        m == "nil?" || m == "is_a?" || m == "kind_of?" || m == "respond_to?" ||
        # String / Hash / Integer-shared (kept in sync with the
        # extension to called_methods_only_on_container_builtins).
@@ -12765,6 +12765,24 @@ class Compiler
     end
     if mname == "inspect"
       return "sp_int_to_s(" + rc + ")"
+    end
+    # `int <=> other` -- standard 3-way compare. Without this arm
+    # the int-recv fallback at compile_call_expr's tail picks a
+    # user-defined `<=>` (issue #399) and recurses. Comparable's
+    # `<` / `>` / `<=` / `>=` already route to a numeric compare
+    # in compile_call_expr; `<=>` itself was missing.
+    if mname == "<=>"
+      args_id_cmp = @nd_arguments[nid]
+      if args_id_cmp >= 0
+        a_cmp = get_args(args_id_cmp)
+        if a_cmp.length >= 1
+          rt_cmp = infer_type(a_cmp[0])
+          if rt_cmp == "int" || rt_cmp == "float"
+            arg_e = compile_expr(a_cmp[0])
+            return "((" + rc + ") < (" + arg_e + ") ? (mrb_int)-1 : ((" + rc + ") > (" + arg_e + ") ? (mrb_int)1 : (mrb_int)0))"
+          end
+        end
+      end
     end
     if mname == "digits"
       @needs_int_array = 1
