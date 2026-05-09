@@ -17475,6 +17475,64 @@ class Compiler
                     bk = bk + 1
                     next
                   end
+                  # Issue #395 string-yield sub-variant: when calling
+                  # a yield-bearing method on a user class
+                  # (`c.each { |k| ... }`), infer the block param's
+                  # type from the method's yield-arg type. Without
+                  # this, `k` defaults to mrb_int at the parent
+                  # scope, but the yield expansion assigns the
+                  # method's `n = @keys[i]` (a `const char *`) to
+                  # it -- mismatch.
+                  if is_obj_type(recv_type) == 1
+                    cn_each = recv_type[4, recv_type.length - 4]
+                    cci_each = find_class_idx(cn_each)
+                    if cci_each >= 0
+                      midx_each = cls_find_method(cci_each, mname)
+                      if midx_each >= 0 && cls_method_has_yield(cci_each, midx_each) == 1
+                        owner_each = find_method_owner(cci_each, mname)
+                        owner_ci_each = find_class_idx(owner_each)
+                        if owner_ci_each >= 0
+                          owner_midx_each = cls_find_method(owner_ci_each, mname)
+                          arity_each = cls_method_yield_arity(owner_ci_each, owner_midx_each)
+                          ytypes_each = "".split(",")
+                          ka = 0
+                          while ka < arity_each
+                            ytypes_each.push("")
+                            ka = ka + 1
+                          end
+                          ybid_each = cls_method_body_id(owner_ci_each, owner_midx_each)
+                          # Push a temporary scope with the yielding
+                          # method's locals declared so body_yield_arg_types'
+                          # infer_type calls resolve LocalVariableReadNodes
+                          # to their actual types -- without this, a yield
+                          # arg like `n` (a `const char *` local in the
+                          # method) would just read as `int` (the no-scope
+                          # default) and we'd miss the body-driven type.
+                          if ybid_each >= 0
+                            push_scope
+                            yl_names = "".split(",")
+                            yl_types = "".split(",")
+                            saved_ci_each = @current_class_idx
+                            @current_class_idx = owner_ci_each
+                            scan_locals(ybid_each, yl_names, yl_types, "".split(","))
+                            yj = 0
+                            while yj < yl_names.length
+                              declare_var(yl_names[yj], yl_types[yj])
+                              yj = yj + 1
+                            end
+                            body_yield_arg_types(ybid_each, ytypes_each)
+                            @current_class_idx = saved_ci_each
+                            pop_scope
+                          end
+                          if bk < ytypes_each.length && ytypes_each[bk] != "" && ytypes_each[bk] != "int"
+                            types.push(ytypes_each[bk])
+                            bk = bk + 1
+                            next
+                          end
+                        end
+                      end
+                    end
+                  end
                   if mname == "times" || mname == "upto" || mname == "downto"
                     types.push("int")
                   elsif mname == "each" || mname == "each_pair" || mname == "map" || mname == "select" || mname == "filter" || mname == "reject" || mname == "find" || mname == "detect" || mname == "any?" || mname == "all?" || mname == "none?" || mname == "one?" || mname == "count" || mname == "min" || mname == "max" || mname == "sum" || mname == "min_by" || mname == "max_by" || mname == "sort_by" || mname == "flat_map" || mname == "filter_map" || mname == "cycle" || mname == "partition"
