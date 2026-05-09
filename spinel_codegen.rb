@@ -11319,9 +11319,27 @@ class Compiler
       args_id = @nd_arguments[nid]
       if args_id >= 0
         aargs = get_args(args_id)
-        if aargs.length > 0
+        # Issue #400: multi-arg lambda dispatch. Pick `sp_lam_callN`
+        # based on the number of args; up to arity-4 covered. Beyond
+        # that, fall back to single-arg (caller is on its own).
+        if aargs.length == 1
           ac = wrap_as_sp_val(aargs.first)
           call_expr = "sp_lam_call(" + rc + ", " + ac + ")"
+        elsif aargs.length == 2
+          a0 = wrap_as_sp_val(aargs[0])
+          a1 = wrap_as_sp_val(aargs[1])
+          call_expr = "sp_lam_call2(" + rc + ", " + a0 + ", " + a1 + ")"
+        elsif aargs.length == 3
+          a0 = wrap_as_sp_val(aargs[0])
+          a1 = wrap_as_sp_val(aargs[1])
+          a2 = wrap_as_sp_val(aargs[2])
+          call_expr = "sp_lam_call3(" + rc + ", " + a0 + ", " + a1 + ", " + a2 + ")"
+        elsif aargs.length == 4
+          a0 = wrap_as_sp_val(aargs[0])
+          a1 = wrap_as_sp_val(aargs[1])
+          a2 = wrap_as_sp_val(aargs[2])
+          a3 = wrap_as_sp_val(aargs[3])
+          call_expr = "sp_lam_call4(" + rc + ", " + a0 + ", " + a1 + ", " + a2 + ", " + a3 + ")"
         end
       end
       if call_expr == ""
@@ -22016,18 +22034,17 @@ class Compiler
     end
     if t == "LambdaNode"
       # For nested lambdas, find their free vars and add them to OUR free vars
-      # (they need to be captured transitively)
-      inner_pname = ""
+      # (they need to be captured transitively). Collect ALL formal params,
+      # not just the first one (issue #400).
+      inner_params = "".split(",")
       inner_params_id = @nd_parameters[nid]
       if inner_params_id >= 0
         reqs = parse_id_list(@nd_requireds[inner_params_id])
-        if reqs.length > 0
-          inner_pname = @nd_name[reqs[0]]
+        ip = 0
+        while ip < reqs.length
+          inner_params.push(@nd_name[reqs[ip]])
+          ip = ip + 1
         end
-      end
-      inner_params = "".split(",")
-      if inner_pname != ""
-        inner_params.push(inner_pname)
       end
       inner_body = @nd_body[nid]
       if inner_body >= 0
@@ -22400,6 +22417,43 @@ class Compiler
           return "sp_lam_int(sp_lam_to_int(" + rc + ") + sp_lam_to_int(" + ac + "))"
         end
       end
+      # Issue #400: more numeric ops on sp_Val so multi-arg lambda
+      # bodies like `->(a, b, c) { a * b * c }` lower correctly.
+      if mname == "-"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
+          return "sp_lam_int(sp_lam_to_int(" + rc + ") - sp_lam_to_int(" + ac + "))"
+        end
+      end
+      if mname == "*"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
+          return "sp_lam_int(sp_lam_to_int(" + rc + ") * sp_lam_to_int(" + ac + "))"
+        end
+      end
+      if mname == "/"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
+          return "sp_lam_int(sp_idiv(sp_lam_to_int(" + rc + "), sp_lam_to_int(" + ac + ")))"
+        end
+      end
+      if mname == "%"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
+          return "sp_lam_int(sp_imod(sp_lam_to_int(" + rc + "), sp_lam_to_int(" + ac + ")))"
+        end
+      end
+      if mname == "<" || mname == ">" || mname == "<=" || mname == ">=" || mname == "==" || mname == "!="
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
+          return "sp_lam_bool(sp_lam_to_int(" + rc + ") " + mname + " sp_lam_to_int(" + ac + "))"
+        end
+      end
       return "&sp_lam_nil_val"
     end
     if t == "IfNode"
@@ -22445,18 +22499,24 @@ class Compiler
 
   def compile_lambda_expr(nid)
     @needs_lambda = 1
-    # Get the parameter name
-    pname = ""
+    # Collect ALL formal params, not just the first (issue #400). The
+    # legacy single-`pname` path still drives the typed-caps emit
+    # block below (it only handles single-arg lambdas with typed
+    # captures); multi-arg flows through the sp_Val* path which now
+    # honours `param_arr.length`.
+    param_arr = "".split(",")
     params_id = @nd_parameters[nid]
     if params_id >= 0
       reqs = parse_id_list(@nd_requireds[params_id])
-      if reqs.length > 0
-        pname = @nd_name[reqs[0]]
+      pi = 0
+      while pi < reqs.length
+        param_arr.push(@nd_name[reqs[pi]])
+        pi = pi + 1
       end
     end
-    param_arr = "".split(",")
-    if pname != ""
-      param_arr.push(pname)
+    pname = ""
+    if param_arr.length > 0
+      pname = param_arr[0]
     end
 
     body = @nd_body[nid]
@@ -22647,21 +22707,37 @@ class Compiler
         @lambda_captures = save_captures
         @lambda_capture_cell_types = save_cell_types
 
+        # Issue #400: emit signature with one sp_Val* per param so
+        # multi-arg `->(a, b) { a + b }` works. The runtime
+        # sp_lam_call2 / _3 / _4 cast the fn ptr to the matching arity.
+        sig_args = "sp_Val *self"
+        decls = ""
+        pi_s = 0
+        while pi_s < param_arr.length
+          sig_args = sig_args + ", sp_Val *_arg" + pi_s.to_s
+          decls = decls + "  sp_Val *lv_" + param_arr[pi_s] + " = _arg" + pi_s.to_s + ";\n"
+          pi_s = pi_s + 1
+        end
+        if param_arr.length == 0
+          sig_args = sig_args + ", sp_Val *arg"
+        end
         if body_stmts != ""
-          @lambda_funcs <<"static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
-          if pname != ""
-            @lambda_funcs <<"  sp_Val *lv_" + pname + " = arg;\n"
-          end
+          @lambda_funcs <<"static sp_Val *" + fname + "(" + sig_args + ") {\n"
+          @lambda_funcs <<decls
           @lambda_funcs <<"  (void)self;\n"
+          if param_arr.length == 0
+            @lambda_funcs <<"  (void)arg;\n"
+          end
           @lambda_funcs <<body_stmts + 10.chr
           @lambda_funcs <<"  return " + bexpr + ";\n"
           @lambda_funcs <<"}\n\n"
         else
-          @lambda_funcs <<"static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
-          if pname != ""
-            @lambda_funcs <<"  sp_Val *lv_" + pname + " = arg;\n"
-          end
+          @lambda_funcs <<"static sp_Val *" + fname + "(" + sig_args + ") {\n"
+          @lambda_funcs <<decls
           @lambda_funcs <<"  (void)self;\n"
+          if param_arr.length == 0
+            @lambda_funcs <<"  (void)arg;\n"
+          end
           @lambda_funcs <<"  return " + bexpr + ";\n"
           @lambda_funcs <<"}\n\n"
         end
@@ -22694,7 +22770,9 @@ class Compiler
         k = k + 1
       end
       tmp = new_temp
-      emit("  sp_Val *" + tmp + " = sp_lam_proc(" + fname + ", " + free_vars.length.to_s + ");")
+      # Cast multi-arg fn ptr to sp_fn_t for storage; sp_lam_callN
+      # casts back to the matching arity at the call site (Issue #400).
+      emit("  sp_Val *" + tmp + " = sp_lam_proc((sp_fn_t)(uintptr_t)" + fname + ", " + free_vars.length.to_s + ");")
       k = 0
       while k < free_vars.length
         fv = free_vars[k]
@@ -22735,7 +22813,7 @@ class Compiler
       end
       return tmp
     else
-      return "sp_lam_proc(" + fname + ", 0)"
+      return "sp_lam_proc((sp_fn_t)(uintptr_t)" + fname + ", 0)"
     end
   end
 
