@@ -3181,6 +3181,48 @@ class Compiler
         return "time"
       end
     end
+    # Issue #419: `obj.class` on a statically-typed instance returns
+    # a sp_Class value. The codegen-side mirror in
+    # compile_object_method_expr emits the matching compound literal
+    # (`((sp_Class){<cls_idx>LL})`).
+    if mname == "class"
+      if recv >= 0
+        rt_419 = infer_type(recv)
+        if is_obj_type(rt_419) == 1
+          return "class"
+        end
+      end
+    end
+    # Issue #419: `<obj>.class.<cmeth>` chained dispatch. When the
+    # recv is itself a `class` CallNode whose own recv is
+    # statically-typed obj_<C>, the chain resolves to <C>.<cmeth>
+    # and the return type is whatever the cmeth returns. Same
+    # detection shape as the codegen lowering.
+    if recv >= 0 && @nd_type[recv] == "CallNode" && @nd_name[recv] == "class"
+      inner_recv_419 = @nd_receiver[recv]
+      if inner_recv_419 >= 0
+        inner_t_419 = infer_type(inner_recv_419)
+        if is_obj_type(inner_t_419) == 1
+          inner_bt_419 = base_type(inner_t_419)
+          inner_cname_419 = inner_bt_419[4, inner_bt_419.length - 4]
+          inner_ci_419 = find_class_idx(inner_cname_419)
+          if inner_ci_419 >= 0
+            owner_419 = cls_cmethod_owner(inner_ci_419, mname)
+            if owner_419 >= 0
+              cmnames_419 = @cls_cmeth_names[owner_419].split(";")
+              cmreturns_419 = @cls_cmeth_returns[owner_419].split(";")
+              cmidx_419 = 0
+              while cmidx_419 < cmnames_419.length
+                if cmnames_419[cmidx_419] == mname && cmidx_419 < cmreturns_419.length
+                  return cmreturns_419[cmidx_419]
+                end
+                cmidx_419 = cmidx_419 + 1
+              end
+            end
+          end
+        end
+      end
+    end
     # Kernel coercion methods: Integer(x) / Float(x) return their class.
     # Only treat as a Kernel call when there's no explicit receiver — with
     # a receiver, "Integer" / "Float" would be ConstantReadNode lookups,
@@ -16616,6 +16658,24 @@ class Compiler
                 end
                 ri = ri + 1
               end
+            end
+          end
+          # Issue #419: `<obj>.class.<cmeth>` — recv is a `class`
+          # CallNode. The lowered call dispatches to <C>::cmeth at
+          # codegen time when the inner recv has a known obj_<C>
+          # type. At DCE time we don't have method-body scope
+          # context (so infer_type on a LocalVariableReadNode here
+          # falls back to "int"), so over-approximate: mark cmeth
+          # live on every class that defines one. Matches the
+          # ConstantReadNode / SymbolNode arms above which take the
+          # same shape — DCE prefers false-negatives (a kept-but-
+          # unused method) over false-positives (a stripped live
+          # method that produces a linker error).
+          if @nd_name[recv] == "class"
+            mark_idx_419 = 0
+            while mark_idx_419 < @cls_names.length
+              cls_cmeth_mark_live(mark_idx_419, mname)
+              mark_idx_419 = mark_idx_419 + 1
             end
           end
         end

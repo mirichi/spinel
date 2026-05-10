@@ -9675,6 +9675,13 @@ class Compiler
                       if it == "poly"
                         fmt = fmt + "%s"
                         arg_exprs.push("sp_poly_to_s(" + compile_expr(inner) + ")")
+                      elsif it == "class"
+                        # Issue #419: string-interpolated sp_Class
+                        # value -> the class's name via the
+                        # sp_class_names[] table.
+                        @needs_class_table = 1
+                        fmt = fmt + "%s"
+                        arg_exprs.push("sp_class_to_s(" + compile_expr(inner) + ")")
                       else
                         fmt = fmt + "%lld"
                         arg_exprs.push("(long long)" + compile_expr(inner))
@@ -15885,6 +15892,52 @@ class Compiler
       if mname == "to_s"
         @needs_class_table = 1
         return "sp_class_to_s(" + rc + ")"
+      end
+      # Issue #419: `<obj>.class.<cmeth>(...)` lowering. The recv
+      # here is itself a `<X>.class` CallNode -- the outer
+      # `compile_call_expr` already emitted the inner sp_Class
+      # literal into `rc`, but for a `cmeth` dispatch we want to
+      # bypass the runtime sp_Class value and emit a direct
+      # `sp_<C>_cls_<m>` call against the statically-known class.
+      # Gated on the recv AST being a `class` CallNode whose own
+      # recv has a known obj_<C> type, so dynamic poly Class
+      # values still fall through (they're Phase 3 work).
+      recv_id_419 = @nd_receiver[nid]
+      if recv_id_419 >= 0 && @nd_type[recv_id_419] == "CallNode" && @nd_name[recv_id_419] == "class"
+        inner_recv_419 = @nd_receiver[recv_id_419]
+        if inner_recv_419 >= 0
+          inner_t_419 = infer_type(inner_recv_419)
+          if is_obj_type(inner_t_419) == 1
+            inner_bt_419 = base_type(inner_t_419)
+            inner_cname_419 = inner_bt_419[4, inner_bt_419.length - 4]
+            inner_ci_419 = find_class_idx(inner_cname_419)
+            if inner_ci_419 >= 0
+              owner_419 = cls_cmethod_owner(inner_ci_419, mname)
+              if owner_419 >= 0
+                owner_name_419 = @cls_names[owner_419]
+                ca_419 = compile_call_args(nid)
+                if ca_419 == ""
+                  return "sp_" + owner_name_419 + "_cls_" + sanitize_name(mname) + "()"
+                end
+                return "sp_" + owner_name_419 + "_cls_" + sanitize_name(mname) + "(" + ca_419 + ")"
+              end
+            end
+          end
+        end
+      end
+    end
+    # Issue #419: `<obj>.class` on an object with a statically-known
+    # class. Returns a sp_Class value carrying the class id; the
+    # surrounding chain consumes it (typically through the
+    # recv_type == "class" arm above for the next method, or via
+    # an assignment like `c = obj.class; c.to_s`).
+    if mname == "class" && is_obj_type(recv_type) == 1
+      cls_bt_419 = base_type(recv_type)
+      cls_cname_419 = cls_bt_419[4, cls_bt_419.length - 4]
+      cls_idx_419 = find_class_idx(cls_cname_419)
+      if cls_idx_419 >= 0
+        @needs_class_table = 1
+        return "((sp_Class){" + cls_idx_419.to_s + "LL})"
       end
     end
     # Object method calls
