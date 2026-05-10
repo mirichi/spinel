@@ -2082,6 +2082,19 @@ class Compiler
     if nid < 0
       return "void"
     end
+    # `<poly>[idx]` — analyze may cache an optimistic concrete type
+    # (e.g. "int" picked from one observed elem kind), but
+    # compile_poly_method_call's actual emit widens to sp_RbVal
+    # whenever its narrow_int check fails (e.g. block-param recv).
+    # When the cache disagrees with the emit, downstream consumers
+    # (compile_arg0_as_int for `>>` / `<<`, ...) skip the unbox and
+    # produce `int >> sp_RbVal` in C — fails C compile. Compute the
+    # answer that mirrors the actual emit, before honouring the
+    # cache.
+    pa = poly_aref_call_type(nid)
+    if pa != ""
+      return pa
+    end
     # Cache lookup. analyze.rb's annotate_all_node_types fills
     # @nd_inferred_type for every reachable node OUTSIDE block bodies
     # (block-iteration scope is iterator-specific and dispatched at
@@ -16063,6 +16076,27 @@ class Compiler
   # `[]` (IntArray + Method, the optcarrot `__fetch__` shape), the
   # outer dispatch is guaranteed to land on a poly carrying an int
   # tag, and we can read it as `mrb_int` directly. Returns 0
+  # Return the type that compile_poly_method_call would actually emit
+  # for `<poly>[idx]`, or "" if `nid` isn't that shape. Used by
+  # infer_type to keep its static answer in sync with the emit; the
+  # cached annotation from analyze can lag the emit's narrow_int
+  # decision (block-param recvs short-circuit narrowing), and
+  # downstream consumers like compile_arg0_as_int rely on the
+  # answer matching the C type of the temp the emit produces.
+  def poly_aref_call_type(nid)
+    if @nd_type[nid] != "CallNode" || @nd_name[nid] != "[]"
+      return ""
+    end
+    recv_id = @nd_receiver[nid]
+    if recv_id < 0 || infer_type(recv_id) != "poly"
+      return ""
+    end
+    if poly_index_narrow_int(nid) == 1
+      return "int"
+    end
+    "poly"
+  end
+
   # whenever the chain doesn't fit the pattern, so the default
   # poly-typed temp is preserved for everything else.
   def poly_index_narrow_int(nid)
