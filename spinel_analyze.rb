@@ -20025,7 +20025,29 @@ class Compiler
     val_types = "".split(",")
     key_types = "".split(",")
     collect_param_hash_writes(nid, pname, val_types, key_types)
+    # Issue #408: also harvest signals from `pname.each do |k, v|`
+    # block bodies. Programs that read-only-iterate the hash never
+    # hit the `[]=` collector above, leaving the param widened to
+    # whatever poly-ish variant an earlier widening pinned it to.
+    collect_param_each_block_signals(nid, pname, val_types, key_types)
     if val_types.length == 0
+      # Issue #408 option B (Ori's "weaker fix"): when no concrete
+      # signals at all and the current type is poly-ish AND the
+      # body has an `each |k, v|` on the param, default to
+      # str_str_hash. This is unsound in general (a sym-keyed
+      # poly_poly_hash would mis-narrow), but covers the dominant
+      # Rails/Tep shape -- string-keyed hashes flowing through a
+      # cmeth body that just dispatches to a sibling-cmeth
+      # formatter. The narrowing only fires when no caller has
+      # established a non-string-keyed shape via the existing
+      # call-site widening, so the fallback applies exactly when
+      # the param's poly type is itself a fallback from missing
+      # call-site signal rather than a deliberate widening.
+      if (cur == "poly_poly_hash" || cur == "sym_poly_hash" || cur == "str_poly_hash") &&
+         param_has_each_kv?(nid, pname) == 1
+        @needs_str_str_hash = 1
+        return "str_str_hash"
+      end
       return ""
     end
     # Decide hash variant from the union of observed types. If any
@@ -20035,6 +20057,139 @@ class Compiler
     new_vt = unify_hash_value_types(val_types)
     new_kt = unify_hash_key_types(key_types, cur_kt)
     return compose_hash_type(new_kt, new_vt)
+  end
+
+  # Issue #408: walks `nid` and returns 1 if there is at least
+  # one `pname.each do |k, v|` shape on the param (regardless of
+  # what the block body does with k / v). Used by the option B
+  # weak-default fallback in infer_param_hash_from_writes.
+  def param_has_each_kv?(nid, pname)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "CallNode" && (@nd_name[nid] == "each" || @nd_name[nid] == "each_pair")
+      r_each_kv = @nd_receiver[nid]
+      if r_each_kv >= 0 && @nd_type[r_each_kv] == "LocalVariableReadNode" && @nd_name[r_each_kv] == pname
+        blk_each_kv = @nd_block[nid]
+        if blk_each_kv >= 0
+          # 2-arity block?
+          if get_block_param(nid, 1) != ""
+            return 1
+          end
+        end
+      end
+    end
+    cs_each_kv = []
+    push_child_ids(nid, cs_each_kv)
+    k_each_kv = 0
+    while k_each_kv < cs_each_kv.length
+      if param_has_each_kv?(cs_each_kv[k_each_kv], pname) == 1
+        return 1
+      end
+      k_each_kv = k_each_kv + 1
+    end
+    0
+  end
+
+  # Issue #408: walk `nid` for `pname.each do |k, v|` block
+  # expressions and harvest type signals from how `k` and `v`
+  # participate in `+`-chains in the body. A chain whose
+  # transitive leaves include both a string literal and a
+  # reference to k_pname / v_pname is treated as evidence the
+  # corresponding side is string-typed.
+  def collect_param_each_block_signals(nid, pname, val_types, key_types)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "each"
+      r_408 = @nd_receiver[nid]
+      if r_408 >= 0 && @nd_type[r_408] == "LocalVariableReadNode" && @nd_name[r_408] == pname
+        blk_408 = @nd_block[nid]
+        if blk_408 >= 0
+          k_pname_408 = get_block_param(nid, 0)
+          v_pname_408 = get_block_param(nid, 1)
+          body_408 = @nd_body[blk_408]
+          if body_408 >= 0
+            collect_each_block_concat_signals(body_408, k_pname_408, v_pname_408, val_types, key_types)
+          end
+        end
+      end
+    end
+    cs_408 = []
+    push_child_ids(nid, cs_408)
+    k_408 = 0
+    while k_408 < cs_408.length
+      collect_param_each_block_signals(cs_408[k_408], pname, val_types, key_types)
+      k_408 = k_408 + 1
+    end
+  end
+
+  def collect_each_block_concat_signals(nid, k_pname, v_pname, val_types, key_types)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "+"
+      leaves_408 = []
+      collect_concat_chain_leaves(nid, leaves_408)
+      has_str_lit_408 = 0
+      has_k_408 = 0
+      has_v_408 = 0
+      li_408 = 0
+      while li_408 < leaves_408.length
+        lt_408 = @nd_type[leaves_408[li_408]]
+        if lt_408 == "StringNode" || lt_408 == "InterpolatedStringNode"
+          has_str_lit_408 = 1
+        end
+        if lt_408 == "LocalVariableReadNode"
+          ln_408 = @nd_name[leaves_408[li_408]]
+          if ln_408 == k_pname && k_pname != ""
+            has_k_408 = 1
+          end
+          if ln_408 == v_pname && v_pname != ""
+            has_v_408 = 1
+          end
+        end
+        li_408 = li_408 + 1
+      end
+      if has_str_lit_408 == 1
+        if has_k_408 == 1 && not_in("string", key_types) == 1
+          key_types.push("string")
+        end
+        if has_v_408 == 1 && not_in("string", val_types) == 1
+          val_types.push("string")
+        end
+      end
+    end
+    cs_408b = []
+    push_child_ids(nid, cs_408b)
+    k_408b = 0
+    while k_408b < cs_408b.length
+      collect_each_block_concat_signals(cs_408b[k_408b], k_pname, v_pname, val_types, key_types)
+      k_408b = k_408b + 1
+    end
+  end
+
+  def collect_concat_chain_leaves(nid, leaves)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "+"
+      r_chain = @nd_receiver[nid]
+      if r_chain >= 0
+        collect_concat_chain_leaves(r_chain, leaves)
+      end
+      args_id_chain = @nd_arguments[nid]
+      if args_id_chain >= 0
+        args_chain = get_args(args_id_chain)
+        ai_chain = 0
+        while ai_chain < args_chain.length
+          collect_concat_chain_leaves(args_chain[ai_chain], leaves)
+          ai_chain = ai_chain + 1
+        end
+      end
+      return
+    end
+    leaves.push(nid)
   end
 
   def collect_param_hash_writes(nid, pname, val_types, key_types)
