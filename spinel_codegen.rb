@@ -6102,13 +6102,20 @@ class Compiler
       @needs_method = 1
     end
     # Same shape for the class-hierarchy tables / helpers:
-    # @needs_class_parents / @needs_class_ancestors /
-    # @needs_class_for_poly are set by compile-side arms too
-    # late to land before emit_class_runtime emits the gated
-    # sections. Pre-scan covers .superclass / .ancestors /
-    # dynamic is_a? / class-const comparators / case-when on
-    # Class subjects.
+    # @needs_class_table / @needs_class_parents /
+    # @needs_class_ancestors / @needs_class_for_poly are set
+    # by compile-side arms too late to land before
+    # emit_class_runtime emits the gated sections. Pre-scan
+    # covers .class / class-const value / .superclass /
+    # .ancestors / dynamic is_a? / class-const comparators /
+    # case-when on Class subjects.
     scan_for_class_hierarchy_usage(@root_id)
+    # Hierarchy helpers (parents, ancestors, for_poly) all
+    # reference sp_class_names; if any of them is set, the
+    # basic table emit has to come along too.
+    if @needs_class_parents == 1 || @needs_class_ancestors == 1 || @needs_class_for_poly == 1
+      @needs_class_table = 1
+    end
     emit_sym_runtime
     emit_ffi_externs
     # Emit program-specific regexp patterns
@@ -6345,12 +6352,21 @@ class Compiler
   # array (~one cache line for typical small programs, ~1KB at
   # spinel_codegen scale).
   def emit_class_runtime
-    # Issue #404 Phase 3: always emit the names table + sp_class_to_s,
-    # even when no user class is declared. sp_runtime.h's sp_poly_to_s
-    # has a SP_TAG_CLASS arm that forward-declares sp_class_to_s; an
-    # empty TU would otherwise leave that reference unresolved. A
-    # sentinel 1-slot array carries the empty case (ISO C forbids
-    # zero-length array initializers).
+    # When the program has no Class-value usage (no ConstantReadNode
+    # for a class/module name, no `.class` call, no hierarchy
+    # methods), skip the heavy table + helpers. sp_runtime.h's
+    # sp_poly_to_s forward-declares sp_class_to_s and references
+    # it from its SP_TAG_CLASS arm. -O3 DCE doesn't always remove
+    # sp_poly_to_s in time (it's `static const char *`, not
+    # `static inline`), so the link fails on the unresolved
+    # sp_class_to_s. Cheapest fix: emit a 1-line stub that
+    # returns "" regardless. SP_TAG_CLASS values can't exist at
+    # runtime when no class const is boxed, so the stub is
+    # statically dead but satisfies the linker.
+    if @needs_class_table == 0
+      emit_raw("static const char *sp_class_to_s(sp_Class c){(void)c;return \"\";}")
+      return
+    end
     emit_raw("/* sp_Class names table (issue #404) */")
     # Phase 3 Tier 4: unified cls_id space prefixed with
     # built-in primitives (cls_ids 0..BC-1), then user classes
@@ -9255,6 +9271,16 @@ class Compiler
       return
     end
     t_ch = @nd_type[nid]
+    if t_ch == "ConstantReadNode"
+      cname_ch = @nd_name[nid]
+      # ConstantReadNode resolving to a class / module / built-in
+      # class name lowers to a sp_Class value (`((sp_Class){<id>})`),
+      # which needs sp_class_names + sp_class_to_s for .to_s and
+      # the rest of the basic helpers.
+      if find_class_idx(cname_ch) >= 0 || find_module_idx_local(cname_ch) >= 0 || builtin_class_id_for_name(cname_ch) >= 0
+        @needs_class_table = 1
+      end
+    end
     if t_ch == "CallNode"
       mname_ch = @nd_name[nid]
       if mname_ch == "superclass"
@@ -9262,6 +9288,43 @@ class Compiler
       end
       if mname_ch == "ancestors"
         @needs_class_ancestors = 1
+      end
+      if mname_ch == "class"
+        # `.class` lowers to a sp_Class literal -- the names
+        # table plus sp_class_to_s back the .to_s / .name / .inspect
+        # chain that typically follows.
+        @needs_class_table = 1
+      end
+      if mname_ch == "to_s" || mname_ch == "name" || mname_ch == "inspect"
+        # Static recv check is too brittle pre-inference; flag
+        # @needs_class_table conservatively when these mnames
+        # appear with a recv that could be a Class value
+        # (ConstantReadNode or a chained .class call).
+        recv_to_s = @nd_receiver[nid]
+        if recv_to_s >= 0
+          rty_to_s = @nd_type[recv_to_s]
+          if rty_to_s == "ConstantReadNode" || rty_to_s == "ConstantPathNode"
+            @needs_class_table = 1
+          elsif rty_to_s == "CallNode" && @nd_name[recv_to_s] == "class"
+            @needs_class_table = 1
+          end
+        end
+      end
+      if mname_ch == "==" || mname_ch == "!=" || mname_ch == "eql?"
+        # sp_class_eq fires when an operand is a Class value;
+        # pre-scan flags conservatively on ConstantReadNode
+        # operands.
+        recv_eq = @nd_receiver[nid]
+        if recv_eq >= 0 && (@nd_type[recv_eq] == "ConstantReadNode" || @nd_type[recv_eq] == "ConstantPathNode")
+          @needs_class_table = 1
+        end
+        args_id_eq = @nd_arguments[nid]
+        if args_id_eq >= 0
+          aa_eq = get_args(args_id_eq)
+          if aa_eq.length > 0 && (@nd_type[aa_eq[0]] == "ConstantReadNode" || @nd_type[aa_eq[0]] == "ConstantPathNode")
+            @needs_class_table = 1
+          end
+        end
       end
       if mname_ch == "is_a?" || mname_ch == "kind_of?" || mname_ch == "instance_of?"
         args_id_ch = @nd_arguments[nid]
