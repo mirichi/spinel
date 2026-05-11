@@ -1,5 +1,5 @@
-var
-list2
-v
-default
-ancestor
+int
+string
+float
+symbol
+other

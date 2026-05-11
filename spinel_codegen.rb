@@ -21490,11 +21490,28 @@ class Compiler
         if pred_type == "poly"
           # `case <poly> when <lit>` — Issue #387. The pred_tmp is
           # an sp_RbVal; emit a tag-check + value-compare matched
-          # to the literal's type. Class consts (`when Foo`) are
-          # left for the future Class-object work; here we only
-          # cover the value-literal arms (sym/str/int/float/nil).
+          # to the literal's type.
           ct = @nd_type[cid]
-          if ct == "SymbolNode"
+          # Issue #404 Phase 3 Tier 4 follow-up: `case <poly> when
+          # ClassConst` -- Module#=== treats the recv as the class
+          # and the arg as the instance, so it's equivalent to
+          # `arg.is_a?(recv)`. sp_class_le over the precomputed
+          # ancestors handles user classes, modules, and built-ins
+          # uniformly through sp_class_for_poly.
+          handled_class_when = 0
+          if ct == "ConstantReadNode"
+            cname_w = @nd_name[cid]
+            cuid = unified_cls_id_for_name(cname_w)
+            if cuid >= 0
+              @needs_class_table = 1
+              @needs_class_ancestors = 1
+              result = result + "sp_class_le(sp_class_for_poly(" + tmp + "), (sp_Class){" + cuid.to_s + "LL})"
+              handled_class_when = 1
+            end
+          end
+          if handled_class_when == 1
+            # already appended above; skip literal-arms cascade
+          elsif ct == "SymbolNode"
             result = result + "(" + tmp + ".tag == SP_TAG_SYM && " + tmp + ".v.i == " + compile_expr(cid) + ")"
           elsif ct == "StringNode"
             result = result + "(" + tmp + ".tag == SP_TAG_STR && strcmp(" + tmp + ".v.s, " + compile_expr(cid) + ") == 0)"
