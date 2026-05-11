@@ -415,6 +415,14 @@ class Compiler
     @needs_rb_value = 0
     @needs_regexp = 0
     @needs_rand = 0
+    # sp_argv is declared in lib/sp_runtime.h as a static global,
+    # zero-initialized in BSS. main() only needs to malloc + dup
+    # the argv strings when user code actually reaches for ARGV;
+    # otherwise the GC mark loop (sp_runtime.h, sp_mark_externals)
+    # sees len=0 and skips, and the cost is zero. Flag is flipped
+    # by the ARGV ConstantReadNode arm and the ARGV.length /
+    # ARGV[i] dispatch sites.
+    @needs_argv = 0
     @regexp_patterns = "".split(",")
     @regexp_flags = "".split(",")
     # Dynamic-regex (InterpolatedRegularExpressionNode) call-site cache.
@@ -9138,10 +9146,48 @@ class Compiler
     emit_raw("}")
   end
 
+  # Walk the AST looking for `ARGV` references (ConstantReadNode
+  # named "ARGV"). Flips @needs_argv so emit_main's init gate
+  # has the right value before it runs. Single global name, so
+  # the scan is a flat tree walk -- linear in AST size.
+  def scan_for_argv(nid)
+    if nid < 0
+      return
+    end
+    if @needs_argv == 1
+      return
+    end
+    if @nd_type[nid] == "ConstantReadNode" && @nd_name[nid] == "ARGV"
+      @needs_argv = 1
+      return
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      scan_for_argv(cs[k])
+      k = k + 1
+    end
+  end
+
   def emit_main
     stmts = get_body_stmts(@root_id)
+    # Pre-scan the entire AST for ARGV ConstantReadNode references
+    # so @needs_argv lands before emit_main writes the init line.
+    # The compile-side arms (compile_expr's ARGV branch, the
+    # ARGV.length / [] dispatch) flip the flag too, but they run
+    # after the init line has already been emitted -- this scan
+    # is what makes the gate actually effective.
+    scan_for_argv(@root_id)
     emit_raw("int main(int argc,char**argv){")
-    emit_raw("  sp_argv.len=argc-1;sp_argv.data=(const char**)malloc(sizeof(const char*)*(argc>1?argc-1:1));{int _i;for(_i=0;_i<sp_argv.len;_i++)sp_argv.data[_i]=sp_str_dup_external(argv[_i+1]);}")
+    # Gate the ARGV ingest: sp_argv is BSS-zero-initialized
+    # (len=0, data=NULL), and sp_mark_externals' loop reads
+    # `sp_argv.len` first so an unused-ARGV program never
+    # touches the NULL data pointer. Programs that don't
+    # reference ARGV save the per-startup malloc + strdup loop.
+    if @needs_argv == 1
+      emit_raw("  sp_argv.len=argc-1;sp_argv.data=(const char**)malloc(sizeof(const char*)*(argc>1?argc-1:1));{int _i;for(_i=0;_i<sp_argv.len;_i++)sp_argv.data[_i]=sp_str_dup_external(argv[_i+1]);}")
+    end
     if @needs_rand == 1
       emit_raw("  srand((unsigned)time(NULL));")
     end
@@ -9777,6 +9823,7 @@ class Compiler
     end
     if t == "ConstantReadNode"
       if @nd_name[nid] == "ARGV"
+        @needs_argv = 1
         return "sp_argv"
       end
       rname = resolve_const_read_name(@nd_name[nid])
@@ -16092,9 +16139,11 @@ class Compiler
       # ARGV methods
       if rcname == "ARGV"
         if mname == "length"
+          @needs_argv = 1
           return "sp_argv.len"
         end
         if mname == "[]"
+          @needs_argv = 1
           idx_expr = compile_arg0(nid)
           return "((" + idx_expr + " < sp_argv.len) ? sp_argv.data[(int)" + idx_expr + "] : NULL)"
         end
