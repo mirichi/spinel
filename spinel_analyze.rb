@@ -4815,7 +4815,44 @@ class Compiler
         return poly_dispatch_return_type(mname)
       end
       # Method call on int (possible IntArray element storing object pointers)
-      if rt == "int"
+      # Issue #429: when recv is a LocalVariableReadNode whose
+      # var-type table entry hasn't been pinned yet (find_var_type
+      # returns ""), `rt` defaults to "int" via infer_type's
+      # LocalVariableReadNode fallback. The cross-class widening
+      # below would then pick the FIRST user class with a non-int
+      # `<mname>` return, silently widening `r = c.get(...)` to the
+      # wrong type when `c` is statically obj_<Other> but its type
+      # hasn't propagated through the iterative loop yet. Bail out
+      # of the int-recv path in that case ONLY when the candidates
+      # disagree -- if every class defining mname returns the same
+      # type, the widening's result is correct regardless of which
+      # one the recv actually points at. A single matching class
+      # (the multi_return_bare shape, where every callsite's recv
+      # is the same class) keeps the widening intact too.
+      recv_is_unresolved_local_429 = 0
+      if recv >= 0 && @nd_type[recv] == "LocalVariableReadNode" && find_var_type(@nd_name[recv]) == ""
+        unique_rt_429 = ""
+        diverged_429 = 0
+        ci_429 = 0
+        while ci_429 < @cls_names.length
+          if cls_find_method_direct(ci_429, mname) >= 0
+            mr_429 = cls_method_return(ci_429, mname)
+            if mr_429 != "int" && mr_429 != ""
+              if unique_rt_429 == ""
+                unique_rt_429 = mr_429
+              elsif unique_rt_429 != mr_429
+                diverged_429 = 1
+                ci_429 = @cls_names.length
+              end
+            end
+          end
+          ci_429 = ci_429 + 1
+        end
+        if diverged_429 == 1
+          recv_is_unresolved_local_429 = 1
+        end
+      end
+      if rt == "int" && recv_is_unresolved_local_429 == 0
         ci = 0
         while ci < @cls_names.length
           # Check zero-arg methods (getters)
