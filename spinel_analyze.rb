@@ -11632,6 +11632,20 @@ class Compiler
       if vt == "string"
         return "int_str_hash"
       end
+ # `kt == "int"` with `vt == "int"` is ambiguous: it could be a
+ # real int-keyed-int-valued hash (no native variant, would go
+ # to poly_poly_hash), OR it could be the analyzer's fallback
+ # when the key expression's type couldn't be resolved on the
+ # first pass (e.g. `parts[0]` where `parts` isn't declared
+ # yet). Promoting to poly_poly_hash here is destructive: a
+ # later pass that correctly resolves the key as "string" can't
+ # downgrade poly_poly_hash back to str_int_hash. Defer to the
+ # next pass instead. Non-int vt (array, obj, etc.) still
+ # routes through the catch-all below since those are
+ # unambiguous "real concrete write" signals.
+      if vt == "int" || vt == "bool" || vt == "nil"
+        return ""
+      end
     end
  # Non-string / non-symbol / non-int key types: Method, IntArray,
  # generic obj_X, or already-poly. Use poly_poly_hash so the runtime
