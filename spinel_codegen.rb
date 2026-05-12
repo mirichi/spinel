@@ -29845,9 +29845,17 @@ class Compiler
     return
   end
 
-  def compile_unless_return(nid, rt)
+ # Shared lowering for if- and unless-modifier-as-last-expr.
+ # `is_unless == 1` inverts the predicate and reads
+ # @nd_else_clause; the if path also threads elsif chains
+ # (subsequent IfNode) through a wrapping `else { ... }` to keep
+ # poly-is_a? predicate prologues from leaking declarations.
+  def compile_cond_return(nid, rt, is_unless)
     cond = compile_cond_expr(@nd_predicate[nid])
-    emit("  if (!(" + cond + ")) {")
+    if is_unless == 1
+      cond = "!(" + cond + ")"
+    end
+    emit("  if (" + cond + ") {")
     @indent = @indent + 1
     body = @nd_body[nid]
     if body >= 0
@@ -29858,11 +29866,23 @@ class Compiler
       end
     end
     @indent = @indent - 1
-    ec = @nd_else_clause[nid]
-    if ec >= 0
+    if is_unless == 1
+      sub = @nd_else_clause[nid]
+    else
+      sub = @nd_subsequent[nid]
+    end
+    if sub >= 0
+      if is_unless == 0 && @nd_type[sub] != "ElseNode"
+        emit("  } else {")
+        @indent = @indent + 1
+        compile_cond_return(sub, rt, 0)
+        @indent = @indent - 1
+        emit("  }")
+        return
+      end
       emit("  } else {")
       @indent = @indent + 1
-      eb = @nd_body[ec]
+      eb = @nd_body[sub]
       if eb >= 0
         compile_body_return(eb, rt)
       else
@@ -29881,51 +29901,11 @@ class Compiler
   end
 
   def compile_if_return(nid, rt)
-    cond = compile_cond_expr(@nd_predicate[nid])
-    emit("  if (" + cond + ") {")
-    @indent = @indent + 1
-    body = @nd_body[nid]
-    if body >= 0
-      compile_body_return(body, rt)
-    else
-      if rt != "void"
-        emit("  return " + c_return_default(rt) + ";")
-      end
-    end
-    @indent = @indent - 1
-    sub = @nd_subsequent[nid]
-    if sub >= 0
-      if @nd_type[sub] == "ElseNode"
-        emit("  } else {")
-        @indent = @indent + 1
-        eb = @nd_body[sub]
-        if eb >= 0
-          compile_body_return(eb, rt)
-        else
-          if rt != "void"
-            emit("  return " + c_return_default(rt) + ";")
-          end
-        end
-        @indent = @indent - 1
-      else
- # Wrap elsif in braces. See compile_if_stmt for the same
- # rationale: predicates that emit prologue C statements
- # (poly is_a? etc.) would leak declarations out of a bare
- # else because the bare else's body is one statement.
-        emit("  } else {")
-        @indent = @indent + 1
-        compile_if_return(sub, rt)
-        @indent = @indent - 1
-        emit("  }")
-        return
-      end
-    else
-      if rt != "void"
-        emit("  } else {")
-        emit("    return " + c_return_default(rt) + ";")
-      end
-    end
-    emit("  }")
+    compile_cond_return(nid, rt, 0)
+  end
+
+  def compile_unless_return(nid, rt)
+    compile_cond_return(nid, rt, 1)
   end
 
   def compile_case_match_return(nid, rt)
