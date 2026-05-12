@@ -490,7 +490,7 @@ static inline const char*sp_StrArray_get(sp_StrArray*a,mrb_int i){if(i<0)i+=a->l
  * length-clamping semantics as sp_IntArray_slice. Out-of-bounds start
  * returns an empty StrArray (we don't have a nullable form). */
 static sp_StrArray*sp_StrArray_slice(sp_StrArray*a,mrb_int start,mrb_int len){if(start<0)start+=a->len;if(start<0)start=0;sp_StrArray*b=sp_StrArray_new();if(start>=a->len||len<=0)return b;if(start+len>a->len)len=a->len-start;for(mrb_int i=0;i<len;i++)sp_StrArray_push(b,a->data[start+i]);return b;}
-static inline void sp_StrArray_set(sp_StrArray*a,mrb_int i,const char*v){if(i<0)i+=a->len;while(i>=a->len)sp_StrArray_push(a,"");a->data[i]=v;}
+static inline void sp_StrArray_set(sp_StrArray*a,mrb_int i,const char*v){if(i<0)i+=a->len;while(i>=a->len)sp_StrArray_push(a,sp_str_empty);a->data[i]=v;}
 static void sp_StrArray_reverse_bang(sp_StrArray*a){for(mrb_int i=0,j=a->len-1;i<j;i++,j--){const char*t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
 static void sp_StrArray_rotate_bang(sp_StrArray*a,mrb_int n){if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;const char**tmp=(const char**)malloc(sizeof(const char*)*a->len);for(mrb_int i=0;i<a->len;i++)tmp[i]=a->data[(i+n)%a->len];for(mrb_int i=0;i<a->len;i++)a->data[i]=tmp[i];free(tmp);}
 static int _sp_str_cmp(const void*a,const void*b){return strcmp(*(const char*const*)a,*(const char*const*)b);}
@@ -505,7 +505,7 @@ static mrb_int sp_StrArray_rindex(sp_StrArray*a,const char*v){for(mrb_int i=a->l
 static sp_StrArray*sp_StrArray_compact(sp_StrArray*a){sp_StrArray*r=sp_StrArray_new();for(mrb_int i=0;i<a->len;i++)if(a->data[i]!=NULL)sp_StrArray_push(r,a->data[i]);return r;}
 static const char*sp_StrArray_delete_at(sp_StrArray*a,mrb_int i){if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;const char*v=a->data[i];for(mrb_int j=i;j<a->len-1;j++)a->data[j]=a->data[j+1];a->len--;return v;}
 static const char*sp_StrArray_delete(sp_StrArray*a,const char*v){mrb_int w=0;const char*found=NULL;for(mrb_int i=0;i<a->len;i++){if(strcmp(a->data[i],v)!=0){a->data[w]=a->data[i];w++;}else{found=a->data[i];}}a->len=w;return found;}
-static void sp_StrArray_insert(sp_StrArray*a,mrb_int i,const char*v){if(i<0)i+=a->len+1;sp_StrArray_push(a,"");for(mrb_int j=a->len-1;j>i;j--)a->data[j]=a->data[j-1];a->data[i]=v;}
+static void sp_StrArray_insert(sp_StrArray*a,mrb_int i,const char*v){if(i<0)i+=a->len+1;sp_StrArray_push(a,sp_str_empty);for(mrb_int j=a->len-1;j>i;j--)a->data[j]=a->data[j-1];a->data[i]=v;}
 static void sp_StrArray_shuffle_bang(sp_StrArray*a){for(mrb_int i=a->len-1;i>0;i--){mrb_int j=(mrb_int)(rand()%(i+1));const char*t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
 static sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);sp_StrArray_shuffle_bang(r);return r;}
 
@@ -566,8 +566,8 @@ static void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
    If the field doesn't exist, returns "". */
 static const char*sp_str_field(const char*s,const char*sep,mrb_int n){
   size_t sl=strlen(sep);mrb_int cur=0;const char*p=s;
-  if(sl==0)return("");
-  while(cur<n){const char*f=strstr(p,sep);if(!f)return("");p=f+sl;cur++;}
+  if(sl==0)return sp_str_empty;
+  while(cur<n){const char*f=strstr(p,sep);if(!f)return sp_str_empty;p=f+sl;cur++;}
   const char*end=strstr(p,sep);size_t len=end?((size_t)(end-p)):strlen(p);
   char*r=sp_str_alloc_raw(len+1);memcpy(r,p,len);r[len]=0;return r;}
 /* Count fields in s split by sep (without allocating). */
@@ -1121,7 +1121,7 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
       return a;
     }
     if (a.cls_id == SP_BUILTIN_STR_ARRAY) {
-      sp_StrArray_push((sp_StrArray *)a.v.p, b.tag == SP_TAG_STR ? (const char *)b.v.p : "");
+      sp_StrArray_push((sp_StrArray *)a.v.p, b.tag == SP_TAG_STR ? (const char *)b.v.p : sp_str_empty);
       return a;
     }
   }
@@ -1276,7 +1276,7 @@ static jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
 static const char *sp_exc_msg[SP_EXC_STACK_MAX];
 static volatile int sp_exc_top = 0;
 static const char *sp_exc_cls[SP_EXC_STACK_MAX];
-static volatile const char *sp_last_exc_cls = "";
+static volatile const char *sp_last_exc_cls = sp_str_empty;
 static void sp_raise_cls(const char *cls, const char *msg) { if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
@@ -1412,7 +1412,7 @@ static void sio_grow(sp_StringIO *sio, int64_t need) { int64_t req = sio->pos + 
 static int64_t sio_write(sp_StringIO *sio, const char *d, int64_t dl) { sio_grow(sio, dl); if (sio->pos > sio->len) memset(sio->buf + sio->len, 0, sio->pos - sio->len); memcpy(sio->buf + sio->pos, d, dl); sio->pos += dl; if (sio->pos > sio->len) sio->len = sio->pos; sio->buf[sio->len] = '\0'; return dl; }
 static sp_StringIO *sp_StringIO_new(void) { sp_StringIO *s = (sp_StringIO *)calloc(1, sizeof(sp_StringIO)); s->buf = (char *)calloc(1, 64); s->cap = 63; return s; }
 static sp_StringIO *sp_StringIO_new_s(const char *init) { sp_StringIO *s = (sp_StringIO *)calloc(1, sizeof(sp_StringIO)); int64_t l = (int64_t)strlen(init); int64_t c = l < 63 ? 63 : l; s->buf = (char*)malloc(c+1); memcpy(s->buf, init, l); s->buf[l]='\0'; s->len = l; s->cap = c; return s; }
-static const char *sp_StringIO_string(sp_StringIO *s) { return s->buf ? s->buf : ""; }
+static const char *sp_StringIO_string(sp_StringIO *s) { return s->buf ? s->buf : sp_str_empty; }
 static int64_t sp_StringIO_pos(sp_StringIO *s) { return s->pos; }
 static int64_t sp_StringIO_size(sp_StringIO *s) { return s->len; }
 static int64_t sp_StringIO_write(sp_StringIO *s, const char *str) { return sio_write(s, str, (int64_t)strlen(str)); }
