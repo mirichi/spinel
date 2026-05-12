@@ -8536,17 +8536,20 @@ class Compiler
       ci = find_const_idx(cname2)
       next if ci < 0
       cur = @const_types[ci]
- # Only refine when the recorded type is the empty-hash default
- # (str_int_hash) or empty-array default (int_array).
-      next unless cur == "str_int_hash" || cur == "int_array"
+ # Refine when the recorded type is the empty-hash default
+ # (str_int_hash), empty-array default (int_array), or nil
+ # (from `@ivar = nil` lazy-init).
+      next unless cur == "str_int_hash" || cur == "int_array" || cur == "nil"
       expr_id = @nd_expression[sid]
       next unless expr_id >= 0
       next unless (cur == "str_int_hash" && is_empty_hash_literal(expr_id) == 1) ||
-                  (cur == "int_array" && is_empty_array_literal(expr_id) == 1)
+                  (cur == "int_array" && is_empty_array_literal(expr_id) == 1) ||
+                  (cur == "nil" && @nd_type[expr_id] == "NilNode")
  # Walk all class methods in the module looking for writes to
  # this ivar.
       key_t_set = "".split(",")
       val_t_set = "".split(",")
+      direct_t_set = "".split(",")
       body_stmts.each { |sid2|
         next unless @nd_type[sid2] == "DefNode"
         bid = @nd_body[sid2]
@@ -8592,6 +8595,9 @@ class Compiler
         @current_method_name = synth_name
         if iv_write
           scan_module_ivar_writes(bid, iname, key_t_set, val_t_set)
+          if cur == "nil"
+            scan_module_ivar_direct_writes(bid, iname, direct_t_set)
+          end
         else
           scan_module_const_writes(bid, iname, key_t_set, val_t_set)
         end
@@ -8614,8 +8620,49 @@ class Compiler
           @const_types[ci] = new_t
           mark_array_needs(new_t)
         end
+      elsif cur == "nil"
+ # `@ivar = nil` at module body → slot defaults to "nil" (mrb_int).
+ # Pick the widest non-nil write type observed in any cmeth body so
+ # `@ivar = <ptr>` later in `def self.configure` widens the slot.
+        new_t = pick_module_ivar_nil_widen(direct_t_set)
+        if new_t != "" && new_t != cur
+          @const_types[ci] = new_t
+        end
       end
     }
+  end
+
+ # Walk `nid`'s subtree collecting types of every InstanceVariableWriteNode
+ # whose name == iname. Used to widen module-level `@ivar = nil` slots
+ # when a later cmeth assigns a non-nil value (e.g. FFI pointer read).
+  def scan_module_ivar_direct_writes(nid, iname, type_set)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "InstanceVariableWriteNode" && @nd_name[nid] == iname
+      expr_id = @nd_expression[nid]
+      if expr_id >= 0
+        wt = infer_type(expr_id)
+        if wt != "" && wt != "nil"
+          uniq_push(type_set, wt)
+        end
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      scan_module_ivar_direct_writes(cs[k], iname, type_set)
+      k = k + 1
+    end
+  end
+
+  def pick_module_ivar_nil_widen(type_set)
+    return "" if type_set.length == 0
+    if type_set.length == 1
+      return type_set[0]
+    end
+    "poly"
   end
 
   def mark_hash_needs(t)
