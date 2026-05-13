@@ -17834,6 +17834,12 @@ class Compiler
       end
       j = j + 1
     end
+    if @cls_parents[ci] != ""
+      pi = find_class_idx(@cls_parents[ci])
+      if pi >= 0
+        return cls_has_attr_reader(pi, mname)
+      end
+    end
     0
   end
 
