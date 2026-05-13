@@ -20307,12 +20307,90 @@ class Compiler
     "sp_" + owner + "_" + sanitize_name(op) + "(" + cast + recv_c + ", " + rhs_c + ")"
   end
 
+  def if_branch_has_multi_stmt(body)
+    if body < 0
+      return 0
+    end
+    if get_stmts(body).length > 1
+      return 1
+    end
+    0
+  end
+
+ # Assign the value of an if-arm body to a temp, executing any
+ # leading side-effect statements before the assignment. Body
+ # convention: stmts[0..n-2] run for their side-effects;
+ # stmts[n-1] supplies the arm's value. Empty/missing body → "0".
+  def compile_if_arm_to_tmp(body, tmp, unified_t)
+    if body < 0
+      emit("  " + tmp + " = 0;")
+      return
+    end
+    stmts = get_stmts(body)
+    if stmts.length == 0
+      emit("  " + tmp + " = 0;")
+      return
+    end
+    i = 0
+    while i < stmts.length - 1
+      compile_stmt(stmts[i])
+      i = i + 1
+    end
+    last_id = stmts.last
+    val = compile_expr(last_id)
+    if unified_t == "poly" && infer_type(last_id) != "poly"
+      val = box_value_to_poly(infer_type(last_id), val)
+    end
+    emit("  " + tmp + " = " + val + ";")
+  end
+
   def compile_if_expr(nid)
     cond = compile_cond_expr(@nd_predicate[nid])
     unified_t = infer_type(nid)
+    body = @nd_body[nid]
+    sub = @nd_subsequent[nid]
+
+ # Side-effect-aware path: when any branch holds more than one
+ # statement, the leading stmts must execute conditionally. The
+ # plain ternary form drops them. Emit a real if-statement that
+ # assigns to a temp and return the temp as the expression value.
+ # Elsif chains recurse — the inner call returns either a temp or
+ # a ternary string, both valid expressions.
+    has_then_multi = if_branch_has_multi_stmt(body)
+    has_else_multi = 0
+    if sub >= 0 && @nd_type[sub] == "ElseNode"
+      has_else_multi = if_branch_has_multi_stmt(@nd_body[sub])
+    end
+    if has_then_multi == 1 || has_else_multi == 1
+      tmp = new_temp
+      emit("  " + c_type(unified_t) + " " + tmp + ";")
+      emit("  if (" + cond + ") {")
+      @indent = @indent + 1
+      compile_if_arm_to_tmp(body, tmp, unified_t)
+      @indent = @indent - 1
+      emit("  } else {")
+      @indent = @indent + 1
+      if sub >= 0 && @nd_type[sub] == "ElseNode"
+        compile_if_arm_to_tmp(@nd_body[sub], tmp, unified_t)
+      elsif sub >= 0
+        sub_val = compile_if_expr(sub)
+        sub_t = infer_type(sub)
+        if unified_t == "poly" && sub_t != "poly"
+          sub_val = box_value_to_poly(sub_t, sub_val)
+        end
+        emit("  " + tmp + " = " + sub_val + ";")
+      else
+        emit("  " + tmp + " = 0;")
+      end
+      @indent = @indent - 1
+      emit("  }")
+      return tmp
+    end
+
+ # Fast path: every branch is at most one statement, so the
+ # whole if-expression collapses to a C ternary.
     then_val = "0"
     then_t = "nil"
-    body = @nd_body[nid]
     if body >= 0
       stmts = get_stmts(body)
       if stmts.length > 0
@@ -20322,7 +20400,6 @@ class Compiler
     end
     else_val = "0"
     else_t = "nil"
-    sub = @nd_subsequent[nid]
     if sub >= 0
       if @nd_type[sub] == "ElseNode"
         eb = @nd_body[sub]
