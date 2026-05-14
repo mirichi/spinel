@@ -973,6 +973,38 @@ static const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const ch
   out[olen] = 0; return out;
 }
 
+/* String#gsub(regex, hash) — per-match hash lookup form. CRuby's
+ * semantics: each matched substring is looked up as a key in the
+ * hash; the value (if present) is the replacement, otherwise the
+ * matched substring is dropped (CRuby returns "", not the match).
+ * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
+static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
+  int64_t slen = (int64_t)strlen(str);
+  size_t cap = slen * 2 + 64; char *out = sp_str_alloc_raw(cap); size_t olen = 0;
+  int64_t pos = 0; int caps[64];
+  while (pos <= slen) {
+    int n = re_exec(pat, str, slen, pos, caps, 64);
+    if (n <= 0 || caps[0] < 0) break;
+    size_t before = caps[0] - pos;
+    int mlen = caps[1] - caps[0];
+    char keybuf[64];
+    char *key = mlen < (int)sizeof(keybuf) ? keybuf : (char *)malloc(mlen + 1);
+    memcpy(key, str + caps[0], mlen);
+    key[mlen] = 0;
+    const char *rep = sp_StrStrHash_has_key(h, key) ? sp_StrStrHash_get(h, key) : "";
+    size_t rlen = strlen(rep);
+    if (olen + before + rlen >= cap) { cap = (olen + before + rlen) * 2 + 64; out = (char *)realloc(out, cap); }
+    memcpy(out + olen, str + pos, before); olen += before;
+    memcpy(out + olen, rep, rlen); olen += rlen;
+    if (key != keybuf) free(key);
+    pos = caps[1]; if (caps[0] == caps[1]) pos++;
+  }
+  size_t rest = slen - pos;
+  if (olen + rest >= cap) { cap = olen + rest + 1; out = (char *)realloc(out, cap); }
+  memcpy(out + olen, str + pos, rest); olen += rest;
+  out[olen] = 0; return out;
+}
+
 static const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep) {
   int64_t slen = (int64_t)strlen(str); size_t rlen = strlen(rep);
   int caps[64];

@@ -14353,6 +14353,15 @@ class Compiler
         if a.length >= 2
           rpat = regex_pat_c_expr(a[0])
           if rpat != ""
+ # gsub(regex, hash) — per-match hash lookup form. Detect a
+ # str_str_hash second arg and route to the hash-aware
+ # runtime helper. The generic sp_re_gsub expects a const
+ # char * for `rep` and would otherwise smuggle the hash
+ # pointer through, producing garbage output.
+            rep_t = infer_type(a[1])
+            if rep_t == "str_str_hash"
+              return "sp_re_gsub_str_str_hash(" + rpat + ", " + rc + ", " + compile_expr(a[1]) + ")"
+            end
             return "sp_re_gsub(" + rpat + ", " + rc + ", " + compile_expr(a[1]) + ")"
           end
           return "sp_str_gsub(" + rc + ", " + compile_expr(a[0]) + ", " + compile_expr(a[1]) + ")"
