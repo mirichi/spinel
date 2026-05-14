@@ -17205,10 +17205,18 @@ class Compiler
               if kk < owner_df.length
                 def_id = owner_df[kk].to_i
                 if def_id >= 0
+ # Coerce an empty `{}` default to the param's declared
+ # hash variant (sp_SymStrHash_new vs the generic
+ # sp_StrIntHash_new). Same shape as the positional-arg
+ # branch in compile_call_args_with_defaults.
+                  def_expr = empty_hash_coerce(def_id, owner_pt[kk])
+                  if def_expr == ""
+                    def_expr = compile_expr(def_id)
+                  end
                   if ca == ""
-                    ca = compile_expr(def_id)
+                    ca = def_expr
                   else
-                    ca = ca + ", " + compile_expr(def_id)
+                    ca = ca + ", " + def_expr
                   end
                 end
               end
@@ -20084,6 +20092,20 @@ class Compiler
           if k < defaults.length
             def_id = defaults[k].to_i
             if def_id >= 0
+ # An empty `{}` default whose receiving param has been
+ # body-widened to a specific hash variant (e.g.
+ # `set_cookies:` to sp_SymStrHash via callers passing
+ # symbol-keyed hashes) needs to construct the matching
+ # empty container, not the generic sp_StrIntHash. Mirrors
+ # the positional-arg empty_hash_coerce branch above.
+              if k < ptypes.length
+                coerced_def_h = empty_hash_coerce(def_id, ptypes[k])
+                if coerced_def_h != ""
+                  result = result + coerced_def_h
+                  k = k + 1
+                  next
+                end
+              end
               result = result + compile_expr(def_id)
             else
               result = result + "0"
