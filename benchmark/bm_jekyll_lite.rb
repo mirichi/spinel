@@ -219,21 +219,9 @@ class Site
     emitter = HtmlEmitter.new
     content = emitter.emit(parser.tokens)
     tmpl = Template.new(@layout)
- # Hoist fm.get(...) into locals before composing the hash literal.
- # Inline method calls mixed with local-variable values widen the
- # hash to str_poly_hash even when every value is statically
- # string-typed: scan_locals' first pass walks the hash literal
- # before the local declarations have been merged into scope, so
- # the LV reads default to int, the call returns "" (unresolved),
- # and the value-type unification picks poly. With the hoist all
- # three values are LV reads that pass-2 resolves to string and
- # the literal types as str_str_hash (matches Template.render's
- # param signature).
-    title = fm.get("title")
-    author = fm.get("author")
     vars = {
-      "title" => title,
-      "author" => author,
+      "title" => fm.get("title"),
+      "author" => fm.get("author"),
       "content" => content
     }
     tmpl.render(vars)

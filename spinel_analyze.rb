@@ -14822,6 +14822,25 @@ class Compiler
     if cur_t == "str_int_hash" && new_t == "str_str_hash"
       return new_t
     end
+ # Pass-2 hash value refinement: pass-1 over-widened to
+ # X_poly_hash because one of the literal's values was a
+ # LocalVariableReadNode whose declared type wasn't yet in scope
+ # — infer_type fell back to int, the value types disagreed, and
+ # infer_hash_val_type_raw picked the poly_hash variant. Pass-2
+ # with the local declared can see every value resolve to the
+ # same concrete type; accept the same-key-family refinement.
+ # Without this, `vars = { "a" => fm.get, "b" => content }`
+ # lands at str_poly_hash even though both values are string.
+    if cur_t == "str_poly_hash"
+      if new_t == "str_str_hash" || new_t == "str_int_hash"
+        return new_t
+      end
+    end
+    if cur_t == "sym_poly_hash"
+      if new_t == "sym_str_hash" || new_t == "sym_int_hash"
+        return new_t
+      end
+    end
  # Tuple refinements: non-tuple → tuple, and tuple X → tuple Y.
     if is_tuple_type(new_t) == 1
       if is_tuple_type(cur_t) == 0 || cur_t != new_t
