@@ -20075,9 +20075,9 @@ class Compiler
  # the caller is more general than the callee) is unboxed via
  # the matching union field. Mirrors the #438 IntStrHash-key
  # unbox and extends it to user-method args.
-            result = result + compile_expr_for_expected_type(positional_ids[k], ptypes[k])
+            result = result + cast_away_volatile_arg(positional_ids[k], compile_expr_for_expected_type(positional_ids[k], ptypes[k]))
           else
-            result = result + compile_expr(positional_ids[k])
+            result = result + cast_away_volatile_arg(positional_ids[k], compile_expr(positional_ids[k]))
           end
         else
  # Use default value
@@ -20232,10 +20232,35 @@ class Compiler
       if k > 0
         result = result + ", "
       end
-      result = result + compile_expr(arg_ids[k])
+      result = result + cast_away_volatile_arg(arg_ids[k], compile_expr(arg_ids[k]))
       k = k + 1
     end
     result
+  end
+
+ # When the enclosing function uses setjmp (top-level begin/rescue),
+ # every pointer LV in main() is declared `volatile T *`. Passing
+ # such a local to a function that takes plain `T *` discards the
+ # volatile qualifier — gcc -Wdiscarded-qualifiers and clang's
+ # -Wincompatible-pointer-types-discards-qualifiers flag it. Casting
+ # away volatile is safe because the qualifier is strictly stronger
+ # than what the callee asks for. Mirrors the bigint-side cast at
+ # the operator dispatch (search for `(sp_Bigint *)`).
+  def cast_away_volatile_arg(arg_id, val)
+    if @needs_setjmp != 1
+      return val
+    end
+    if arg_id < 0
+      return val
+    end
+    if @nd_type[arg_id] != "LocalVariableReadNode"
+      return val
+    end
+    vt = find_var_declared_type(@nd_name[arg_id])
+    if vt == "" || type_is_pointer(vt) != 1
+      return val
+    end
+    "(" + c_type(vt) + ")" + val
   end
 
   def compile_proc_call_args(nid)
@@ -20273,13 +20298,13 @@ class Compiler
         tmp = new_temp
         at = infer_type(arg_ids[k])
         ct = c_type(at)
-        emit("  " + ct + " " + tmp + " = " + compile_expr(arg_ids[k]) + ";")
+        emit("  " + ct + " " + tmp + " = " + cast_away_volatile_arg(arg_ids[k], compile_expr(arg_ids[k])) + ";")
         if type_is_pointer(at) == 1
           emit("  SP_GC_ROOT(" + tmp + ");")
         end
         temps.push(tmp)
       else
-        temps.push(compile_expr(arg_ids[k]))
+        temps.push(cast_away_volatile_arg(arg_ids[k], compile_expr(arg_ids[k])))
       end
       k = k + 1
     end
