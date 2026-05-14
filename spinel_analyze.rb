@@ -1288,6 +1288,22 @@ class Compiler
     if pred_id < 0
       return ["", ""]
     end
+ # AndNode unwrap: `v.is_a?(C) && other_cond` should still narrow
+ # `v` to C in the then-arm — when the if-predicate is an AndNode
+ # whose left or right operand is a recognizable is_a?, peel that
+ # operand out and re-parse. Conservative: don't narrow across
+ # OrNode (one branch only carries the constraint).
+    if @nd_type[pred_id] == "AndNode"
+      l_isa = parse_is_a_predicate(@nd_left[pred_id])
+      if l_isa[0] != ""
+        return l_isa
+      end
+      r_isa = parse_is_a_predicate(@nd_right[pred_id])
+      if r_isa[0] != ""
+        return r_isa
+      end
+      return ["", ""]
+    end
     if @nd_type[pred_id] != "CallNode"
       return ["", ""]
     end
