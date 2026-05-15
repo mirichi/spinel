@@ -12587,6 +12587,11 @@ class Compiler
       end
     end
 
+ # `include` is handled at analyze time; at codegen it returns nil.
+    if mname == "include"
+      return "0"
+    end
+
  # Bare `new` inside a `def self.<m>` body resolves to
  # <CurrentClass>.new. Dispatched here rather than via the
  # later `mname == "new"` branch in compile_call_expr because
