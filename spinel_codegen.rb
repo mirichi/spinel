@@ -540,6 +540,13 @@ class Compiler
     @ffi_modules = "".split(",")          # module names that declared FFI
     @ffi_module_libs = "".split(",")      # ";"-joined -l names
     @ffi_module_cflags = "".split(",")    # ";"-joined cc flag strings
+    @ffi_module_includes = "".split(",")
+
+ # Struct registry (one entry per ffi_struct decl):
+    @ffi_struct_modules = "".split(",")
+    @ffi_struct_names = "".split(",")
+    @ffi_struct_field_names = "".split(",")
+    @ffi_struct_field_types = "".split(",")
  # Function registry (one entry per ffi_func decl):
     @ffi_func_modules = "".split(",")     # owning module name
     @ffi_func_names = "".split(",")       # C symbol name
@@ -4484,7 +4491,18 @@ class Compiler
  # Map an FFI type-spec symbol to the C type used in extern prototypes
  # and call-site casts. Unlike ffi_type_of (which collapses to Spinel
  # tokens), this preserves C-level detail (uint32_t vs size_t etc.).
-  def ffi_c_type_of(spec)
+  def ffi_find_struct(mod_name, s_name)
+    k = 0
+    while k < @ffi_struct_names.length
+      if @ffi_struct_modules[k] == mod_name && @ffi_struct_names[k] == s_name
+        return k
+      end
+      k = k + 1
+    end
+    -1
+  end
+
+  def ffi_c_type_of(spec, mname)
     if spec == "int"
       return "int"
     end
@@ -4536,6 +4554,9 @@ class Compiler
     end
     if spec == "void"
       return "void"
+    end
+    if ffi_find_struct(mname, spec) >= 0
+      return spec
     end
     ""
   end
@@ -4640,7 +4661,7 @@ class Compiler
         result = result + ", "
       end
       spec = arg_specs[k]
-      ctype = ffi_c_type_of(spec)
+      ctype = ffi_c_type_of(spec, @ffi_func_modules[fi])
  # `:str` forwards the raw `const char *` directly — casting would
  # discard `const` and trigger a warning. When the arg's static
  # type is poly (sp_RbVal), extract `.v.s` (issue #502). The
@@ -4668,6 +4689,8 @@ class Compiler
  # the mrb_float/mrb_int -> double/int64_t typedef-vs-spelling
  # mismatch (both widths match on every supported target).
         result = result + "((" + ctype + ")(" + compile_expr(call_args[k]) + ")->data)"
+      elsif ffi_find_struct(@ffi_func_modules[fi], spec) >= 0
+        result = result + "_ffi_from_" + @ffi_func_modules[fi] + "_" + spec + "(" + compile_expr(call_args[k]) + ")"
       else
         result = result + "((" + ctype + ")(" + compile_expr(call_args[k]) + "))"
       end
@@ -4679,6 +4702,9 @@ class Compiler
     ret_spec = @ffi_func_ret_specs[fi]
     if ret_spec == "void"
       return "(" + result + ", (mrb_int)0)"
+    end
+    if ffi_find_struct(@ffi_func_modules[fi], ret_spec) >= 0
+      return "_ffi_conv_" + @ffi_func_modules[fi] + "_" + ret_spec + "(" + result + ")"
     end
     result
   end
@@ -4740,29 +4766,51 @@ class Compiler
           ci = ci + 1
         end
       end
+      inc_str = @ffi_module_includes[mi]
+      if inc_str != ""
+        incs = inc_str.split(";")
+        ii = 0
+        while ii < incs.length
+          emit_raw("#include \"" + incs[ii] + "\"")
+          ii = ii + 1
+        end
+      end
       mi = mi + 1
     end
  # Extern function prototypes.
     fi = 0
     while fi < @ffi_func_names.length
       ret_spec = @ffi_func_ret_specs[fi]
-      ret_ctype = ffi_c_type_of(ret_spec)
-      arg_spec_joined = @ffi_func_arg_specs[fi]
-      arg_list = ""
-      if arg_spec_joined == ""
-        arg_list = "void"
-      else
-        specs = arg_spec_joined.split(";")
-        k = 0
-        while k < specs.length
-          if k > 0
-            arg_list = arg_list + ", "
-          end
-          arg_list = arg_list + ffi_c_type_of(specs[k])
-          k = k + 1
+      mname = @ffi_func_modules[fi]
+
+      has_inc = 0
+      mi = 0
+      while mi < @ffi_modules.length
+        if @ffi_modules[mi] == mname && @ffi_module_includes[mi] != ""
+          has_inc = 1
         end
+        mi = mi + 1
       end
-      emit_raw("extern " + ret_ctype + " " + @ffi_func_names[fi] + "(" + arg_list + ");")
+
+      if has_inc == 0
+        ret_ctype = ffi_c_type_of(ret_spec, mname)
+        arg_spec_joined = @ffi_func_arg_specs[fi]
+        arg_list = ""
+        if arg_spec_joined == ""
+          arg_list = "void"
+        else
+          specs = arg_spec_joined.split(";")
+          k = 0
+          while k < specs.length
+            if k > 0
+              arg_list = arg_list + ", "
+            end
+            arg_list = arg_list + ffi_c_type_of(specs[k], mname)
+            k = k + 1
+          end
+        end
+        emit_raw("extern " + ret_ctype + " " + @ffi_func_names[fi] + "(" + arg_list + ");")
+      end
       fi = fi + 1
     end
  # Buffer storage — one static char array per ffi_buffer decl.
@@ -4772,6 +4820,38 @@ class Compiler
       bi = bi + 1
     end
     emit_raw("")
+  end
+
+  def emit_ffi_struct_helpers
+    bi = 0
+    while bi < @ffi_struct_names.length
+      mname = @ffi_struct_modules[bi]
+      sname = @ffi_struct_names[bi]
+      fnames = @ffi_struct_field_names[bi].split(";")
+      c_cls = "sp_" + mname + "_" + sname
+      
+      emit_raw("static " + c_cls + " _ffi_conv_" + mname + "_" + sname + "(" + sname + " c) {")
+      emit_raw("  " + c_cls + " obj;")
+      f = 0
+      while f < fnames.length
+        emit_raw("  obj.iv_" + fnames[f] + " = c." + fnames[f] + ";")
+        f = f + 1
+      end
+      emit_raw("  return obj;")
+      emit_raw("}")
+
+      emit_raw("static " + sname + " _ffi_from_" + mname + "_" + sname + "(" + c_cls + " obj) {")
+      emit_raw("  " + sname + " c;")
+      f = 0
+      while f < fnames.length
+        emit_raw("  c." + fnames[f] + " = obj.iv_" + fnames[f] + ";")
+        f = f + 1
+      end
+      emit_raw("  return c;")
+      emit_raw("}")
+      
+      bi = bi + 1
+    end
   end
 
 
@@ -6353,6 +6433,7 @@ class Compiler
  # forward declaration.
     emit_class_runtime
     emit_class_structs
+    emit_ffi_struct_helpers
     emit_raw("/*TUPLE_INSERT_POINT*/")
     emit_gc_scan_functions
     emit_toplevel_ivar_decls
@@ -32251,6 +32332,16 @@ class Compiler
       @ffi_module_libs = val
     elsif name == "@ffi_module_cflags"
       @ffi_module_cflags = val
+    elsif name == "@ffi_module_includes"
+      @ffi_module_includes = val
+    elsif name == "@ffi_struct_modules"
+      @ffi_struct_modules = val
+    elsif name == "@ffi_struct_names"
+      @ffi_struct_names = val
+    elsif name == "@ffi_struct_field_names"
+      @ffi_struct_field_names = val
+    elsif name == "@ffi_struct_field_types"
+      @ffi_struct_field_types = val
     elsif name == "@ffi_func_modules"
       @ffi_func_modules = val
     elsif name == "@ffi_func_names"

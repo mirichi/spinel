@@ -538,6 +538,13 @@ class Compiler
     @ffi_modules = "".split(",")          # module names that declared FFI
     @ffi_module_libs = "".split(",")      # ";"-joined -l names
     @ffi_module_cflags = "".split(",")    # ";"-joined cc flag strings
+    @ffi_module_includes = "".split(",")  # ";"-joined #include strings
+
+ # Struct registry (one entry per ffi_struct decl):
+    @ffi_struct_modules = "".split(",")
+    @ffi_struct_names = "".split(",")
+    @ffi_struct_field_names = "".split(",")
+    @ffi_struct_field_types = "".split(",")
  # Function registry (one entry per ffi_func decl):
     @ffi_func_modules = "".split(",")     # owning module name
     @ffi_func_names = "".split(",")       # C symbol name
@@ -9530,12 +9537,24 @@ class Compiler
     @ffi_modules.push(mname)
     @ffi_module_libs.push("")
     @ffi_module_cflags.push("")
+    @ffi_module_includes.push("")
     @ffi_modules.length - 1
   end
 
  # Map an FFI type-spec symbol (e.g. "uint32", "str", "ptr") to a Spinel
  # type token ("int", "string", "ptr"). Returns "" on unknown input.
-  def ffi_type_of(spec)
+  def ffi_find_struct(mod_name, s_name)
+    k = 0
+    while k < @ffi_struct_names.length
+      if @ffi_struct_modules[k] == mod_name && @ffi_struct_names[k] == s_name
+        return k
+      end
+      k = k + 1
+    end
+    -1
+  end
+
+  def ffi_type_of(spec, mname)
     if spec == "int" || spec == "uint32" || spec == "int32" || spec == "uint16" || spec == "int16" || spec == "uint8" || spec == "int8" || spec == "size_t" || spec == "long"
       return "int"
     end
@@ -9565,6 +9584,9 @@ class Compiler
     end
     if spec == "void"
       return "void"
+    end
+    if ffi_find_struct(mname, spec) >= 0
+      return "obj_" + mname + "_" + spec
     end
     ""
   end
@@ -9667,6 +9689,64 @@ class Compiler
       return
     end
 
+    if dname == "ffi_include"
+      if args.length != 1
+        ffi_error(mname, dname, "expected 1 arg (header string)")
+      end
+      inc = ffi_arg_str(args[0])
+      if inc == ""
+        ffi_error(mname, dname, "argument must be a string literal")
+      end
+      if @ffi_module_includes[mi] == ""
+        @ffi_module_includes[mi] = inc
+      else
+        @ffi_module_includes[mi] = @ffi_module_includes[mi] + ";" + inc
+      end
+      return
+    end
+
+    if dname == "ffi_struct"
+      if args.length != 2
+        ffi_error(mname, dname, "expected 2 args (name, field array)")
+      end
+      sname = ffi_arg_str(args[0])
+      if sname == ""
+        ffi_error(mname, dname, "first arg must be a symbol (struct name)")
+      end
+      if @nd_type[args[1]] != "ArrayNode"
+        ffi_error(mname, dname, "second arg must be an array of fields")
+      end
+      field_elems = parse_id_list(@nd_elements[args[1]])
+      fnames = ""
+      ftypes = ""
+      k = 0
+      while k < field_elems.length
+        fe = field_elems[k]
+        if @nd_type[fe] != "ArrayNode"
+          ffi_error(mname, dname, "each field must be an array [:name, :type]")
+        end
+        fparts = parse_id_list(@nd_elements[fe])
+        if fparts.length != 2
+          ffi_error(mname, dname, "each field must be exactly [:name, :type]")
+        end
+        fname = ffi_arg_str(fparts[0])
+        ftype = ffi_arg_str(fparts[1])
+        if k > 0
+          fnames = fnames + ";"
+          ftypes = ftypes + ";"
+        end
+        fnames = fnames + fname
+        ftypes = ftypes + ftype
+        k = k + 1
+      end
+      @ffi_struct_modules.push(mname)
+      @ffi_struct_names.push(sname)
+      @ffi_struct_field_names.push(fnames)
+      @ffi_struct_field_types.push(ftypes)
+      collect_ffi_struct_class(mname + "_" + sname, fnames, ftypes, mname)
+      return
+    end
+
     if dname == "ffi_cflags"
       if args.length != 1
         ffi_error(mname, dname, "expected 1 arg (cflags string)")
@@ -9701,7 +9781,7 @@ class Compiler
       k = 0
       while k < arg_elems.length
         spec = ffi_arg_str(arg_elems[k])
-        tok = ffi_type_of(spec)
+        tok = ffi_type_of(spec, mname)
         if tok == "" || tok == "void"
           ffi_error(mname, dname, "unknown or invalid arg type spec '" + spec + "' in " + fname)
         end
@@ -9714,7 +9794,7 @@ class Compiler
         k = k + 1
       end
       ret_spec = ffi_arg_str(args[2])
-      ret_tok = ffi_type_of(ret_spec)
+      ret_tok = ffi_type_of(ret_spec, mname)
       if ret_tok == ""
         ffi_error(mname, dname, "unknown return type spec '" + ret_spec + "' in " + fname)
       end
@@ -9939,6 +10019,71 @@ class Compiler
     @cls_cmeth_scope_names.push("")
     @cls_cmeth_scope_types.push("")
     @cls_meth_has_yield.push("0")
+  end
+
+  def collect_ffi_struct_class(cname, fnames_str, ftypes_str, mname)
+    ci = @cls_names.length
+    @cls_names.push(cname)
+    @cls_is_value_type.push(1)
+    @cls_is_sra.push(0)
+    @cls_parents.push("")
+    @cls_includes.push("")
+    @cls_ivar_names.push("")
+    @cls_ivar_types.push("")
+    @cls_ivar_init_definite.push("")
+    @cls_ivar_observed_types.push("")
+    @cls_ivar_nil_checked.push("")
+    @cls_meth_names.push("")
+    @cls_meth_params.push("")
+    @cls_meth_ptypes.push("")
+    @cls_meth_returns.push("")
+    @cls_meth_bodies.push("")
+    @cls_meth_defaults.push("")
+    @cls_meth_ptypes_empty.push("")
+    @cls_attr_readers.push("")
+    @cls_attr_writers.push("")
+    @cls_cmeth_names.push("")
+    @cls_cmeth_params.push("")
+    @cls_cmeth_ptypes.push("")
+    @cls_cmeth_returns.push("")
+    @cls_cmeth_bodies.push("")
+    @cls_cmeth_defaults.push("")
+    @cls_cmeth_scope_names.push("")
+    @cls_cmeth_scope_types.push("")
+    @cls_meth_has_yield.push("")
+
+    fnames = fnames_str.split(";")
+    ftypes = ftypes_str.split(";")
+    k = 0
+    init_ptypes = ""
+    while k < fnames.length
+      fname = fnames[k]
+      ftype = ftypes[k]
+      if fname != ""
+        iname = "@" + fname
+        tok = ffi_type_of(ftype, mname)
+        if tok == ""
+          tok = "int"
+        end
+        add_ivar(ci, iname, tok)
+        append_attr_reader(ci, fname)
+        append_attr_writer(ci, fname)
+        if k > 0
+          init_ptypes = init_ptypes + ","
+        end
+        init_ptypes = init_ptypes + tok
+      end
+      k = k + 1
+    end
+
+    init_params = fnames.join(",")
+    append_cls_meth(ci, "initialize", init_params, init_ptypes, "void", -1, "")
+    @cls_meth_has_yield[ci] = "0"
+    bodies = @cls_meth_bodies[ci].split(";")
+    if bodies.length > 0
+      bodies[0] = "-2"
+      @cls_meth_bodies[ci] = bodies.join(";")
+    end
   end
 
   def collect_struct_class(cname, call_nid)
@@ -22779,6 +22924,11 @@ class Compiler
     buf = ir_emit_sa(buf, "@ffi_modules", @ffi_modules)
     buf = ir_emit_sa(buf, "@ffi_module_libs", @ffi_module_libs)
     buf = ir_emit_sa(buf, "@ffi_module_cflags", @ffi_module_cflags)
+    buf = ir_emit_sa(buf, "@ffi_module_includes", @ffi_module_includes)
+    buf = ir_emit_sa(buf, "@ffi_struct_modules", @ffi_struct_modules)
+    buf = ir_emit_sa(buf, "@ffi_struct_names", @ffi_struct_names)
+    buf = ir_emit_sa(buf, "@ffi_struct_field_names", @ffi_struct_field_names)
+    buf = ir_emit_sa(buf, "@ffi_struct_field_types", @ffi_struct_field_types)
     buf = ir_emit_sa(buf, "@ffi_func_modules", @ffi_func_modules)
     buf = ir_emit_sa(buf, "@ffi_func_names", @ffi_func_names)
     buf = ir_emit_sa(buf, "@ffi_func_arg_types", @ffi_func_arg_types)
