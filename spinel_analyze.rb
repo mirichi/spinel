@@ -4138,6 +4138,20 @@ class Compiler
       return "int"
     end
     if mname == "index" || mname == "find_index" || mname == "rindex"
+ # Issue #532: `String#index` / `String#rindex` now return
+ # sp_RbVal (boxed nil for not-found, boxed int for found) so the
+ # CRuby idiom `pos = s.index(...); break if pos.nil?` works.
+ # Array#index / #find_index keep returning int for now -- the
+ # same fix would apply structurally but isn't part of #532's
+ # reproduction surface; widening there cascades through more
+ # call sites that consume the result as a raw array index.
+      if recv >= 0
+        rt_idx = infer_type(recv)
+        if rt_idx == "string" || rt_idx == "mutable_str"
+          @needs_rb_value = 1
+          return "poly"
+        end
+      end
       return "int"
     end
     if mname == "delete_at"

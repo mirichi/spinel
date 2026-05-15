@@ -11295,6 +11295,19 @@ class Compiler
     "0"
   end
 
+ # Compile `nid` as an mrb_int expression, unboxing the result via
+ # `.v.i` when the static type is poly. Mirrors compile_arg0_as_int
+ # for arbitrary expression positions (not just the first arg). Use
+ # at int-expecting C call sites whose source-level operand may now
+ # be poly because of nullable widenings like #532's `String#index`.
+  def compile_expr_as_int(nid)
+    ce = compile_expr(nid)
+    if infer_type(nid) == "poly"
+      return "(" + ce + ").v.i"
+    end
+    ce
+  end
+
  # Like compile_arg0, but coerces a poly arg to mrb_float through
  # sp_poly_to_f, which dispatches on the runtime tag (INT->cast,
  # FLT->v.f, etc.). Use at call sites that pass the arg directly to
@@ -14671,6 +14684,14 @@ class Compiler
       return rc
     end
     if mname == "index"
+ # Issue #532: widen the return to sp_RbVal (boxed nil for the
+ # -1 not-found sentinel, boxed int for found) so `pos.nil?`,
+ # `pos == nil`, and `puts pos.inspect` all behave per CRuby.
+ # Downstream callers that consume `pos` as a raw int unbox via
+ # the existing poly-handling paths. The 2-arg `start` may itself
+ # be poly when the loop idiom assigns from a prior index call
+ # (`i = pos + 1`); unbox it via compile_expr_as_int.
+      @needs_rb_value = 1
       args_id_idx = @nd_arguments[nid]
       if args_id_idx >= 0
         a_idx = get_args(args_id_idx)
@@ -14679,26 +14700,28 @@ class Compiler
  # silently dropped `start` and re-emitted the 1-arg call,
  # so successive `s.index(sub, dot1+1)` walks all returned
  # the first match (instead of the next one after `dot1`).
-          return "sp_str_index_from(" + rc + ", " + compile_expr(a_idx[0]) + ", " + compile_expr(a_idx[1]) + ")"
+          return "sp_str_index_from_poly(" + rc + ", " + compile_expr(a_idx[0]) + ", " + compile_expr_as_int(a_idx[1]) + ")"
         end
       end
-      return "sp_str_index(" + rc + ", " + compile_arg0(nid) + ")"
+      return "sp_str_index_poly(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "rindex"
+ # Same widening as String#index (#532).
+      @needs_rb_value = 1
       args_id_ri = @nd_arguments[nid]
       if args_id_ri >= 0
         a_ri = get_args(args_id_ri)
         if a_ri.length >= 1
- # `s.rindex(/regex/)` routes through sp_re_rindex; the plain
- # string variant (sp_str_rindex) would have lowered the regex
+ # `s.rindex(/regex/)` routes through sp_re_rindex_poly; the plain
+ # string variant (sp_str_rindex_poly) would have lowered the regex
  # pat to `0` and crashed at strlen(NULL). Issue #504.
           rpat_ri = regex_pat_c_expr(a_ri[0])
           if rpat_ri != ""
-            return "sp_re_rindex(" + rpat_ri + ", " + rc + ")"
+            return "sp_re_rindex_poly(" + rpat_ri + ", " + rc + ")"
           end
         end
       end
-      return "sp_str_rindex(" + rc + ", " + compile_arg0(nid) + ")"
+      return "sp_str_rindex_poly(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "tr"
       args_id = @nd_arguments[nid]
@@ -14751,11 +14774,11 @@ class Compiler
           end
           if a.length >= 2
  # s[0, 2]
-            return fn + "(" + lprefix + ", " + compile_expr(a[0]) + ", " + compile_expr(a[1]) + ")"
+            return fn + "(" + lprefix + ", " + compile_expr_as_int(a[0]) + ", " + compile_expr_as_int(a[1]) + ")"
           end
         end
       end
-      return fn + "(" + lprefix + ", " + compile_arg0(nid) + ", 1)"
+      return fn + "(" + lprefix + ", " + compile_arg0_as_int(nid) + ", 1)"
     end
     if mname == "reverse"
       return "sp_str_reverse(" + rc + ")"
@@ -14861,10 +14884,10 @@ class Compiler
       if args_id >= 0
         a = get_args(args_id)
         if a.length >= 2
-          return "sp_str_sub_range(" + rc + ", " + compile_expr(a[0]) + ", " + compile_expr(a[1]) + ")"
+          return "sp_str_sub_range(" + rc + ", " + compile_expr_as_int(a[0]) + ", " + compile_expr_as_int(a[1]) + ")"
         end
       end
-      return "sp_str_sub_range(" + rc + ", " + compile_arg0(nid) + ", 1)"
+      return "sp_str_sub_range(" + rc + ", " + compile_arg0_as_int(nid) + ", 1)"
     end
     if mname == "center"
       args_id = @nd_arguments[nid]
@@ -18822,6 +18845,13 @@ class Compiler
     end
     if mname == "to_s"
       return "sp_poly_to_s(" + rc + ")"
+    end
+ # `<poly>.inspect` -- canonical Ruby-style representation
+ # (nil -> "nil", strings quoted, etc.). #532's
+ # `puts pos.inspect` flows through this when pos came from
+ # the nullable `String#index`.
+    if mname == "inspect"
+      return "sp_poly_inspect(" + rc + ")"
     end
     if mname == "to_i"
  # Unbox the poly value's int payload. For SP_TAG_INT it's the

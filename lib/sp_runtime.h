@@ -1202,6 +1202,18 @@ static sp_RbVal sp_box_class(sp_Class c) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.c
    when non-NULL. */
 static inline mrb_int sp_obj_cls_id_of(void *p) { return p ? *(mrb_int *)p : 0; }
 static sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
+/* String#index / #rindex return a boxed nil for not-found, boxed
+   int for found. Issue #532: typed-int slot can't represent CRuby's
+   nil-vs-real-index distinction in-band; widening the result type
+   to sp_RbVal at the call site lets `pos.nil?` and `puts pos.inspect`
+   work via the standard poly-tag dispatch. The -1 sentinel comes
+   from the underlying sp_str_*_index helpers; we widen here at the
+   boxing layer so existing call sites that want the raw int still
+   work via `sp_str_index` directly. */
+static sp_RbVal sp_str_index_poly(const char *s, const char *sub) { mrb_int n = sp_str_index(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+static sp_RbVal sp_str_index_from_poly(const char *s, const char *sub, mrb_int start) { mrb_int n = sp_str_index_from(s, sub, start); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+static sp_RbVal sp_str_rindex_poly(const char *s, const char *sub) { mrb_int n = sp_str_rindex(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+static sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 static sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj(p, cls_id) : sp_box_nil(); }
 /* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
    cls_id so the dispatch path is uniform. */

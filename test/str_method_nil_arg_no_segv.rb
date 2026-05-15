@@ -14,7 +14,7 @@
 
 p "foo".count    # CRuby: ArgumentError. spinel: 0 (was: SEGV)
 p "foo".delete   # CRuby: ArgumentError. spinel: "foo" unchanged (was: SEGV)
-p "foo".rindex(/missing/)  # CRuby: nil. spinel: -1 (was: SEGV)
+p "foo".rindex(/missing/)  # CRuby + spinel post-#532: nil. (was: -1)
 p "abcdabcd".rindex(/c/)   # CRuby & spinel: 6 (new sp_re_rindex helper)
 p "foo".send(:<<)          # CRuby: ArgumentError. spinel: "foo" (was: meaningless int)
 
