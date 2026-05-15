@@ -18734,7 +18734,17 @@ class Compiler
           str_fn_gs = mname == "gsub" ? "sp_str_gsub" : "sp_str_sub"
           rep_gs = compile_expr(a_gs[1])
           if rpat_gs != ""
-            call_gs = fn_gs + "(" + rpat_gs + ", " + recv_tmp + ".v.s, " + rep_gs + ")"
+ # gsub(regex, hash) on the SP_TAG_STR poly arm. Issue #503:
+ # the typed-receiver path (compile_string_method_expr) routes
+ # str_str_hash replacements through `sp_re_gsub_str_str_hash`;
+ # the poly arm previously fell through to `sp_re_gsub` and
+ # smuggled the hash pointer through where `const char *rep`
+ # is expected. Mirror the typed-receiver branch here.
+            if mname == "gsub" && infer_type(a_gs[1]) == "str_str_hash"
+              call_gs = "sp_re_gsub_str_str_hash(" + rpat_gs + ", " + recv_tmp + ".v.s, " + rep_gs + ")"
+            else
+              call_gs = fn_gs + "(" + rpat_gs + ", " + recv_tmp + ".v.s, " + rep_gs + ")"
+            end
           else
             call_gs = str_fn_gs + "(" + recv_tmp + ".v.s, " + compile_expr(a_gs[0]) + ", " + rep_gs + ")"
           end
