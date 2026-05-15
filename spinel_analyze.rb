@@ -17302,6 +17302,28 @@ class Compiler
               widen_ptypes_from_args(arg_ids, pnames, ptypes)
               cls_meth_ptypes_put(ci, midx, ptypes)
             end
+ # Subclass-overridden methods are reached via the same
+ # implicit-self call at runtime (the cls_id-switch
+ # dispatch at compile_call_expr's imeth arm). Widen each
+ # descendant's same-name override from the same call site
+ # so their C signatures agree on the param types. Issue
+ # #516: without this, Sub#consume's `row` stayed at the
+ # int default and `row["id"]` failed to dispatch.
+            ovr_ci = 0
+            while ovr_ci < @cls_names.length
+              if ovr_ci != ci && cls_is_descendant(ovr_ci, ci) == 1
+                ovr_midx = cls_find_method_direct(ovr_ci, mname)
+                if ovr_midx >= 0
+                  ovr_ptypes = cls_meth_ptypes_get(ovr_ci, ovr_midx)
+                  if ovr_ptypes.length > 0
+                    ovr_pnames = cls_meth_pnames_get(ovr_ci, ovr_midx)
+                    widen_ptypes_from_args(arg_ids, ovr_pnames, ovr_ptypes)
+                    cls_meth_ptypes_put(ovr_ci, ovr_midx, ovr_ptypes)
+                  end
+                end
+              end
+              ovr_ci = ovr_ci + 1
+            end
           end
         end
       end
