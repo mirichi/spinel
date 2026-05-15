@@ -17089,7 +17089,7 @@ class Compiler
           if args_id >= 0
             arg_ids = get_args(args_id)
             if arg_ids.length >= 2
-              return "sp_str_concat(sp_str_concat(" + compile_expr(arg_ids[0]) + ", \"/\"), " + compile_expr(arg_ids[1]) + ")"
+              return "sp_str_concat(sp_str_concat(" + compile_expr(arg_ids[0]) + ", " + c_string_literal("/") + "), " + compile_expr(arg_ids[1]) + ")"
             end
           end
           return "\"\""

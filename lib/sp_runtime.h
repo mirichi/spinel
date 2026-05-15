@@ -227,14 +227,7 @@ static inline size_t sp_str_byte_len(const char *s) {
   if (!s) return 0;
   unsigned char marker = ((const unsigned char *)s)[-1];
   if (marker == 0xfe || marker == 0xfc) {
-    const char *body = s - 1;
-    const sp_str_hdr *h = sp_str_heap;
-    while (h) {
-      if ((const char *)(h + 1) == body) {
-        return h->len;
-      }
-      h = h->next;
-    }
+    return (((const sp_str_hdr *)(s - 1)) - 1)->len;
   }
   return strlen(s);
 }
@@ -243,15 +236,7 @@ static inline void sp_str_set_len(char *s, size_t len) {
   if (!s) return;
   unsigned char marker = ((unsigned char *)s)[-1];
   if (marker == 0xfe || marker == 0xfc) {
-    char *body = s - 1;
-    sp_str_hdr *h = sp_str_heap;
-    while (h) {
-      if ((char *)(h + 1) == body) {
-        h->len = len;
-        return;
-      }
-      h = h->next;
-    }
+    (((sp_str_hdr *)(s - 1)) - 1)->len = len;
   }
 }
 
@@ -760,7 +745,7 @@ static const char*sp_float_to_s(mrb_float f){
 #define sp_float_inspect sp_float_to_s
 /* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
    plus any non-printable byte as \xNN. Output is always ASCII-safe. */
-static const char*sp_str_inspect(const char*s){if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=strlen(s);size_t cap=sl*4+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
+static const char*sp_str_inspect(const char*s){if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=sl*4+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
 static const char*sp_str_upcase(const char*s){size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=toupper((unsigned char)s[i]);return r;}
 static const char*sp_str_downcase(const char*s){size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=tolower((unsigned char)s[i]);return r;}
 static const char*sp_str_swapcase(const char*s){size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++){unsigned char c=(unsigned char)s[i];if(isupper(c))r[i]=tolower(c);else if(islower(c))r[i]=toupper(c);else r[i]=s[i];}return r;}
@@ -828,7 +813,7 @@ static const char*sp_str_rstrip(const char*s){size_t l=strlen(s);while(l>0&&issp
 static const char*sp_str_dup(const char*s){char*r=sp_str_alloc_raw(strlen(s)+1);strcpy(r,s);return r;}
 
 typedef struct{char*data;int64_t len;int64_t cap;}sp_String;
-static void sp_String_fin(void*p){free(((sp_String*)p)->data);}
+static void sp_String_fin(void*p){free(((sp_String*)p)->data-1);}
 static sp_String*sp_String_new(const char*s){
   /* Copy s's payload into a raw-malloc'd buffer BEFORE sp_gc_alloc.
      If s is a heap string (sp_str_alloc) whose only liveness anchor
@@ -841,15 +826,17 @@ static sp_String*sp_String_new(const char*s){
      any GC inside sp_gc_alloc. */
   int64_t len=(int64_t)strlen(s);
   int64_t cap=len*2+16;
-  char*data=(char*)malloc(cap+1);
+  char*raw=(char*)malloc(cap+2);
+  raw[0]=(char)0xfd;
+  char*data=raw+1;
   memcpy(data,s,len+1);
   sp_String*r=(sp_String*)sp_gc_alloc(sizeof(sp_String),sp_String_fin,NULL);
   r->len=len;r->cap=cap;r->data=data;
-  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+1;sp_gc_bytes+=r->cap+1;}
+  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+2;sp_gc_bytes+=r->cap+2;}
   return r;
 }
-static inline void sp_String_append(sp_String*s,const char*t){int64_t tl=(int64_t)strlen(t);if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));sp_gc_bytes-=s->cap+1;h->size-=s->cap+1;s->cap=(s->len+tl)*2+16;s->data=(char*)realloc(s->data,s->cap+1);h->size+=s->cap+1;sp_gc_bytes+=s->cap+1;}memcpy(s->data+s->len,t,tl+1);s->len+=tl;}
-static inline void sp_String_prepend(sp_String*s,const char*t){int64_t tl=(int64_t)strlen(t);if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));sp_gc_bytes-=s->cap+1;h->size-=s->cap+1;s->cap=(s->len+tl)*2+16;s->data=(char*)realloc(s->data,s->cap+1);h->size+=s->cap+1;sp_gc_bytes+=s->cap+1;}memmove(s->data+tl,s->data,s->len+1);memcpy(s->data,t,tl);s->len+=tl;}
+static inline void sp_String_append(sp_String*s,const char*t){int64_t tl=(int64_t)strlen(t);if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));sp_gc_bytes-=s->cap+2;h->size-=s->cap+2;s->cap=(s->len+tl)*2+16;char*raw=(char*)realloc(s->data-1,s->cap+2);raw[0]=(char)0xfd;s->data=raw+1;h->size+=s->cap+2;sp_gc_bytes+=s->cap+2;}memcpy(s->data+s->len,t,tl+1);s->len+=tl;}
+static inline void sp_String_prepend(sp_String*s,const char*t){int64_t tl=(int64_t)strlen(t);if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));sp_gc_bytes-=s->cap+2;h->size-=s->cap+2;s->cap=(s->len+tl)*2+16;char*raw=(char*)realloc(s->data-1,s->cap+2);raw[0]=(char)0xfd;s->data=raw+1;h->size+=s->cap+2;sp_gc_bytes+=s->cap+2;}memmove(s->data+tl,s->data,s->len+1);memcpy(s->data,t,tl);s->len+=tl;}
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 static sp_String*sp_String_dup(sp_String*s){return sp_String_new(s->data);}
@@ -1347,7 +1334,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
     case SP_TAG_NIL:  return SPL("nil");
-    case SP_TAG_SYM:  return sp_str_concat(":", sp_sym_to_s((sp_sym)v.v.i));
+    case SP_TAG_SYM:  return sp_str_concat(SPL(":"), sp_sym_to_s((sp_sym)v.v.i));
     case SP_TAG_OBJ:  return SPL("#<Object>");
     default:          return sp_str_empty;
   }
