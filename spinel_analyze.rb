@@ -4574,6 +4574,13 @@ class Compiler
               if is_obj_type(bret) == 1
                 return bret + "_ptr_array"
               end
+ # Block returns `String.new` / a local widened to mutable_str
+ # via `s = ""; s << ...`: result is an array of sp_String*.
+ # Sibling to #519's array-literal arm; #522 noted the gap.
+              if bret == "mutable_str"
+                @needs_gc = 1
+                return "mutable_str_ptr_array"
+              end
  # Block returns a 1D array (e.g.
  # `[1, 6].map { (0..n).map { i } }` or
  # `(0..3).map { |i| (0..3).map { ... } }`) — each

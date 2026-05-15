@@ -29354,6 +29354,36 @@ class Compiler
         emit("  }")
         pop_scope
         return tmp_arr
+      elsif block_ret == "mutable_str"
+ # Block returns sp_String* (`String.new` or a local
+ # widened via `s = ""; s << ...`). Sibling to #519's array-
+ # literal arm: accumulate into a sp_PtrArray of sp_String*.
+        @needs_ptr_array = 1
+        emit("  sp_PtrArray *" + tmp_arr + " = sp_PtrArray_new();")
+        emit("  SP_GC_ROOT(" + tmp_arr + ");")
+        emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_IntArray_length(" + rc + "); " + tmp_i + "++) {")
+        if bp_is_lambda == 1
+          emit("    sp_Val * lv_" + bp1 + " = (sp_Val *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
+        else
+          emit("    mrb_int lv_" + bp1 + " = sp_IntArray_get(" + rc + ", " + tmp_i + ");")
+        end
+        @indent = @indent + 1
+        blk2 = @nd_block[nid]
+        if blk2 >= 0
+          body3 = @nd_body[blk2]
+          stmts3 = body3 >= 0 ? get_stmts(body3) : []
+          if stmts3.length > 0
+            last = stmts3[stmts3.length - 1]
+            val = compile_expr(last)
+            emit("  sp_PtrArray_push(" + tmp_arr + ", (void *)(" + val + "));")
+          else
+            emit_map_default_push(tmp_arr, "ptr_array")
+          end
+        end
+        @indent = @indent - 1
+        emit("  }")
+        pop_scope
+        return tmp_arr
       else
  # Block returning a homogeneous typed array (e.g.
  # `[1, 6].map { (0..n).map { ... } }`) — accumulator must
