@@ -40,6 +40,17 @@
 extern "C" {
 #endif
 
+/* SHA-1(msg) -> 40-char lowercase hex. Legacy hash, kept for
+ * WebSocket handshake (RFC 6455 §1.3 requires SHA-1). Do NOT
+ * use for new security designs; SHA-256 is the right primitive. */
+const char *sp_crypto_sha1_hex(const char *msg);
+
+/* Sec-WebSocket-Accept = base64(SHA-1(client_key + GUID)) per
+ * RFC 6455 §1.3. Returns a 28-char string ending in `=`. The
+ * only modern use case for SHA-1 in this codebase; sugars the
+ * concat+sha1+base64 dance into one call. */
+const char *sp_crypto_websocket_accept(const char *client_key);
+
 /* HMAC-SHA256(key, msg) -> 64-char lowercase hex. */
 const char *sp_crypto_hmac_sha256_hex(const char *key, const char *msg);
 

@@ -110,6 +110,124 @@ static void sp_crypto_sha256(const uint8_t *msg, size_t len, uint8_t out[32]) {
     }
 }
 
+/* ---------- SHA-1 ----------
+ * FIPS-180-4 (legacy hash, kept for WebSocket handshake -- RFC 6455
+ * requires SHA-1 specifically for Sec-WebSocket-Accept). Do not use
+ * for new security designs; SHA-256 is the right primitive for those.
+ * Compact reference implementation -- public domain.
+ */
+
+static void sp_crypto_sha1_block(uint32_t H[5], const uint8_t b[64]) {
+    uint32_t w[80], a, sa, sb, sc, sd, se, f, k;
+    int i;
+    for (i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)b[i*4] << 24) | ((uint32_t)b[i*4+1] << 16) |
+               ((uint32_t)b[i*4+2] << 8) |  (uint32_t)b[i*4+3];
+    }
+    for (i = 16; i < 80; i++) {
+        a = w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16];
+        w[i] = (a << 1) | (a >> 31);
+    }
+    sa = H[0]; sb = H[1]; sc = H[2]; sd = H[3]; se = H[4];
+    for (i = 0; i < 80; i++) {
+        if (i < 20)      { f = (sb & sc) | (~sb & sd);         k = 0x5A827999; }
+        else if (i < 40) { f = sb ^ sc ^ sd;                   k = 0x6ED9EBA1; }
+        else if (i < 60) { f = (sb & sc) | (sb & sd) | (sc & sd); k = 0x8F1BBCDC; }
+        else             { f = sb ^ sc ^ sd;                   k = 0xCA62C1D6; }
+        uint32_t t = ((sa << 5) | (sa >> 27)) + f + se + k + w[i];
+        se = sd; sd = sc; sc = (sb << 30) | (sb >> 2); sb = sa; sa = t;
+    }
+    H[0] += sa; H[1] += sb; H[2] += sc; H[3] += sd; H[4] += se;
+}
+
+static void sp_crypto_sha1(const uint8_t *msg, size_t len, uint8_t out[20]) {
+    uint32_t H[5] = {
+        0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0
+    };
+    uint8_t buf[64];
+    size_t i, full = len & ~((size_t)63);
+    for (i = 0; i < full; i += 64) sp_crypto_sha1_block(H, msg + i);
+    size_t rem = len - full;
+    for (i = 0; i < rem; i++) buf[i] = msg[full + i];
+    buf[rem] = 0x80;
+    if (rem >= 56) {
+        for (i = rem + 1; i < 64; i++) buf[i] = 0;
+        sp_crypto_sha1_block(H, buf);
+        for (i = 0; i < 56; i++) buf[i] = 0;
+    } else {
+        for (i = rem + 1; i < 56; i++) buf[i] = 0;
+    }
+    uint64_t bits = (uint64_t)len * 8;
+    for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
+    sp_crypto_sha1_block(H, buf);
+    for (i = 0; i < 5; i++) {
+        out[i*4]   = (uint8_t)(H[i] >> 24);
+        out[i*4+1] = (uint8_t)(H[i] >> 16);
+        out[i*4+2] = (uint8_t)(H[i] >> 8);
+        out[i*4+3] = (uint8_t)(H[i]);
+    }
+}
+
+static char sp_crypto_sha1_hex_buf[41];
+
+const char *sp_crypto_sha1_hex(const char *msg) {
+    uint8_t out[20];
+    sp_crypto_sha1((const uint8_t *)msg, strlen(msg), out);
+    static const char H[] = "0123456789abcdef";
+    int i;
+    for (i = 0; i < 20; i++) {
+        sp_crypto_sha1_hex_buf[i*2]   = H[(out[i] >> 4) & 0xf];
+        sp_crypto_sha1_hex_buf[i*2+1] = H[out[i] & 0xf];
+    }
+    sp_crypto_sha1_hex_buf[40] = '\0';
+    return sp_crypto_sha1_hex_buf;
+}
+
+/* RFC 6455 §1.3 Sec-WebSocket-Accept:
+ *     base64(SHA-1(client_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+ * Standard Base64 (RFC 4648 §4, `+/` alphabet, `=` padding) -- NOT
+ * the URL-safe variant. 20 bytes of SHA-1 -> 28-char output ("xxx=").
+ * The GUID is the WebSocket protocol's fixed magic string.
+ */
+static const char SPC_B64[64] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static char sp_crypto_websocket_accept_buf[29];
+
+const char *sp_crypto_websocket_accept(const char *client_key) {
+    /* client_key is the 24-char base64 from the request header;
+     * GUID is 36 chars. Total <= 60; cap input at 128 for safety. */
+    char in[128 + 36 + 1];
+    size_t klen = strlen(client_key);
+    if (klen > 128) klen = 128;
+    size_t i;
+    for (i = 0; i < klen; i++) in[i] = client_key[i];
+    static const char guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    for (i = 0; i < 36; i++) in[klen + i] = guid[i];
+    uint8_t digest[20];
+    sp_crypto_sha1((const uint8_t *)in, klen + 36, digest);
+    /* base64(20 bytes) = 28 chars: 6 full triplets + 2 leftover bytes
+     * -> 3 chars + 1 padding `=`. */
+    int j = 0;
+    for (i = 0; i + 3 <= 20; i += 3) {
+        uint32_t v = ((uint32_t)digest[i] << 16)
+                   | ((uint32_t)digest[i+1] << 8)
+                   |  (uint32_t)digest[i+2];
+        sp_crypto_websocket_accept_buf[j++] = SPC_B64[(v >> 18) & 0x3f];
+        sp_crypto_websocket_accept_buf[j++] = SPC_B64[(v >> 12) & 0x3f];
+        sp_crypto_websocket_accept_buf[j++] = SPC_B64[(v >>  6) & 0x3f];
+        sp_crypto_websocket_accept_buf[j++] = SPC_B64[ v        & 0x3f];
+    }
+    /* 2 leftover bytes -> 3 b64 chars + 1 pad */
+    uint32_t v = ((uint32_t)digest[18] << 16) | ((uint32_t)digest[19] << 8);
+    sp_crypto_websocket_accept_buf[j++] = SPC_B64[(v >> 18) & 0x3f];
+    sp_crypto_websocket_accept_buf[j++] = SPC_B64[(v >> 12) & 0x3f];
+    sp_crypto_websocket_accept_buf[j++] = SPC_B64[(v >>  6) & 0x3f];
+    sp_crypto_websocket_accept_buf[j++] = '=';
+    sp_crypto_websocket_accept_buf[j]   = '\0';
+    return sp_crypto_websocket_accept_buf;
+}
+
 /* ---------- HMAC-SHA256 (RFC 2104) ---------- */
 
 static void sp_crypto_hmac_sha256(const uint8_t *key, size_t klen,
