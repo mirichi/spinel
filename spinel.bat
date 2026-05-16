@@ -32,6 +32,7 @@ set "STDOUT_MODE=0"
 set "OPT_LEVEL=2"
 set "CC_CMD=cc"
 set "EXTRA_FLAGS="
+set "CRUBY_EXT_FLAG="
 
 :parse
 if "%~1"=="" goto endparse
@@ -47,6 +48,7 @@ if /i "%~1"=="--lonig" (
   ) & shift & goto parse
 )
 set "_a=%~1"
+if "%_a:~0,12%"=="--cruby-ext=" (set "CRUBY_EXT_FLAG=%_a%" & shift & goto parse)
 if "%_a:~0,5%"=="--cc=" (set "CC_CMD=%_a:~5%" & shift & goto parse)
 if not defined SOURCE set "SOURCE=%~1"
 shift
@@ -102,9 +104,9 @@ if defined OUTPUT (
 
 :do_codegen
 if exist "%CODEGEN_BIN%" (
-  "%CODEGEN_BIN%" "%AST_TMP%" "%C_FILE%"
+  "%CODEGEN_BIN%" "%AST_TMP%" "%C_FILE%" "%CRUBY_EXT_FLAG%"
 ) else (
-  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%" "%C_FILE%"
+  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%" "%C_FILE%" "%CRUBY_EXT_FLAG%"
 )
 if errorlevel 1 (
   echo spinel: codegen failed 1>&2
@@ -149,9 +151,9 @@ exit /b 0
 
 :stdout_codegen
 if exist "%CODEGEN_BIN%" (
-  "%CODEGEN_BIN%" "%AST_TMP%"
+  "%CODEGEN_BIN%" "%AST_TMP%" "" "%CRUBY_EXT_FLAG%"
 ) else (
-  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%"
+  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%" "" "%CRUBY_EXT_FLAG%"
 )
 set "EC=%ERRORLEVEL%"
 if exist "%AST_TMP%" del "%AST_TMP%"

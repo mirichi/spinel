@@ -47,11 +47,14 @@ EVAL_SCRIPT=""
 EVAL_USED=0
 EVAL_TMP=""
 
+CRUBY_EXT_FLAG=""
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --source=*) SOURCE="${1#--source=}" ;;
     --output=*) OUTPUT="${1#--output=}" ;;
     --cc=*)     CC_CMD="${1#--cc=}" ;;
+    --cruby-ext=*) CRUBY_EXT_FLAG="$1" ;;
     -o)         shift; OUTPUT="$1" ;;
     -O)         shift; OPT_LEVEL="$1" ;;
     -e)         shift
@@ -95,6 +98,7 @@ if [ -z "$SOURCE" ]; then
   echo "  -S          Print C to stdout" >&2
   echo "  -O LEVEL    Optimization level (default: 2)" >&2
   echo "  --cc=CMD    C compiler (default: cc)" >&2
+  echo "  --cruby-ext=NAME Generate a CRuby C extension for the given module" >&2
   echo "  -e STR      Inline Ruby source (repeatable; joined with newlines)" >&2
   exit 1
 fi
@@ -139,9 +143,9 @@ fi
 # Step 3: Codegen
 if [ $STDOUT_MODE -eq 1 ]; then
   if [ -x "$CODEGEN_BIN" ]; then
-    "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP"
+    "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP" "" "$CRUBY_EXT_FLAG"
   else
-    ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP"
+    ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP" "" "$CRUBY_EXT_FLAG"
   fi
   exit $?
 fi
@@ -155,9 +159,9 @@ else
 fi
 
 if [ -x "$CODEGEN_BIN" ]; then
-  "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP" "$C_FILE"
+  "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP" "$C_FILE" "$CRUBY_EXT_FLAG"
 else
-  ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP" "$C_FILE"
+  ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP" "$C_FILE" "$CRUBY_EXT_FLAG"
 fi
 if [ $? -ne 0 ]; then
   echo "spinel: codegen failed" >&2
