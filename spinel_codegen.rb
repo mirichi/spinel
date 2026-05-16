@@ -19742,6 +19742,12 @@ class Compiler
       slen_rhs = is_poly_ret == 1 ? "sp_box_int(" + slen_c + ")" : slen_c
       emit("  if (" + recv_tmp + ".tag == SP_TAG_STR) " + tmp + " = " + slen_rhs + ";")
     end
+ # SP_TAG_STR arm for empty? on a poly recv. Issue #552.
+    if mname == "empty?"
+      semp_c = "(sp_str_length(" + recv_tmp + ".v.s) == 0)"
+      semp_rhs = is_poly_ret == 1 ? "sp_box_bool(" + semp_c + ")" : semp_c
+      emit("  if (" + recv_tmp + ".tag == SP_TAG_STR) " + tmp + " = " + semp_rhs + ";")
+    end
     emit("  if (" + recv_tmp + ".tag == SP_TAG_OBJ) {")
  # User-class dispatch
     i = 0
@@ -20019,6 +20025,93 @@ class Compiler
         emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_SYM_POLY_HASH) " + result_tmp + " = sp_box_obj((void *)sp_SymPolyHash_dup((sp_SymPolyHash *)" + recv_tmp + ".v.p), SP_BUILTIN_SYM_POLY_HASH);")
         emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_POLY_POLY_HASH) " + result_tmp + " = sp_box_obj((void *)sp_PolyPolyHash_dup((sp_PolyPolyHash *)" + recv_tmp + ".v.p), SP_BUILTIN_POLY_POLY_HASH);")
       end
+    end
+ # length / size arms — for a poly recv whose runtime storage
+ # is an Array or Hash variant. The SP_TAG_STR length arm fires
+ # earlier in compile_poly_method_call; this covers the
+ # SP_TAG_OBJ side. Without these arms, a `param.length` call
+ # on a body-usage-widened poly param (issue #552) silently
+ # reads the result_tmp default (0) for every non-string
+ # runtime value. Result type is always int / sp_box_int.
+    if mname == "length" || mname == "size"
+      ic = "sp_IntArray_length((sp_IntArray *)" + recv_tmp + ".v.p)"
+      irhs = is_poly_ret == 1 ? "sp_box_int(" + ic + ")" : ic
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_INT_ARRAY) " + result_tmp + " = " + irhs + ";")
+      fc = "sp_FloatArray_length((sp_FloatArray *)" + recv_tmp + ".v.p)"
+      frhs = is_poly_ret == 1 ? "sp_box_int(" + fc + ")" : fc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_FLT_ARRAY) " + result_tmp + " = " + frhs + ";")
+      sc = "sp_StrArray_length((sp_StrArray *)" + recv_tmp + ".v.p)"
+      srhs = is_poly_ret == 1 ? "sp_box_int(" + sc + ")" : sc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_ARRAY) " + result_tmp + " = " + srhs + ";")
+      yc = "sp_IntArray_length((sp_IntArray *)" + recv_tmp + ".v.p)"
+      yrhs = is_poly_ret == 1 ? "sp_box_int(" + yc + ")" : yc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_SYM_ARRAY) " + result_tmp + " = " + yrhs + ";")
+      pc = "sp_PtrArray_length((sp_PtrArray *)" + recv_tmp + ".v.p)"
+      prhs = is_poly_ret == 1 ? "sp_box_int(" + pc + ")" : pc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_PTR_ARRAY) " + result_tmp + " = " + prhs + ";")
+      polyc = "sp_PolyArray_length((sp_PolyArray *)" + recv_tmp + ".v.p)"
+      polyrhs = is_poly_ret == 1 ? "sp_box_int(" + polyc + ")" : polyc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY) " + result_tmp + " = " + polyrhs + ";")
+      sihc = "sp_StrIntHash_length((sp_StrIntHash *)" + recv_tmp + ".v.p)"
+      sihrhs = is_poly_ret == 1 ? "sp_box_int(" + sihc + ")" : sihc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_INT_HASH) " + result_tmp + " = " + sihrhs + ";")
+      sshc = "sp_StrStrHash_length((sp_StrStrHash *)" + recv_tmp + ".v.p)"
+      sshrhs = is_poly_ret == 1 ? "sp_box_int(" + sshc + ")" : sshc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_STR_HASH) " + result_tmp + " = " + sshrhs + ";")
+      isthc = "sp_IntStrHash_length((sp_IntStrHash *)" + recv_tmp + ".v.p)"
+      isthrhs = is_poly_ret == 1 ? "sp_box_int(" + isthc + ")" : isthc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_INT_STR_HASH) " + result_tmp + " = " + isthrhs + ";")
+      sphc = "sp_StrPolyHash_length((sp_StrPolyHash *)" + recv_tmp + ".v.p)"
+      sphrhs = is_poly_ret == 1 ? "sp_box_int(" + sphc + ")" : sphc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_POLY_HASH) " + result_tmp + " = " + sphrhs + ";")
+      ypc = "sp_SymPolyHash_length((sp_SymPolyHash *)" + recv_tmp + ".v.p)"
+      yprhs = is_poly_ret == 1 ? "sp_box_int(" + ypc + ")" : ypc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_SYM_POLY_HASH) " + result_tmp + " = " + yprhs + ";")
+      pphc = "sp_PolyPolyHash_length((sp_PolyPolyHash *)" + recv_tmp + ".v.p)"
+      pphrhs = is_poly_ret == 1 ? "sp_box_int(" + pphc + ")" : pphc
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_POLY_POLY_HASH) " + result_tmp + " = " + pphrhs + ";")
+    end
+ # empty? arms -- sibling of length/size for the poly recv
+ # variants. Issue #552. Always returns a bool (sp_box_bool
+ # under is_poly_ret); otherwise the result temp's declared
+ # type is bool.
+    if mname == "empty?"
+      iec = "(sp_IntArray_length((sp_IntArray *)" + recv_tmp + ".v.p) == 0)"
+      ierhs = is_poly_ret == 1 ? "sp_box_bool(" + iec + ")" : iec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_INT_ARRAY) " + result_tmp + " = " + ierhs + ";")
+      fec = "(sp_FloatArray_length((sp_FloatArray *)" + recv_tmp + ".v.p) == 0)"
+      ferhs = is_poly_ret == 1 ? "sp_box_bool(" + fec + ")" : fec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_FLT_ARRAY) " + result_tmp + " = " + ferhs + ";")
+      sec = "(sp_StrArray_length((sp_StrArray *)" + recv_tmp + ".v.p) == 0)"
+      serhs = is_poly_ret == 1 ? "sp_box_bool(" + sec + ")" : sec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_ARRAY) " + result_tmp + " = " + serhs + ";")
+      yec = "(sp_IntArray_length((sp_IntArray *)" + recv_tmp + ".v.p) == 0)"
+      yerhs = is_poly_ret == 1 ? "sp_box_bool(" + yec + ")" : yec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_SYM_ARRAY) " + result_tmp + " = " + yerhs + ";")
+      pec = "(sp_PtrArray_length((sp_PtrArray *)" + recv_tmp + ".v.p) == 0)"
+      perhs = is_poly_ret == 1 ? "sp_box_bool(" + pec + ")" : pec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_PTR_ARRAY) " + result_tmp + " = " + perhs + ";")
+      polyec = "(sp_PolyArray_length((sp_PolyArray *)" + recv_tmp + ".v.p) == 0)"
+      polyerhs = is_poly_ret == 1 ? "sp_box_bool(" + polyec + ")" : polyec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY) " + result_tmp + " = " + polyerhs + ";")
+      sihec = "(sp_StrIntHash_length((sp_StrIntHash *)" + recv_tmp + ".v.p) == 0)"
+      siherhs = is_poly_ret == 1 ? "sp_box_bool(" + sihec + ")" : sihec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_INT_HASH) " + result_tmp + " = " + siherhs + ";")
+      sshec = "(sp_StrStrHash_length((sp_StrStrHash *)" + recv_tmp + ".v.p) == 0)"
+      ssherhs = is_poly_ret == 1 ? "sp_box_bool(" + sshec + ")" : sshec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_STR_HASH) " + result_tmp + " = " + ssherhs + ";")
+      isthec = "(sp_IntStrHash_length((sp_IntStrHash *)" + recv_tmp + ".v.p) == 0)"
+      istherhs = is_poly_ret == 1 ? "sp_box_bool(" + isthec + ")" : isthec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_INT_STR_HASH) " + result_tmp + " = " + istherhs + ";")
+      sphec = "(sp_StrPolyHash_length((sp_StrPolyHash *)" + recv_tmp + ".v.p) == 0)"
+      spherhs = is_poly_ret == 1 ? "sp_box_bool(" + sphec + ")" : sphec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_POLY_HASH) " + result_tmp + " = " + spherhs + ";")
+      ypec = "(sp_SymPolyHash_length((sp_SymPolyHash *)" + recv_tmp + ".v.p) == 0)"
+      yperhs = is_poly_ret == 1 ? "sp_box_bool(" + ypec + ")" : ypec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_SYM_POLY_HASH) " + result_tmp + " = " + yperhs + ";")
+      pphec = "(sp_PolyPolyHash_length((sp_PolyPolyHash *)" + recv_tmp + ".v.p) == 0)"
+      ppherhs = is_poly_ret == 1 ? "sp_box_bool(" + pphec + ")" : pphec
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_POLY_POLY_HASH) " + result_tmp + " = " + ppherhs + ";")
     end
  # `<poly>.call(...)` arm for the SP_BUILTIN_PROC tag. When a
  # poly_array of procs is iterated (`[proc, ...].each { |p| p.call }`),

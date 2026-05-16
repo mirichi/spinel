@@ -12060,6 +12060,117 @@ class Compiler
     end
   end
 
+ # Methods that exist on String / Array / Hash but NOT on
+ # Integer. When body calls one of these on a param defaulted
+ # to int/nil, the param's actual runtime value can't be an
+ # int -- widen to poly so codegen's poly-recv dispatch
+ # handles the call across the possible String/Array/Hash
+ # storage. Issue #552. Conservative list: only methods that
+ # truly don't exist on Integer (so widening is sound and no
+ # caller breaks from a previously-int-typed arg path).
+  def is_lengthlike_only_method(mname)
+    if mname == "length" || mname == "size"
+      return 1
+    end
+    if mname == "empty?"
+      return 1
+    end
+    0
+  end
+
+ # Body-usage widening for length-like methods. Sibling of
+ # infer_array_param_from_body but widens to a flat `poly`
+ # rather than `poly_array` -- the runtime value can be
+ # String, any Array variant, or any Hash variant, so the
+ # narrower poly_array would mis-shape the slot. Runs ONCE
+ # post-fixpoint. Issue #552.
+  def infer_param_lengthlike_widen
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        pnames = @meth_param_names[mi].split(",")
+        ptypes = @meth_param_types[mi].split(",")
+        changed_top = 0
+        pk = 0
+        while pk < pnames.length
+          if pk < ptypes.length && (ptypes[pk] == "int" || ptypes[pk] == "nil")
+            called = "".split(",")
+            collect_param_methods(bid, pnames[pk], called)
+            saw = 0
+            kk = 0
+            while kk < called.length
+              if is_lengthlike_only_method(called[kk]) == 1
+                saw = 1
+              end
+              kk = kk + 1
+            end
+            if saw == 1
+              @needs_rb_value = 1
+              ptypes[pk] = "poly"
+              changed_top = 1
+            end
+          end
+          pk = pk + 1
+        end
+        if changed_top == 1
+          @meth_param_types[mi] = ptypes.join(",")
+        end
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      mnames = @cls_meth_names[ci].split(";")
+      bodies = @cls_meth_bodies[ci].split(";")
+      cls_changed = 0
+      mj = 0
+      while mj < mnames.length
+        if mnames[mj] != "initialize"
+          pnames_j = cls_meth_pnames_get(ci, mj)
+          ptypes_j = cls_meth_ptypes_get(ci, mj)
+          bid_j = -1
+          if mj < bodies.length
+            bid_j = bodies[mj].to_i
+          end
+          if bid_j >= 0
+            m_changed = 0
+            pk = 0
+            while pk < pnames_j.length
+              if pk < ptypes_j.length && (ptypes_j[pk] == "int" || ptypes_j[pk] == "nil")
+                called_c = "".split(",")
+                collect_param_methods(bid_j, pnames_j[pk], called_c)
+                sawc = 0
+                kk = 0
+                while kk < called_c.length
+                  if is_lengthlike_only_method(called_c[kk]) == 1
+                    sawc = 1
+                  end
+                  kk = kk + 1
+                end
+                if sawc == 1
+                  @needs_rb_value = 1
+                  ptypes_j[pk] = "poly"
+                  m_changed = 1
+                end
+              end
+              pk = pk + 1
+            end
+            if m_changed == 1
+              cls_meth_ptypes_put(ci, mj, ptypes_j)
+              cls_changed = 1
+            end
+          end
+        end
+        mj = mj + 1
+      end
+      if cls_changed == 1
+        @cls_meth_ptypes_version = @cls_meth_ptypes_version + 1
+      end
+      ci = ci + 1
+    end
+  end
+
   def is_string_only_method(mname)
     if mname == "split" || mname == "start_with?" || mname == "end_with?"
       return 1
@@ -18372,6 +18483,19 @@ class Compiler
  # `<<` / `&` / `|` and other Integer-overlapping ops, so
  # bit-op-only params like optcarrot's poke(data) stay int).
     infer_array_param_from_body
+    infer_all_returns
+    infer_function_body_call_types
+    infer_class_body_call_types
+    infer_all_returns
+ # Body-usage length-like inference (#552). Conservative
+ # widening to flat `poly`: only fires on `.length` / `.size` /
+ # `.empty?` -- methods that exist on String / Array / Hash
+ # but NOT on Integer, so a body that calls them on a param
+ # proves the param's runtime value isn't an int. Stays after
+ # the array-param pass so the narrow variants
+ # (int_array / str_array / etc.) win first; only genuinely-
+ # untyped params reach the flat `poly` widening here.
+    infer_param_lengthlike_widen
     infer_all_returns
     infer_function_body_call_types
     infer_class_body_call_types
