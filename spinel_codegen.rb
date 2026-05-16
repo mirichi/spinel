@@ -1651,6 +1651,110 @@ class Compiler
     ["", ""]
   end
 
+ # `<lv>.nil?` predicate. Returns the LV name; otherwise "".
+  def parse_nil_predicate(pred_id)
+    if pred_id < 0
+      return ""
+    end
+    if @nd_type[pred_id] != "CallNode"
+      return ""
+    end
+    if @nd_name[pred_id] != "nil?"
+      return ""
+    end
+    recv = @nd_receiver[pred_id]
+    if recv < 0 || @nd_type[recv] != "LocalVariableReadNode"
+      return ""
+    end
+    @nd_name[recv]
+  end
+
+ # Body is a single `return ...` or single `raise ...`. Used by
+ # the nil-guard narrow (issue #550) to identify scope-exiting
+ # bodies that mirror the raise-guard shape.
+  def body_definitely_exits?(body_id)
+    if body_id < 0
+      return 0
+    end
+    stmts_r = get_stmts(body_id)
+    if stmts_r.length == 0
+      return 0
+    end
+    last = stmts_r[stmts_r.length - 1]
+    if @nd_type[last] == "ReturnNode"
+      return 1
+    end
+    if @nd_type[last] == "CallNode" && @nd_name[last] == "raise"
+      return 1
+    end
+    0
+  end
+
+ # Given the rhs of the most recent write to a local variable
+ # whose nil? was just checked, return the type the variable
+ # narrows to after the nil-exit. Currently recognizes
+ # `<string>.index(needle)` / rindex / find_index returning
+ # int-or-nil; the non-nil arm is mrb_int. Returns "" when the
+ # writer's shape isn't a known int-or-nil source so the caller
+ # leaves the type alone. Issue #550.
+  def scan_back_writer_narrow_for(stmts_list, before_idx, varname)
+    j = before_idx - 1
+    while j >= 0
+      stmt = stmts_list[j]
+      if @nd_type[stmt] == "LocalVariableWriteNode" && @nd_name[stmt] == varname
+        return infer_nil_guard_narrow_type(@nd_expression[stmt])
+      end
+      j = j - 1
+    end
+    ""
+  end
+
+  def infer_nil_guard_narrow_type(expr_id)
+    if expr_id < 0
+      return ""
+    end
+    if @nd_type[expr_id] != "CallNode"
+      return ""
+    end
+    mname_eg = @nd_name[expr_id]
+    if mname_eg != "index" && mname_eg != "rindex" && mname_eg != "find_index"
+      return ""
+    end
+    recv_eg = @nd_receiver[expr_id]
+    if recv_eg < 0
+      return ""
+    end
+    rt_eg = infer_type(recv_eg)
+    if rt_eg == "string" || rt_eg == "mutable_str"
+      return "int"
+    end
+    ""
+  end
+
+ # Recognize `return X if h.nil?` (and `return X unless h`).
+ # Returns the var name when the shape matches; "" otherwise.
+ # Caller is responsible for walking back to the var's writer
+ # to determine the narrow type. Mirrors parse_raise_guard_narrow's
+ # shape but for the early-return-on-nil pattern. Issue #550.
+  def parse_nil_guard_var(nid)
+    if nid < 0
+      return ""
+    end
+    if @nd_type[nid] != "IfNode"
+      return ""
+    end
+    body_i = @nd_body[nid]
+    if body_definitely_exits?(body_i) == 0
+      return ""
+    end
+    sub_i = @nd_subsequent[nid]
+    else_i = @nd_else_clause[nid]
+    if sub_i >= 0 || else_i >= 0
+      return ""
+    end
+    parse_nil_predicate(@nd_predicate[nid])
+  end
+
  # Try to evaluate a predicate expression at compile time. Returns
  # "TRUE" / "FALSE" when the result is known statically; "" when it
  # depends on runtime state. Currently handles `<typed>.is_a?(Klass)` /
@@ -10678,7 +10782,22 @@ class Compiler
       return self_expr
     end
     if t == "LocalVariableReadNode"
-      return fiber_var_ref(@nd_name[nid])
+      vn_lvr = @nd_name[nid]
+      base_lvr = fiber_var_ref(vn_lvr)
+ # int-or-nil nil-guard narrow (issue #550): the local is
+ # declared poly (e.g. h = s.index(...)) but a preceding
+ # `return X if h.nil?` narrowed it to int. The base C ref
+ # is the sp_RbVal slot; unbox via .v.i so arithmetic / int
+ # consumers see mrb_int instead of the struct. Scoped to
+ # the obvious poly->int case for now; obj_<C> narrows over
+ # poly locals continue through the dispatch-level paths
+ # that already handle them (#493).
+      narrow_lvr = find_var_type(vn_lvr)
+      declared_lvr = find_var_declared_type(vn_lvr)
+      if declared_lvr == "poly" && narrow_lvr == "int"
+        return "(" + base_lvr + ").v.i"
+      end
+      return base_lvr
     end
     if t == "InstanceVariableReadNode"
       return ivar_lhs(@nd_name[nid])
@@ -32202,6 +32321,15 @@ class Compiler
       rg_p_cbr = parse_raise_guard_narrow(stmts[i])
       if rg_p_cbr[0] != ""
         push_type_narrow(rg_p_cbr[0], rg_p_cbr[1])
+      end
+ # Sibling: `return X if h.nil?` after a writer that revealed
+ # h as int-or-nil (e.g. `s.index(needle)`). Issue #550.
+      ng_var_cbr = parse_nil_guard_var(stmts[i])
+      if ng_var_cbr != ""
+        ng_narrow_cbr = scan_back_writer_narrow_for(stmts, i, ng_var_cbr)
+        if ng_narrow_cbr != ""
+          push_type_narrow(ng_var_cbr, ng_narrow_cbr)
+        end
       end
       i = i + 1
     end

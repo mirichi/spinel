@@ -1416,6 +1416,112 @@ class Compiler
     ["", ""]
   end
 
+ # `<lv>.nil?` predicate. Returns the LV name; otherwise "".
+  def parse_nil_predicate(pred_id)
+    if pred_id < 0
+      return ""
+    end
+    if @nd_type[pred_id] != "CallNode"
+      return ""
+    end
+    if @nd_name[pred_id] != "nil?"
+      return ""
+    end
+    recv = @nd_receiver[pred_id]
+    if recv < 0 || @nd_type[recv] != "LocalVariableReadNode"
+      return ""
+    end
+    @nd_name[recv]
+  end
+
+ # Body is a single `return ...` or single `raise ...`. Used by
+ # the nil-guard narrow (issue #550) to identify scope-exiting
+ # bodies that mirror the raise-guard shape.
+  def body_definitely_exits?(body_id)
+    if body_id < 0
+      return 0
+    end
+    stmts_r = get_stmts(body_id)
+    if stmts_r.length == 0
+      return 0
+    end
+    last = stmts_r[stmts_r.length - 1]
+    if @nd_type[last] == "ReturnNode"
+      return 1
+    end
+    if @nd_type[last] == "CallNode" && @nd_name[last] == "raise"
+      return 1
+    end
+    0
+  end
+
+ # Given the rhs of the most recent write to a local variable
+ # whose nil? was just checked, return the type the variable
+ # narrows to after the nil-exit. Currently recognizes
+ # `<string>.index(needle)` (and rindex / find_index) returning
+ # int-or-nil; the non-nil arm is mrb_int. Returns "" when the
+ # writer's shape isn't a known int-or-nil source so the caller
+ # leaves the type alone. Issue #550.
+  def infer_nil_guard_narrow_type(expr_id)
+    if expr_id < 0
+      return ""
+    end
+    if @nd_type[expr_id] != "CallNode"
+      return ""
+    end
+    mname_eg = @nd_name[expr_id]
+    if mname_eg != "index" && mname_eg != "rindex" && mname_eg != "find_index"
+      return ""
+    end
+    recv_eg = @nd_receiver[expr_id]
+    if recv_eg < 0
+      return ""
+    end
+    rt_eg = infer_type(recv_eg)
+    if rt_eg == "string" || rt_eg == "mutable_str"
+      return "int"
+    end
+    ""
+  end
+
+ # Recognize `return X if h.nil?` shape; return the LV name or
+ # "". Caller threads the stmt list separately into
+ # scan_back_writer_narrow_for to derive the narrow type. (Two
+ # separate calls instead of one [var, type] return because
+ # spinel-self's inference widens an array-return into poly,
+ # cascading into push_type_narrow's param signature.)
+ # Issue #550.
+  def parse_nil_guard_var(nid)
+    if nid < 0
+      return ""
+    end
+    if @nd_type[nid] != "IfNode"
+      return ""
+    end
+    body_i = @nd_body[nid]
+    if body_definitely_exits?(body_i) == 0
+      return ""
+    end
+    sub_i = @nd_subsequent[nid]
+    else_i = @nd_else_clause[nid]
+    if sub_i >= 0 || else_i >= 0
+      return ""
+    end
+    parse_nil_predicate(@nd_predicate[nid])
+  end
+
+  def scan_back_writer_narrow_for(stmts_list, before_idx, varname)
+    j = before_idx - 1
+    while j >= 0
+      stmt = stmts_list[j]
+      if @nd_type[stmt] == "LocalVariableWriteNode" && @nd_name[stmt] == varname
+        return infer_nil_guard_narrow_type(@nd_expression[stmt])
+      end
+      j = j - 1
+    end
+    ""
+  end
+
   def parse_is_a_predicate(pred_id)
     if pred_id < 0
       return ["", ""]
@@ -11287,6 +11393,14 @@ class Compiler
         push_type_narrow(rg_p[0], rg_p[1])
         pushed_raise_guards_snc = pushed_raise_guards_snc + 1
       end
+      ng_var_snc = parse_nil_guard_var(stmts[k])
+      if ng_var_snc != ""
+        ng_narrow_snc = scan_back_writer_narrow_for(stmts, k, ng_var_snc)
+        if ng_narrow_snc != ""
+          push_type_narrow(ng_var_snc, ng_narrow_snc)
+          pushed_raise_guards_snc = pushed_raise_guards_snc + 1
+        end
+      end
       k = k + 1
     end
     while pushed_raise_guards_snc > 0
@@ -16018,6 +16132,29 @@ class Compiler
  # Collect all explicit return types
     types = "".split(",")
     collect_return_types_nid(body_id, types)
+ # Push sibling-scope narrows from preceding guards so the
+ # implicit-return type sees the narrowed local types. Without
+ # this, `def f; h = s.index(...); return -1 if h.nil?; h+1; end`
+ # infers `h+1` against h's poly source type, widening f's
+ # return to poly. Issues #493 / #550.
+    pushed_guards_ibr = 0
+    kk_ibr = 0
+    while kk_ibr < stmts.length - 1
+      rg_p_ibr = parse_raise_guard_narrow(stmts[kk_ibr])
+      if rg_p_ibr[0] != ""
+        push_type_narrow(rg_p_ibr[0], rg_p_ibr[1])
+        pushed_guards_ibr = pushed_guards_ibr + 1
+      end
+      ng_var_ibr = parse_nil_guard_var(stmts[kk_ibr])
+      if ng_var_ibr != ""
+        ng_narrow_ibr = scan_back_writer_narrow_for(stmts, kk_ibr, ng_var_ibr)
+        if ng_narrow_ibr != ""
+          push_type_narrow(ng_var_ibr, ng_narrow_ibr)
+          pushed_guards_ibr = pushed_guards_ibr + 1
+        end
+      end
+      kk_ibr = kk_ibr + 1
+    end
  # Add implicit return (last expression). When the implicit return
  # is a bare LocalVariableReadNode of an "int_array"-typed local
  # (the empty-`[]` default), look at the body's push observations
@@ -16036,6 +16173,10 @@ class Compiler
       end
     end
     types.push(last_type)
+    while pushed_guards_ibr > 0
+      pop_type_narrow
+      pushed_guards_ibr = pushed_guards_ibr - 1
+    end
  # Unify all return path types
     unify_return_type(types)
   end
@@ -16054,6 +16195,14 @@ class Compiler
       if rg_p[0] != ""
         push_type_narrow(rg_p[0], rg_p[1])
         pushed_raise_guards_crt = pushed_raise_guards_crt + 1
+      end
+      ng_var_crt = parse_nil_guard_var(stmts[k])
+      if ng_var_crt != ""
+        ng_narrow_crt = scan_back_writer_narrow_for(stmts, k, ng_var_crt)
+        if ng_narrow_crt != ""
+          push_type_narrow(ng_var_crt, ng_narrow_crt)
+          pushed_raise_guards_crt = pushed_raise_guards_crt + 1
+        end
       end
       k = k + 1
     end
@@ -18017,6 +18166,14 @@ class Compiler
       if rg_p[0] != ""
         push_type_narrow(rg_p[0], rg_p[1])
         pushed_raise_guards_scm = pushed_raise_guards_scm + 1
+      end
+      ng_var_scm = parse_nil_guard_var(stmts[k])
+      if ng_var_scm != ""
+        ng_narrow_scm = scan_back_writer_narrow_for(stmts, k, ng_var_scm)
+        if ng_narrow_scm != ""
+          push_type_narrow(ng_var_scm, ng_narrow_scm)
+          pushed_raise_guards_scm = pushed_raise_guards_scm + 1
+        end
       end
       k = k + 1
     end
