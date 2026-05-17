@@ -137,20 +137,20 @@ fi
 # analyzer consumes via ARGV[2]. Per the design note, the seeded
 # types are *advisory* -- inference still widens on observed
 # disagreement -- so this is safe even when the RBS files contradict
-# the implementation. Failures here are non-fatal: we warn and
-# proceed without seeding.
-if [ -n "$RBS_DIR" ]; then
-  if [ ! -x "$RBS_EXTRACT_BIN" ]; then
-    echo "spinel: --rbs requested but $RBS_EXTRACT_BIN not built (run 'make rbs_extract')" >&2
-  elif [ ! -d "$RBS_DIR" ]; then
-    echo "spinel: --rbs $RBS_DIR: not a directory" >&2
-  else
-    SEED_TMP="$(mktemp /tmp/spinel_seed.XXXXXX)"
-    if ! "$RBS_EXTRACT_BIN" "$RBS_DIR" > "$SEED_TMP" 2>/dev/null; then
-      echo "spinel: --rbs extraction failed; proceeding without seeds" >&2
-      rm -f "$SEED_TMP"
-      SEED_TMP=""
-    fi
+# the implementation.
+#
+# `--rbs DIR` is a silent no-op when DIR is absent or empty, or when
+# the extractor binary hasn't been built: spinel still compiles, just
+# without seeds. Real failures during extraction warn to stderr.
+if [ -n "$RBS_DIR" ] && [ -x "$RBS_EXTRACT_BIN" ] && [ -d "$RBS_DIR" ]; then
+  SEED_TMP="$(mktemp /tmp/spinel_seed.XXXXXX)"
+  if ! "$RBS_EXTRACT_BIN" "$RBS_DIR" > "$SEED_TMP" 2>/dev/null; then
+    echo "spinel: --rbs extraction failed; proceeding without seeds" >&2
+    rm -f "$SEED_TMP"
+    SEED_TMP=""
+  elif [ ! -s "$SEED_TMP" ]; then
+    rm -f "$SEED_TMP"
+    SEED_TMP=""
   fi
 fi
 

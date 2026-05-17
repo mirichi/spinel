@@ -138,11 +138,17 @@ PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
 
 .PHONY: all parse bootstrap codegen rbs_extract test retest clean-test-results regen-expected bench optcarrot clean install uninstall deps
 
-# Note: rbs_extract is intentionally excluded from `all` -- it's only
-# needed when users compile with `spinel --rbs DIR`, and requires
-# `make deps` to have fetched vendor/rbs first. Build it on demand
-# with `make rbs_extract`.
-all: parse regexp spinel_analyze$(EXE) spinel_codegen$(EXE)
+# `make all` includes spinel_rbs_extract when vendor/rbs has been
+# fetched (via `make deps`). Without vendor/rbs the extractor is
+# silently omitted -- spinel still works; `spinel --rbs DIR` then
+# becomes a no-op (warns and proceeds without seeds).
+ifneq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+  RBS_EXTRACT_TARGET = spinel_rbs_extract$(EXE)
+else
+  RBS_EXTRACT_TARGET =
+endif
+
+all: parse regexp spinel_analyze$(EXE) spinel_codegen$(EXE) $(RBS_EXTRACT_TARGET)
 
 # ---- Dependencies ----
 # Clone Prism into vendor/prism at the pinned version. Run this once
