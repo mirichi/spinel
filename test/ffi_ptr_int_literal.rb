@@ -5,8 +5,11 @@
 # pass `-1` as the `sqlite3_bind_text` destructor argument to get
 # `SQLITE_TRANSIENT` (`((sqlite3_destructor_type)-1)`), the same
 # wire-shape ruby-ffi exposes via `FFI::Pointer.new(-1)`. The
-# round-trip is verified empirically by examples/ffi/sqlite/blog.rb;
-# this test guards the codegen primitive that makes it possible.
+# round-trip was verified empirically during development against
+# `sqlite3_bind_text(stmt, 1, "hello", 5, -1)` (insert + select
+# returns "hello", with generated C `sqlite3_bind_text(..., ((void
+# *)-1LL))` matching the SQLITE_TRANSIENT byte pattern); this test
+# guards the codegen primitive that makes it possible.
 #
 # `free(NULL)` is a well-defined POSIX no-op, so we use it as a safe
 # observation point. The interesting bit isn't the runtime behavior

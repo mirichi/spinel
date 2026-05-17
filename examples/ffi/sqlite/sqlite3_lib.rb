@@ -23,6 +23,7 @@ module SQL
   ffi_func :sqlite3_close,             [:ptr],                                :int
   ffi_func :sqlite3_exec,              [:ptr, :str, :ptr, :ptr, :ptr],        :int
   ffi_func :sqlite3_prepare_v2,        [:ptr, :str, :int, :ptr, :ptr],        :int
+  ffi_func :sqlite3_bind_text,         [:ptr, :int, :str, :int, :ptr],        :int
   ffi_func :sqlite3_step,              [:ptr],                                :int
   ffi_func :sqlite3_finalize,          [:ptr],                                :int
   ffi_func :sqlite3_column_int,        [:ptr, :int],                          :int
