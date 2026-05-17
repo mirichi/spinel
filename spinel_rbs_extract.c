@@ -388,13 +388,26 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
     }
     rbs_types_function_t *fn = (rbs_types_function_t *) mt->type;
 
-    /* Out-of-subset shapes: optional / rest / keyword params. Skip
-     * the whole signature rather than emit a partial one. */
-    if ((fn->optional_positionals != NULL && fn->optional_positionals->length > 0)
+    /* Out-of-subset shapes: rest-positional / rest-keyword / optional
+     * or trailing positionals. These break the fixed-arity contract
+     * the seed format expects (one ptype slot per Ruby def param).
+     * Required + optional keywords ARE handled — we walk them in
+     * insertion order (head/next linked list; rbs_hash_set appends
+     * to tail, matching RBS source order) and append the value types
+     * to the ptype list after the required positionals. The arity
+     * lines up with the Ruby def order spinel's collect_all sees.
+     *
+     * NOTE: rbs_hash_t.length is not incremented by rbs_hash_set
+     * (upstream rbs/ast.c#rbs_hash_set inserts into head/tail without
+     * updating length). Detect emptiness via `head == NULL`, not via
+     * `length`. Same applies in the walking code below.
+     *
+     * Positional rbs_node_list_t.length IS maintained by rbs_node_list_
+     * append — so the optional/trailing positional checks below use
+     * `head == NULL` as the safer cross-cutting "is empty" predicate. */
+    if ((fn->optional_positionals != NULL && fn->optional_positionals->head != NULL)
         || fn->rest_positionals != NULL
-        || (fn->trailing_positionals != NULL && fn->trailing_positionals->length > 0)
-        || (fn->required_keywords != NULL && fn->required_keywords->length > 0)
-        || (fn->optional_keywords != NULL && fn->optional_keywords->length > 0)
+        || (fn->trailing_positionals != NULL && fn->trailing_positionals->head != NULL)
         || fn->rest_keywords != NULL) {
         return;
     }
@@ -421,6 +434,44 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
             cur = cur->next;
         }
     }
+
+    /* Required + optional keywords. Both are stored as rbs_hash
+     * mapping name-Symbol → function_param. The hash is insertion-
+     * ordered (head/tail linked list); RBS's parser inserts kwargs in
+     * source order. We walk required then optional, mapping each
+     * param's value type. The arity adds up to (positionals +
+     * required_kwargs + optional_kwargs), matching Ruby's def in
+     * source-order — same shape collect_all sees. Optionality is an
+     * arity-affecting source property and doesn't change the type
+     * slot the seed targets. */
+    const rbs_hash_t *kw_hashes[] = { fn->required_keywords, fn->optional_keywords };
+    for (size_t ki = 0; ki < sizeof(kw_hashes)/sizeof(kw_hashes[0]); ki++) {
+        const rbs_hash_t *hash = kw_hashes[ki];
+        if (hash == NULL) continue;
+        rbs_hash_node_t *cur = hash->head;
+        while (cur != NULL) {
+            /* Defensive: an upstream rbs change adding a different
+             * value-node type would land here. Skipping the whole
+             * signature (rather than producing a partial seed) keeps
+             * the analyzer consistent — apply_rbs_seeds overwrites a
+             * method's ptype list wholesale, so a half-populated entry
+             * is worse than no entry. Same policy as the positional
+             * loop above and the existing out-of-subset early-return. */
+            if (cur->value == NULL || cur->value->type != RBS_TYPES_FUNCTION_PARAM) {
+                sbuf_free(&ptypes); return;
+            }
+            rbs_types_function_param_t *pp = (rbs_types_function_param_t *) cur->value;
+            sbuf_t t;
+            sbuf_init(&t);
+            if (!map_type(p, pp->type, enclosing_scope, &t)) { sbuf_free(&t); sbuf_free(&ptypes); return; }
+            if (!first_p) sbuf_append_cstr(&ptypes, ",");
+            sbuf_append(&ptypes, t.buf, t.len);
+            first_p = false;
+            sbuf_free(&t);
+            cur = cur->next;
+        }
+    }
+
     if (ptypes.len == 0) sbuf_append_cstr(&ptypes, "-");
 
     sbuf_t ret;
