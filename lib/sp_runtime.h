@@ -1743,7 +1743,7 @@ static mrb_bool sp_file_file(const char *path) {
    and `\r\n` becomes `\r\r\n`. fread's actual byte count drives
    null-termination because text mode shrinks the byte count below
    ftell's raw-file size. */
-static const char *sp_file_read(const char *path) { FILE *f = fopen(path, "r"); if (!f) return &("\xff" "")[1]; fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); char *buf = sp_str_alloc(sz); size_t n = 0; if (sz > 0) { n = fread(buf, 1, sz, f); } buf[n] = 0; fclose(f); return buf; }
+static const char *sp_file_read(const char *path) { if (sp_file_directory(path)) sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path)); FILE *f = fopen(path, "r"); if (!f) return &("\xff" "")[1]; fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); char *buf = sp_str_alloc(sz); size_t n = 0; if (sz > 0) { n = fread(buf, 1, sz, f); } buf[n] = 0; fclose(f); return buf; }
 static void sp_file_write(const char *path, const char *data) { FILE *f = fopen(path, "wb"); if (f) { fwrite(data, 1, sp_str_byte_len(data), f); fclose(f); } }
 static mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
 static void sp_file_delete(const char *path) { remove(path); }
