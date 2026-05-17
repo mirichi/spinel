@@ -2816,7 +2816,7 @@ class Compiler
             end
             return "str_str_hash"
           end
-          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil")
+          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil" || first_vt == "symbol")
             return "sym_int_hash"
           end
  # Every value already inferred as poly (the slot was

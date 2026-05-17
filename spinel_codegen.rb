@@ -3206,7 +3206,7 @@ class Compiler
             end
             return "str_str_hash"
           end
-          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil")
+          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil" || first_vt == "symbol")
             return "sym_int_hash"
           end
  # Every value already inferred as poly (the slot was
@@ -11266,7 +11266,16 @@ class Compiler
       return compile_hash_literal(nid)
     end
     if t == "RangeNode"
-      return "sp_range_new(" + compile_expr(@nd_left[nid]) + ", " + compile_expr(@nd_right[nid]) + ")"
+ # Endless `1..` / beginless `..5` ranges encode unbounded
+ # sides as sentinel mins / maxs so include? / cover? give
+ # the right answer (`(1..).include?(2.4)` -> true). Iteration
+ # over an endless range is still an infinite loop (not
+ # special-cased here). Issue #555 case 12.
+      left_e = @nd_left[nid]
+      right_e = @nd_right[nid]
+      left_c = (left_e >= 0 && @nd_type[left_e] != "NilNode") ? compile_expr(left_e) : "INT64_MIN"
+      right_c = (right_e >= 0 && @nd_type[right_e] != "NilNode") ? compile_expr(right_e) : "INT64_MAX"
+      return "sp_range_new(" + left_c + ", " + right_c + ")"
     end
     if t == "DefinedNode"
       return "\"expression\""
@@ -12410,6 +12419,41 @@ class Compiler
   def compile_call_expr(nid)
     mname = @nd_name[nid]
     recv = @nd_receiver[nid]
+
+ # `recv.send(:method_name, args...)` with a SymbolNode method
+ # name reduces to the direct call -- temporarily mutate the
+ # outer CallNode's @nd_name and the inner ArgumentsNode's
+ # @nd_args so the dispatch sees the actual method call
+ # signature, then restore. Issue #555 case 12.
+    if mname == "send" && recv >= 0
+      args_id_send = @nd_arguments[nid]
+      if args_id_send >= 0
+        aa_send = get_args(args_id_send)
+        if aa_send.length >= 1 && @nd_type[aa_send[0]] == "SymbolNode"
+          sym_name_send = @nd_content[aa_send[0]]
+          if sym_name_send != "" && sym_name_send != "send"
+            saved_name_send = @nd_name[nid]
+            saved_args_str = @nd_args[args_id_send]
+            new_args_str = ""
+            ks = 1
+            while ks < aa_send.length
+              if new_args_str == ""
+                new_args_str = aa_send[ks].to_s
+              else
+                new_args_str = new_args_str + "," + aa_send[ks].to_s
+              end
+              ks = ks + 1
+            end
+            @nd_name[nid] = sym_name_send
+            @nd_args[args_id_send] = new_args_str
+            result_send = compile_call_expr(nid)
+            @nd_name[nid] = saved_name_send
+            @nd_args[args_id_send] = saved_args_str
+            return result_send
+          end
+        end
+      end
+    end
 
  # Exception variable bound by `rescue => e`: spinel binds `e` to
  # the message string but tracks it as an exception in
