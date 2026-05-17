@@ -7682,11 +7682,22 @@ class Compiler
  # why the original include-time collection misses them. Idempotent
  # by virtue of collect_module_methods_into_class' existing
  # "don't add if class already has this method" guard.
+ #
+ # When a late-reopened method gets added here, any ivar it
+ # writes must also propagate into the host class's ivar table so
+ # the C struct gets the matching field. The original
+ # collect_ivars(ci) call in collect_class_with_prefix ran before
+ # this reconcile pass, so it never scanned the now-attached
+ # method bodies. Re-run collect_ivars after the method-add for
+ # any class whose method count grew here. collect_ivars itself
+ # is idempotent (add_ivar guards on ivar_exists), so re-running
+ # is safe even when no new method actually attached.
   def reconcile_class_includes
     ci = 0
     while ci < @cls_includes.length
       includes_str = @cls_includes[ci]
       if includes_str != ""
+        before_meths = @cls_meth_names[ci]
         names = includes_str.split(";")
         ni = 0
         while ni < names.length
@@ -7694,6 +7705,12 @@ class Compiler
             collect_module_methods_into_class(ci, names[ni])
           end
           ni = ni + 1
+        end
+        if @cls_meth_names[ci] != before_meths
+          saved_idx = @current_class_idx
+          @current_class_idx = ci
+          collect_ivars(ci)
+          @current_class_idx = saved_idx
         end
       end
       ci = ci + 1
