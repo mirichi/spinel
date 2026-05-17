@@ -18244,6 +18244,12 @@ class Compiler
         if mname == "exist?"
           return "sp_file_exist(" + compile_arg0(nid) + ")"
         end
+        if mname == "directory?"
+          return "sp_file_directory(" + compile_arg0(nid) + ")"
+        end
+        if mname == "file?"
+          return "sp_file_regular(" + compile_arg0(nid) + ")"
+        end
         if mname == "readable?"
  # Reuse the exist check: on every platform Spinel
  # targets, a fopen-able file is also readable from

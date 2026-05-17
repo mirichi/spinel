@@ -5257,7 +5257,7 @@ class Compiler
           if mname == "read" || mname == "binread"
             return "string"
           end
-          if mname == "exist?" || mname == "readable?"
+          if mname == "exist?" || mname == "readable?" || mname == "directory?" || mname == "file?"
             return "bool"
           end
           if mname == "join"

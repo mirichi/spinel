@@ -25,6 +25,7 @@
 #include <time.h>
 #include <setjmp.h>
 #include <errno.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
@@ -51,6 +52,12 @@
 #endif
 #ifndef MAP_ANONYMOUS
 #define MAP_ANONYMOUS MAP_ANON
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #endif
 
 typedef int64_t mrb_int;
@@ -1691,6 +1698,9 @@ static const char *sp_catch_tag[SP_CATCH_STACK_MAX];
 static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
 static volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
+
+static mrb_bool sp_file_directory(const char *path) { struct stat st; return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode); }
+static mrb_bool sp_file_regular(const char *path) { struct stat st; return path && stat(path, &st) == 0 && S_ISREG(st.st_mode); }
 
 /* Text mode ("r") matches CRuby's File.read: on Windows, CRLF is
    normalized to LF on read, which cancels out fopen("w")'s
