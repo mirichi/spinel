@@ -507,7 +507,21 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
 #define SP_GC_MARK_STACK_MAX (1024*64)
 static void**sp_gc_mark_stack=NULL;static int sp_gc_mark_top=0;
-static void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){((char*)obj)[-1]=(char)0xfc;return;}if(pm==0xfc||pm==0xff)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->marked)return;h->marked=1;if(h->scan){if(sp_gc_mark_stack&&sp_gc_mark_top<SP_GC_MARK_STACK_MAX){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}else{h->scan(obj);}}}
+/* Tag bytes on the byte preceding `obj`:
+ *   0xfe : heap-allocated string (sp_str_alloc), unmarked -> bump to 0xfc.
+ *   0xfc : heap string already marked this cycle -> skip.
+ *   0xff : frozen literal in rodata (sp_str_empty, "\xff"+literal) -> skip.
+ *   0xfd : data buffer owned by an sp_String wrapper. The wrapper
+ *          itself carries an sp_gc_hdr and is reached as a separate
+ *          root; the bare data pointer is just a borrow. Skip here.
+ *          Issue #583: without this arm, a `return lv__buf->data;`
+ *          from an ERB-style render whose result later lands in a
+ *          SP_GC_ROOT slot would fall through to the sp_gc_hdr cast
+ *          path on the next collect cycle, read garbage as h->scan,
+ *          and crash with SIGBUS / SIGSEGV.
+ *   else : a real GC-allocated object; cast back to sp_gc_hdr and
+ *          recurse through its scan function. */
+static void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){((char*)obj)[-1]=(char)0xfc;return;}if(pm==0xfc||pm==0xff||pm==0xfd)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->marked)return;h->marked=1;if(h->scan){if(sp_gc_mark_stack&&sp_gc_mark_top<SP_GC_MARK_STACK_MAX){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}else{h->scan(obj);}}}
 /* Forward decl: defined alongside the regex globals it marks. */
 static void sp_re_mark_globals(void);
 static void sp_gc_mark_all(void){if(!sp_gc_mark_stack)sp_gc_mark_stack=(void**)malloc(sizeof(void*)*SP_GC_MARK_STACK_MAX);sp_gc_mark_top=0;for(int i=0;i<sp_gc_nroots;i++){void*obj=*sp_gc_roots[i];if(obj)sp_gc_mark(obj);}sp_re_mark_globals();while(sp_gc_mark_top>0){void*obj=sp_gc_mark_stack[--sp_gc_mark_top];sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->scan)h->scan(obj);}}
