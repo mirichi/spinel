@@ -14897,6 +14897,22 @@ class Compiler
               emit("  { mrb_int _n = " + compile_expr(aargs.first) + "; const char *_v = " + compile_expr(aargs[1]) + "; for (mrb_int _i = 0; _i < _n; _i++) sp_StrArray_push(" + tmp + ", _v); }")
               return tmp
             end
+ # `Array.new(n, nil)` -- the fill value is the nil singleton, so
+ # the resulting array's element slots are sp_RbVal with the nil
+ # tag set. Lowering to int_array would push 0 into each slot
+ # (the C default), and `.inspect` would print "[0, 0, 0]" instead
+ # of MRI's "[nil, nil, nil]". Use sp_PolyArray with sp_box_nil()
+ # as the fill so downstream `[i]` reads, `inspect`, and `nil?`
+ # see the actual nil. Same shape as the pointer-type arm below
+ # but with a poly slot rather than a typed pointer.
+            if vt == "nil"
+              @needs_gc = 1
+              @needs_rb_value = 1
+              tmp = new_temp
+              emit("  sp_PolyArray *" + tmp + " = sp_PolyArray_new();")
+              emit("  { mrb_int _n = " + compile_expr(aargs.first) + "; for (mrb_int _i = 0; _i < _n; _i++) sp_PolyArray_push(" + tmp + ", sp_box_nil()); }")
+              return tmp
+            end
  # Pointer-type fills (objects, other arrays) need a typed PtrArray
  # so the GC scans the elements. Without this they'd be pushed
  # into an int_array and silently swept.

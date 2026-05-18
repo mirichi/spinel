@@ -5235,6 +5235,15 @@ class Compiler
                   @needs_rb_value = 1
                   return "poly_array"
                 end
+ # `Array.new(n, nil)` fills each slot with the nil singleton;
+ # the element shape is sp_RbVal with the nil tag, so the
+ # result must be poly_array (not int_array filled with 0).
+ # Mirrors the codegen arm in compile_constructor_expr.
+                if vt == "nil"
+                  @needs_rb_value = 1
+                  @needs_gc = 1
+                  return "poly_array"
+                end
                 if type_is_pointer(vt) == 1
                   @needs_gc = 1
                   return vt + "_ptr_array"
