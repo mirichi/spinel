@@ -434,12 +434,15 @@ class Compiler
     @dyn_regex_node_ids = []
     @dyn_regex_flags = "".split(",")
  # `var = /lit/` resolution. Parallel arrays: `@local_regex_names`
- # holds the local-variable name and `@local_regex_idx` holds the
- # corresponding `@regexp_patterns` index, or -1 when the same name
- # has any other (non-regex or different-regex) write anywhere in
- # the program — in which case the dispatcher must fall through.
+ # holds the local-variable name; `@local_regex_idx` holds the
+ # corresponding `@regexp_patterns` index (-1 when the LV is
+ # ambiguous or is bound to a dyn-Regexp.new); `@local_regex_call_nids`
+ # holds the AST node id of a single-write `Regexp.new(<dyn>)`
+ # right-hand side (-1 otherwise), so the read-site dyn-cache emit
+ # can locate the call. Multi-write resets both to -1 / -1.
     @local_regex_names = "".split(",")
     @local_regex_idx = []
+    @local_regex_call_nids = []
 
  # Cache for parse_id_list: AST list fields never change once loaded,
  # so the parsed IntArray can be shared across callers. The `[[0]]`
@@ -1540,53 +1543,80 @@ class Compiler
     parts.join("|")
   end
 
- # Returns the literal source string when `nid` is a `Regexp.new("...")`
- # (or `Regexp.compile("...")`) call with exactly one StringNode
- # argument, "" otherwise. Lets `pattern = Regexp.new("foo")` fold
- # into the same static pattern table as `pattern = /foo/`, so
- # `pattern.match?(s)` dispatches through `sp_re_pat_<i>` instead of
- # falling through to unresolved-call. Dynamic-arg forms return ""
- # and fall back.
- #
- # The arity check is strict (exactly 1 arg, no kwargs, no block) so
- # `Regexp.new("foo", Regexp::IGNORECASE)` falls through to the loud
- # `warn_unresolved_call` path instead of silently dropping the flag
- # -- silent CRuby divergence on a supported method belongs in the
- # bug bucket, not the quirk bucket.
-  def regexp_new_literal_pattern(nid)
+ # Returns the AST node id of the single argument when `nid` is a
+ # `Regexp.new(<arg>)` / `Regexp.compile(<arg>)` call with exactly
+ # one argument (no block, no kwargs, recv is a `Regexp` constant
+ # ref). Returns -1 otherwise. Strict arity so `Regexp.new("foo",
+ # Regexp::IGNORECASE)` falls through to unresolved-call instead of
+ # silently dropping the flag -- silent CRuby divergence on a
+ # supported method belongs in the bug bucket, not the quirk bucket.
+  def regexp_new_call_arg_id(nid)
     if @nd_type[nid] != "CallNode"
-      return ""
+      return -1
     end
     mn = @nd_name[nid]
     if mn != "new" && mn != "compile"
-      return ""
+      return -1
     end
     if @nd_block[nid] >= 0
-      return ""
+      return -1
     end
     recv = @nd_receiver[nid]
     if recv < 0
-      return ""
+      return -1
     end
     if @nd_type[recv] != "ConstantReadNode"
-      return ""
+      return -1
     end
     if @nd_name[recv] != "Regexp"
-      return ""
+      return -1
     end
     args_id = @nd_arguments[nid]
     if args_id < 0
-      return ""
+      return -1
     end
     arg_ids = get_args(args_id)
     if arg_ids.length != 1
+      return -1
+    end
+    arg_ids[0]
+  end
+
+ # Returns the literal source string when the Regexp.new/compile
+ # call's single argument is a StringNode, "" otherwise. Lets
+ # `pattern = Regexp.new("foo")` fold into the same static pattern
+ # table as `pattern = /foo/`, so `pattern.match?(s)` dispatches
+ # through `sp_re_pat_<i>`. Non-literal 1-arg forms route through
+ # the dyn cache instead (see scan_features CallNode arm).
+  def regexp_new_literal_pattern(nid)
+    a0 = regexp_new_call_arg_id(nid)
+    if a0 < 0
       return ""
     end
-    a0 = arg_ids[0]
     if @nd_type[a0] != "StringNode"
       return ""
     end
     @nd_content[a0]
+  end
+
+ # Returns 1 if `nid` is a 1-arg `Regexp.new`/`compile` call whose
+ # argument is NOT a StringNode literal. These route through the
+ # per-call-site `sp_re_dyn_<idx>` cache so the pattern string is
+ # re-evaluated each visit -- correct semantics for the common idiom
+ # `pat = Regexp.new("<#{tag}>")` where the arg's free variables
+ # don't mutate between write and read. A user who reassigns those
+ # free variables between the write and a later read of `pat` gets
+ # CRuby-divergent semantics; that case is rare and the runtime
+ # cache will at least give consistent results for any given input.
+  def regexp_new_dynamic?(nid)
+    a0 = regexp_new_call_arg_id(nid)
+    if a0 < 0
+      return 0
+    end
+    if @nd_type[a0] == "StringNode"
+      return 0
+    end
+    1
   end
 
  # Index of an InterpolatedRegularExpressionNode in @dyn_regex_node_ids,
@@ -5338,16 +5368,17 @@ class Compiler
           if rn == "Time"
             return "time"
           end
- # `Regexp.new(literal)` / `Regexp.compile(literal)` registers the
- # pattern with the static regex table (scan_features arm) and the
- # local-name → pattern map (LocalVariableWriteNode arm). The LV
- # itself carries no useful runtime payload — match?/=~/match all
- # dispatch through `regex_pat_c_expr` at the call site, which
- # resolves the LV via `@local_regex_names` and emits the global
- # `sp_re_pat_<i>`. Type the call as "int" so the LV lowers to
- # `mrb_int lv_x = 0;` (the same shape `pattern = /foo/` produces).
+ # `Regexp.new(<arg>)` / `Regexp.compile(<arg>)` -- both literal and
+ # dyn variants. Scan_features registered the pattern (static table
+ # or per-call-site dyn cache) and LocalVariableWriteNode recorded
+ # the LV-name → resolution map. The LV carries no useful runtime
+ # payload: match?/=~/match all dispatch through `regex_pat_c_expr`
+ # at the call site, which either emits `sp_re_pat_<i>` (static) or
+ # re-emits `sp_re_dyn_<idx>(<arg>)` (dyn). Type the call as "int"
+ # so the LV lowers to `mrb_int lv_x = 0;` (matching the shape
+ # `pattern = /foo/` produces).
           if rn == "Regexp"
-            if regexp_new_literal_pattern(nid) != ""
+            if regexp_new_literal_pattern(nid) != "" || regexp_new_dynamic?(nid) == 1
               return "int"
             end
           end
@@ -17719,8 +17750,10 @@ class Compiler
  # `Regexp.new("literal")` / `Regexp.compile("literal")` folds into
  # the same static pattern table so `.match?`/`=~` dispatch through
  # `sp_re_pat_<i>` like a `/literal/` literal. Dynamic-arg forms
- # (`Regexp.new(s)` with a non-literal arg) return "" from the helper
- # and are left to the existing fallback (currently unresolved).
+ # (`Regexp.new("<#{x}>")`, `Regexp.new(s)`, etc.) register a
+ # per-call-site `sp_re_dyn_<idx>` cache instead -- regex_pat_c_expr
+ # re-evaluates the arg at each match site, the cache compares the
+ # produced string to its stored key and only recompiles on miss.
     if t == "CallNode"
       rxlit = regexp_new_literal_pattern(nid)
       if rxlit != ""
@@ -17736,6 +17769,20 @@ class Compiler
         if already_rx == 0
           @regexp_patterns.push(rxlit)
           @regexp_flags.push("0")
+        end
+      elsif regexp_new_dynamic?(nid) == 1
+        @needs_regexp = 1
+        already_dn = 0
+        dni = 0
+        while dni < @dyn_regex_node_ids.length
+          if @dyn_regex_node_ids[dni] == nid
+            already_dn = 1
+          end
+          dni = dni + 1
+        end
+        if already_dn == 0
+          @dyn_regex_node_ids.push(nid)
+          @dyn_regex_flags.push("0")
         end
       end
     end
@@ -17776,14 +17823,26 @@ class Compiler
           end
         end
       end
+ # `var = Regexp.new(<dyn>)`: record the call's AST node id so the
+ # read-site can emit `sp_re_dyn_<idx>(<arg_c>)` with the cached
+ # compiled pattern. Pre-scan ensures @dyn_regex_node_ids has the
+ # entry before find_dyn_regex_index runs at emit time.
+      this_call_nid = -1
+      if this_idx == -1 && vid >= 0 && regexp_new_dynamic?(vid) == 1
+        scan_features(vid)
+        this_call_nid = vid
+      end
       i2 = 0
       found = 0
       while i2 < @local_regex_names.length
         if @local_regex_names[i2] == lname
           found = 1
- # Any second write (regex or not) marks ambiguous.
+ # Any second write (regex or not) marks ambiguous in both slots.
           if @local_regex_idx[i2] != this_idx
             @local_regex_idx[i2] = -1
+          end
+          if @local_regex_call_nids[i2] != this_call_nid
+            @local_regex_call_nids[i2] = -1
           end
         end
         i2 = i2 + 1
@@ -17791,6 +17850,7 @@ class Compiler
       if found == 0
         @local_regex_names.push(lname)
         @local_regex_idx.push(this_idx)
+        @local_regex_call_nids.push(this_call_nid)
       end
     end
     if t == "ArrayNode"
@@ -24860,6 +24920,7 @@ class Compiler
     buf = ir_emit_sa(buf, "@dyn_regex_flags", @dyn_regex_flags)
     buf = ir_emit_sa(buf, "@local_regex_names", @local_regex_names)
     buf = ir_emit_ia(buf, "@local_regex_idx", @local_regex_idx)
+    buf = ir_emit_ia(buf, "@local_regex_call_nids", @local_regex_call_nids)
 
  # Misc tables
     buf = ir_emit_sa(buf, "@open_class_names", @open_class_names)

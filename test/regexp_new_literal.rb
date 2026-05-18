@@ -23,3 +23,27 @@ puts pat2.match?("foobar")                 # true
 RE = Regexp.new("foo")
 puts RE.match?("foobar")                   # true
 puts "abc foo def" =~ RE                   # 4
+
+# Dynamic-arg form: the argument is built at runtime via interpolation.
+# scan_features registers the CallNode with the per-call-site
+# `sp_re_dyn_<idx>` cache; at the read site `regex_pat_c_expr`
+# re-evaluates the arg string and the cache returns the compiled
+# pattern (recompile only on key change).
+tag = "div"
+puts Regexp.new("<#{tag}").match?("<div>")  # true
+puts Regexp.new("<#{tag}").match?("<span>") # false
+
+# LV bound to a dyn Regexp.new -- read site re-emits the dyn-cache
+# call, so the cache lookup uses the LV's free variables (here `tag`)
+# in scope at the read site.
+pat_dyn = Regexp.new("<#{tag}>")
+puts pat_dyn.match?("<div>")                # true
+puts pat_dyn =~ "before <div> after"        # 7
+
+# Dyn arg from method parameters -- the common idiom for an
+# assert_select-style helper.
+def find_tag(body, tag)
+  re = Regexp.new("<#{tag}[^>]*>")
+  body =~ re
+end
+puts find_tag("foo <span class=\"y\"> bar", "span") # 4
