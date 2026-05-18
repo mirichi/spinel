@@ -4325,16 +4325,20 @@ class Compiler
       return "int"
     end
     if mname == "index" || mname == "find_index" || mname == "rindex"
- # Issue #532: `String#index` / `String#rindex` now return
- # sp_RbVal (boxed nil for not-found, boxed int for found) so the
- # CRuby idiom `pos = s.index(...); break if pos.nil?` works.
- # Array#index / #find_index keep returning int for now -- the
- # same fix would apply structurally but isn't part of #532's
- # reproduction surface; widening there cascades through more
- # call sites that consume the result as a raw array index.
+ # Issue #532: `String#index` / `String#rindex` return sp_RbVal
+ # (boxed nil for not-found, boxed int for found) so the CRuby
+ # idiom `pos = s.index(...); break if pos.nil?` works. The
+ # same applies to Array#index / #find_index / #rindex: spinel
+ # is a Ruby SUBSET, so the documented Ruby API must return
+ # Integer | nil, not the -1 sentinel. Codegen routes through
+ # `sp_*Array_index_poly` runtime wrappers.
       if recv >= 0
         rt_idx = infer_type(recv)
         if rt_idx == "string" || rt_idx == "mutable_str"
+          @needs_rb_value = 1
+          return "poly"
+        end
+        if rt_idx == "int_array" || rt_idx == "str_array" || rt_idx == "float_array" || rt_idx == "sym_array" || rt_idx == "poly_array" || is_ptr_array_type(rt_idx) == 1
           @needs_rb_value = 1
           return "poly"
         end
@@ -16756,7 +16760,7 @@ class Compiler
  # Issue #563.
         if @unified_imeth_returns != nil && j < returns.length
           tag_iru = i.to_s + ":" + j.to_s
-          if @unified_imeth_returns.index(tag_iru) != nil && returns[j] != "" && returns[j] != "int"
+          if @unified_imeth_returns.include?(tag_iru) && returns[j] != "" && returns[j] != "int"
             rt = returns[j]
           end
         end

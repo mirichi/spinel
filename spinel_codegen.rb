@@ -16692,12 +16692,19 @@ class Compiler
       end
       if mname == "index" || mname == "find_index"
         if @nd_arguments[nid] >= 0
-          return "sp_IntArray_index(" + rc + ", " + compile_arg0(nid) + ")"
+ # CRuby returns Integer | nil from Array#index. Route through
+ # the `_poly` wrapper that boxes nil for not-found; this keeps
+ # `arr.index(x).nil?` / `arr.index(x) == nil` behaving the
+ # CRuby way. The raw `_index` helper still returns the -1
+ # sentinel for internal callers that need it.
+          @needs_rb_value = 1
+          return "sp_IntArray_index_poly(" + rc + ", " + compile_arg0(nid) + ")"
         end
       end
       if mname == "rindex"
         if @nd_arguments[nid] >= 0
-          return "sp_IntArray_rindex(" + rc + ", " + compile_arg0(nid) + ")"
+          @needs_rb_value = 1
+          return "sp_IntArray_rindex_poly(" + rc + ", " + compile_arg0(nid) + ")"
         end
       end
       if mname == "delete_at"
@@ -17211,12 +17218,14 @@ class Compiler
       end
       if mname == "index" || mname == "find_index"
         if @nd_arguments[nid] >= 0
-          return "sp_StrArray_index(" + rc + ", " + compile_arg0(nid) + ")"
+          @needs_rb_value = 1
+          return "sp_StrArray_index_poly(" + rc + ", " + compile_arg0(nid) + ")"
         end
       end
       if mname == "rindex"
         if @nd_arguments[nid] >= 0
-          return "sp_StrArray_rindex(" + rc + ", " + compile_arg0(nid) + ")"
+          @needs_rb_value = 1
+          return "sp_StrArray_rindex_poly(" + rc + ", " + compile_arg0(nid) + ")"
         end
       end
       if mname == "delete_at"

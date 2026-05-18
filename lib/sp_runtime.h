@@ -1374,6 +1374,22 @@ static sp_RbVal sp_box_str_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_ST
 static sp_RbVal sp_box_sym_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_SYM_ARRAY); }
 static sp_RbVal sp_box_ptr_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_PTR_ARRAY); }
 static sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
+
+/* CRuby-compatible Array#index / #rindex / #find_index: returns
+   sp_RbVal (nil tag for not-found, int tag with the position when
+   found). spinel's raw `_index` helpers return the -1 sentinel,
+   which diverges from CRuby's nil. Codegen routes
+   `arr.index(x)` / `arr.find_index(x)` / `arr.rindex(x)` through
+   these `_poly` wrappers so `.nil?` / `== nil` / `inspect` etc.
+   on the result behave the CRuby way. Sibling to
+   `sp_str_index_poly` above; same widening rationale.
+   Issue raised during #585 follow-up: spinel positions itself
+   as a Ruby SUBSET, so documented Ruby APIs must match CRuby
+   behavior. */
+static sp_RbVal sp_IntArray_index_poly(sp_IntArray *a, mrb_int v)         { mrb_int n = sp_IntArray_index(a, v);   return n < 0 ? sp_box_nil() : sp_box_int(n); }
+static sp_RbVal sp_IntArray_rindex_poly(sp_IntArray *a, mrb_int v)        { mrb_int n = sp_IntArray_rindex(a, v);  return n < 0 ? sp_box_nil() : sp_box_int(n); }
+static sp_RbVal sp_StrArray_index_poly(sp_StrArray *a, const char *v)     { mrb_int n = sp_StrArray_index(a, v);   return n < 0 ? sp_box_nil() : sp_box_int(n); }
+static sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, const char *v)    { mrb_int n = sp_StrArray_rindex(a, v);  return n < 0 ? sp_box_nil() : sp_box_int(n); }
 /* sp_Range is a 16-byte value type that doesn't fit in sp_RbVal's union
    (max 8 bytes). When a Range crosses into a poly slot (heterogeneous
    hash / array / param / ivar), copy it onto the GC heap and box the
