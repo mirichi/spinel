@@ -132,6 +132,14 @@ static mrb_int sp_str_to_i_strict(const char *s) {
 }
 typedef struct{mrb_int first;mrb_int last;}sp_Range;
 static sp_Range sp_range_new(mrb_int f,mrb_int l){sp_Range r;r.first=f;r.last=l;return r;}
+/* Inclusive-form `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ
+   cls_id SP_BUILTIN_RANGE) Range value. The direct sp_Range typed
+   path inlines this same check via compile_range_method_expr;
+   poly-recv dispatch needs the wrapper so the cls_id arm in
+   emit_poly_builtin_dispatch can land on a single C expression. The
+   sp_Range struct doesn't track exclude_end, so behaviour matches
+   the inclusive form -- consistent with the direct-typed emit. */
+static mrb_bool sp_range_include(sp_Range *r, mrb_int x){return r->first<=x && x<=r->last;}
 
 /* ---- Class object ----
    Value-type Class reference: a single class id that indexes into
@@ -1639,7 +1647,24 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
     case SP_TAG_NIL:  return SPL("nil");
     case SP_TAG_SYM:  return sp_str_concat(SPL(":"), sp_sym_to_s((sp_sym)v.v.i));
-    case SP_TAG_OBJ:  return SPL("#<Object>");
+    case SP_TAG_OBJ:
+ /* Built-in container / value-type tags get their typed inspect
+    helper. Matches the dispatch shape in sp_poly_to_s above and the
+    `puts` poly arm earlier in this file; without it, a Range / Time
+    / typed Array stored as an sp_RbVal value (e.g. a sym_poly_hash
+    that mixes `200..299` and `404`) reported "#<Object>" from
+    `.inspect`, which was both wrong for CRuby parity and useless
+    for debugging. */
+      switch (v.cls_id) {
+        case SP_BUILTIN_INT_ARRAY: return sp_IntArray_inspect((sp_IntArray *)v.v.p);
+        case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_inspect((sp_FloatArray *)v.v.p);
+        case SP_BUILTIN_STR_ARRAY: return sp_StrArray_inspect((sp_StrArray *)v.v.p);
+        case SP_BUILTIN_SYM_ARRAY: return sp_SymArray_inspect((sp_IntArray *)v.v.p);
+        case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect((sp_PtrArray *)v.v.p);
+        case SP_BUILTIN_RANGE:     return sp_Range_inspect((sp_Range *)v.v.p);
+        case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
+        default:                   return SPL("#<Object>");
+      }
     default:          return sp_str_empty;
   }
 }

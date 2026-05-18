@@ -11954,6 +11954,29 @@ class Compiler
     "0"
   end
 
+ # Compile the first argument expecting a symbol-typed key for
+ # sym_*_hash lookups. A SymbolNode literal already compiles to a
+ # raw `SPS_<name>` (sp_sym); a poly-typed argument (e.g. an
+ # `is_a?(Symbol)`-narrowed local that still carries the sp_RbVal
+ # tag at C-level) needs `.v.i` extracted so the call matches the
+ # `sp_sym` (long-int) parameter signature.
+  def compile_arg0_as_sym(nid)
+    args_id = @nd_arguments[nid]
+    if args_id >= 0
+      arg_ids = get_args(args_id)
+      if arg_ids.length > 0
+        a0 = arg_ids[0]
+        e = compile_expr(a0)
+        at = infer_type(a0)
+        if at == "poly"
+          return "(sp_sym)(" + e + ").v.i"
+        end
+        return e
+      end
+    end
+    "0"
+  end
+
   def compile_system_call(nid)
     @needs_system = 1
     args_id = @nd_arguments[nid]
@@ -17531,21 +17554,27 @@ class Compiler
         args_id0 = @nd_arguments[nid]
         if args_id0 >= 0
           aa0 = get_args(args_id0)
-          if aa0.length > 0 && infer_type(aa0[0]) != "symbol"
-            return "((mrb_int)0)"
+          if aa0.length > 0
+            at0 = infer_type(aa0[0])
+            if at0 != "symbol" && at0 != "poly"
+              return "((mrb_int)0)"
+            end
           end
         end
-        return "sp_SymIntHash_get((sp_SymIntHash *)(" + rc + "), " + compile_arg0(nid) + ")"
+        return "sp_SymIntHash_get((sp_SymIntHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         args_id1 = @nd_arguments[nid]
         if args_id1 >= 0
           aa1 = get_args(args_id1)
-          if aa1.length > 0 && infer_type(aa1[0]) != "symbol"
-            return "FALSE"
+          if aa1.length > 0
+            at1 = infer_type(aa1[0])
+            if at1 != "symbol" && at1 != "poly"
+              return "FALSE"
+            end
           end
         end
-        return "sp_SymIntHash_has_key((sp_SymIntHash *)(" + rc + "), " + compile_arg0(nid) + ")"
+        return "sp_SymIntHash_has_key((sp_SymIntHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         if @hoisted_strlen_var != "" && @hoisted_strlen_recv == rc
@@ -17658,21 +17687,33 @@ class Compiler
         args_id0s = @nd_arguments[nid]
         if args_id0s >= 0
           aa0s = get_args(args_id0s)
-          if aa0s.length > 0 && infer_type(aa0s[0]) != "symbol"
-            return "(&(\"\\xff\")[1])"
+          if aa0s.length > 0
+            at0s = infer_type(aa0s[0])
+ # Concrete non-symbol key (int / string / etc.) can never
+ # match a sym-keyed hash, so short-circuit to the "missing"
+ # default. A poly arg is treated as potentially a symbol
+ # (the common case is `is_a?(Symbol)`-narrowed locals that
+ # still carry the sp_RbVal tag at C level); compile_arg0_as_sym
+ # extracts `.v.i` so the lookup matches the `sp_sym` ABI.
+            if at0s != "symbol" && at0s != "poly"
+              return "(&(\"\\xff\")[1])"
+            end
           end
         end
-        return "sp_SymStrHash_get((sp_SymStrHash *)(" + rc + "), " + compile_arg0(nid) + ")"
+        return "sp_SymStrHash_get((sp_SymStrHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         args_id1s = @nd_arguments[nid]
         if args_id1s >= 0
           aa1s = get_args(args_id1s)
-          if aa1s.length > 0 && infer_type(aa1s[0]) != "symbol"
-            return "FALSE"
+          if aa1s.length > 0
+            at1s = infer_type(aa1s[0])
+            if at1s != "symbol" && at1s != "poly"
+              return "FALSE"
+            end
           end
         end
-        return "sp_SymStrHash_has_key((sp_SymStrHash *)(" + rc + "), " + compile_arg0(nid) + ")"
+        return "sp_SymStrHash_has_key((sp_SymStrHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         if @hoisted_strlen_var != "" && @hoisted_strlen_recv == rc
@@ -17732,10 +17773,10 @@ class Compiler
     end
     if recv_type == "sym_poly_hash"
       if mname == "[]"
-        return "sp_SymPolyHash_get((sp_SymPolyHash *)(" + rc + "), " + compile_arg0(nid) + ")"
+        return "sp_SymPolyHash_get((sp_SymPolyHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
-        return "sp_SymPolyHash_has_key((sp_SymPolyHash *)(" + rc + "), " + compile_arg0(nid) + ")"
+        return "sp_SymPolyHash_has_key((sp_SymPolyHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         return "sp_SymPolyHash_length((sp_SymPolyHash *)(" + rc + "))"
@@ -20755,7 +20796,12 @@ class Compiler
         stphrhs = is_poly_ret == 1 ? "sp_box_bool(" + stphc + ")" : stphc
         emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_STR_POLY_HASH) " + result_tmp + " = " + stphrhs + ";")
       end
- # int arg: IntArray + Int-keyed Hash.
+ # int arg: IntArray + Int-keyed Hash + Range. The Range arm
+ # mirrors compile_range_method_expr's `first <= x <= last`
+ # inline emit (sp_Range struct doesn't carry exclude_end), so
+ # `case x; when Range; r.include?(actual)` against a poly
+ # receiver lands on the right path instead of falling through
+ # to "0" (always-false).
       if inc_arg_t == "int"
         iac = "sp_IntArray_include((sp_IntArray *)" + recv_tmp + ".v.p, " + inc_arg + ")"
         iarhs = is_poly_ret == 1 ? "sp_box_bool(" + iac + ")" : iac
@@ -20763,6 +20809,9 @@ class Compiler
         ishc = "sp_IntStrHash_has_key((sp_IntStrHash *)" + recv_tmp + ".v.p, " + inc_arg + ")"
         ishrhs = is_poly_ret == 1 ? "sp_box_bool(" + ishc + ")" : ishc
         emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_INT_STR_HASH) " + result_tmp + " = " + ishrhs + ";")
+        rgc = "sp_range_include((sp_Range *)" + recv_tmp + ".v.p, " + inc_arg + ")"
+        rgrhs = is_poly_ret == 1 ? "sp_box_bool(" + rgc + ")" : rgc
+        emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_RANGE) " + result_tmp + " = " + rgrhs + ";")
       end
  # float arg: FloatArray.
       if inc_arg_t == "float"
