@@ -6406,6 +6406,9 @@ class Compiler
     if bt == "ptr"
       return 1
     end
+    if bt == "regexp"
+      return 1
+    end
     if bt == "string" || bt == "mutable_str"
       return 1
     end

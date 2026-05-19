@@ -3916,6 +3916,9 @@ class Compiler
     if bt == "ptr"
       return 1
     end
+    if bt == "regexp"
+      return 1
+    end
     if bt == "string" || bt == "mutable_str"
       return 1
     end
@@ -4000,6 +4003,14 @@ class Compiler
     end
     if t == "int"
       return "mrb_int"
+    end
+ # Compiled regex pattern. The runtime helpers (sp_re_match_p,
+ # sp_re_match etc.) take this pointer; a `regexp` local lets a
+ # branch-built pattern survive as a real C value instead of
+ # being dropped into the @local_regex_idx side-channel (which
+ # can only carry a single static or dyn-cache index).
+    if t == "regexp"
+      return "mrb_regexp_pattern *"
     end
  # FFI raw C pointer (void *). See type_is_pointer for GC rules.
     if t == "ptr"
@@ -4138,6 +4149,9 @@ class Compiler
     end
     if t == "int"
       return "0"
+    end
+    if t == "regexp"
+      return "NULL"
     end
     if t == "ptr"
       return "NULL"
