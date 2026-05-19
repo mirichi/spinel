@@ -20843,9 +20843,26 @@ class Compiler
       emit("  if (" + recv_tmp + ".tag == SP_TAG_STR) " + tmp + " = " + sinc_rhs + ";")
     end
     emit("  if (" + recv_tmp + ".tag == SP_TAG_OBJ) {")
- # User-class dispatch
+ # User-class dispatch. Narrow the candidate set when the recv
+ # is an ivar whose observed types are entirely concrete obj_<C>
+ # entries — the runtime value can only be an instance of one
+ # of those classes, so dispatch arms for unrelated classes
+ # that happen to share the method name are unreachable.
+ # Without this filter, Issue #575 surfaces: a same-named method
+ # on a class never assigned to the ivar (e.g. an Unrelated#run
+ # with zero args returning int when the ivar only ever sees
+ # Worker#run(item) returning string) widens the dispatch
+ # result temp to sp_RbVal and trips downstream type-strict
+ # consumers (sp_file_write etc.). The return-type union in
+ # poly_dispatch_return_type already consults this set; the
+ # emit loop just needed the matching skip.
+    dispatch_narrow_set = poly_dispatch_narrow_class_set(nid)
     i = 0
     while i < @cls_names.length
+      if dispatch_narrow_set != "" && poly_dispatch_class_in_set(dispatch_narrow_set, i) == 0
+        i = i + 1
+        next
+      end
       cname = @cls_names[i]
       midx = cls_find_method_direct(i, mname)
       owner_idx = i
