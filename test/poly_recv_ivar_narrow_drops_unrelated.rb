@@ -48,7 +48,9 @@ class Pool
   end
 end
 
-Pool.new(Worker.new).go("a", "/tmp/poly_recv_ivar_narrow_a.txt")
-Pool.new(Other.new).go("b", "/tmp/poly_recv_ivar_narrow_b.txt")
-puts File.read("/tmp/poly_recv_ivar_narrow_a.txt")
-puts File.read("/tmp/poly_recv_ivar_narrow_b.txt")
+Pool.new(Worker.new).go("a", "spinel_poly_recv_ivar_narrow_a.txt")
+Pool.new(Other.new).go("b", "spinel_poly_recv_ivar_narrow_b.txt")
+puts File.read("spinel_poly_recv_ivar_narrow_a.txt")
+puts File.read("spinel_poly_recv_ivar_narrow_b.txt")
+File.delete("spinel_poly_recv_ivar_narrow_a.txt")
+File.delete("spinel_poly_recv_ivar_narrow_b.txt")
