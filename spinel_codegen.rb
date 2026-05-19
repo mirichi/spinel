@@ -605,6 +605,11 @@ class Compiler
     @ieval_class_idxs = []
     @ieval_body_ids = []
     @ieval_return_types = "".split(",")
+ # Self-bound param per lift; emit_ieval_func seeds `lv_<name> = self;`.
+    @ieval_self_param_names = "".split(",")
+ # Extras already land in @nd_scope_names as nil-typed locals via
+ # analyze's precompute_all_scope_decls.
+    @ieval_extra_param_names = "".split(",")
   end
 
  # Backslash-n for C string literals - bootstrap-safe (avoids escape level issues)
@@ -4869,12 +4874,22 @@ class Compiler
     push_scope
     if bid >= 0
       declare_method_locals(bid, "".split(","))
-      if @needs_gc == 1
+ # Seed self-bound param (analyze declared it as obj_<C>).
+      spn = ""
+      if n < @ieval_self_param_names.length
+        spn = @ieval_self_param_names[n]
+      end
+      if spn != ""
+        emit("  lv_" + spn + " = self;")
+      end
+ # declare_method_locals already emits SP_GC_SAVE when the body
+ # has pointer locals; only emit again if it didn't.
+      if @needs_gc == 1 && @in_gc_scope == 0
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
-        if @cls_is_value_type[ci] == 0
-          emit("  SP_GC_ROOT(self);")
-        end
+      end
+      if @needs_gc == 1 && @cls_is_value_type[ci] == 0
+        emit("  SP_GC_ROOT(self);")
       end
       compile_body_return(bid, ret_type)
     end
@@ -35302,6 +35317,12 @@ class Compiler
       @multi_const_inits = val
     elsif name == "@ieval_return_types"
       @ieval_return_types = val
+    elsif name == "@ieval_self_param_names"
+      @ieval_self_param_names = val
+    elsif name == "@ieval_extra_param_names"
+      @ieval_extra_param_names = val
+    elsif name == "@cls_with_internal_ieval_lift"
+      @cls_with_internal_ieval_lift = val
     end
   end
 

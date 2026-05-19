@@ -591,6 +591,16 @@ class Compiler
     @ieval_class_idxs = []
     @ieval_body_ids = []
     @ieval_return_types = "".split(",")
+ # Self-bound block-param name per lift (empty for the no-param
+ # forms). emit_ieval_func seeds it via `lv_<name> = self;`.
+    @ieval_self_param_names = "".split(",")
+ # Extra required block-param names (";"-joined) beyond the
+ # self-bound first. CRuby binds these to nil (arity tolerance);
+ # precompute_all_scope_decls declares them as nil-typed locals.
+    @ieval_extra_param_names = "".split(",")
+ # Receiver classes flagged out of value-type / SRA promotion so
+ # the lifted sp_ieval_<N>'s self-pointer signature can mutate.
+    @cls_with_internal_ieval_lift = "".split(",")
 
  # RBS-derived seed lines. Populated by load_rbs_seeds before
  # analyze_phase; consumed by apply_rbs_seeds after collect_all
@@ -6959,6 +6969,9 @@ class Compiler
     @ieval_class_idxs = []
     @ieval_body_ids = []
     @ieval_return_types = "".split(",")
+    @ieval_self_param_names = "".split(",")
+    @ieval_extra_param_names = "".split(",")
+    @cls_with_internal_ieval_lift = "".split(",")
  # Widen class-method ptypes through obj-typed receivers before the
  # walk so a method-param receiver (e.g. `def configure(app);
  # app.instance_eval { } end` invoked as `cfg.configure(routes)`)
@@ -7185,9 +7198,42 @@ class Compiler
     if blk < 0
       return
     end
- # Skip blocks with parameters: lifted function takes only `self`.
-    if @nd_parameters[blk] >= 0
-      return
+ # Lifted sp_ieval_<N> takes only `self`. Accept `{ }`, `{ || }`,
+ # `{ |x| }`, `{ |x,y,z| }`, and `{ _1.foo }`. Bail on anything
+ # needing extra args at the call boundary (opts/posts/rest/kw/
+ # kwrest/&blk) or on `_2`+ numbered params.
+    self_param_name = ""
+    extra_param_names = "".split(",")
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      if @nd_type[bp] == "NumberedParametersNode"
+        if @nd_value[bp] != 1
+          return
+        end
+        self_param_name = "_1"
+      else
+        inner = @nd_parameters[bp]
+        if inner >= 0
+          reqs = parse_id_list(@nd_requireds[inner])
+          opts = parse_id_list(@nd_optionals[inner])
+          kws = parse_id_list(@nd_keywords[inner])
+          posts = parse_id_list(@nd_posts[inner])
+          rest = @nd_rest[inner]
+          kwrest = @nd_keyword_rest[inner]
+          blkarg = @nd_block[inner]
+          if opts.length > 0 || kws.length > 0 || posts.length > 0 || rest >= 0 || kwrest >= 0 || blkarg >= 0
+            return
+          end
+          if reqs.length >= 1
+            self_param_name = @nd_name[reqs[0]]
+            kpe = 1
+            while kpe < reqs.length
+              extra_param_names.push(@nd_name[reqs[kpe]])
+              kpe = kpe + 1
+            end
+          end
+        end
+      end
     end
     ci = -1
     if @nd_type[recv] == "LocalVariableReadNode"
@@ -7237,6 +7283,11 @@ class Compiler
     @ieval_counter = @ieval_counter + 1
     @ieval_class_idxs.push(ci)
     @ieval_body_ids.push(body_id)
+    @ieval_self_param_names.push(self_param_name)
+    @ieval_extra_param_names.push(extra_param_names.join(";"))
+ # Keep ci heap-allocated so block-body ivar writes propagate
+ # through the lift's self-pointer signature.
+    flag_internal_ieval_lift(ci)
  # Seed return type as "void"; infer_ieval_body_return_types runs
  # after the main return-type fixpoint converges and overwrites with
  # the body's last-expression ctype when non-void.
@@ -7307,6 +7358,32 @@ class Compiler
     end
     if rt.length > 4 && rt[0, 4] == "obj_"
       return 1
+    end
+    0
+  end
+
+ # detect_value_types reads the set via cls_has_internal_ieval_lift
+ # and excludes flagged classes from value-type / SRA promotion.
+  def flag_internal_ieval_lift(ci)
+    s = ci.to_s
+    k = 0
+    while k < @cls_with_internal_ieval_lift.length
+      if @cls_with_internal_ieval_lift[k] == s
+        return
+      end
+      k = k + 1
+    end
+    @cls_with_internal_ieval_lift.push(s)
+  end
+
+  def cls_has_internal_ieval_lift(ci)
+    s = ci.to_s
+    k = 0
+    while k < @cls_with_internal_ieval_lift.length
+      if @cls_with_internal_ieval_lift[k] == s
+        return 1
+      end
+      k = k + 1
     end
     0
   end
@@ -21778,6 +21855,13 @@ class Compiler
               all_val = 0
             end
           end
+ # ieval-receiving classes need a by-pointer self so block-body
+ # ivar writes propagate; value-typed would drop them.
+          if all_val == 1
+            if cls_has_internal_ieval_lift(i) == 1
+              all_val = 0
+            end
+          end
           if all_val == 1
             @cls_is_value_type[i] = 1
           end
@@ -21845,6 +21929,13 @@ class Compiler
  # `X.new(...).method(:n)` would. .
       if eligible == 1
         if not_in(i.to_s, @method_taken_class_indices) == 0
+          eligible = 0
+        end
+      end
+ # Same reason as the value-type arm: ieval-receiving classes
+ # need a stable heap pointer.
+      if eligible == 1
+        if cls_has_internal_ieval_lift(i) == 1
           eligible = 0
         end
       end
@@ -25388,6 +25479,9 @@ class Compiler
     buf = ir_emit_ia(buf, "@ieval_class_idxs", @ieval_class_idxs)
     buf = ir_emit_ia(buf, "@ieval_body_ids", @ieval_body_ids)
     buf = ir_emit_sa(buf, "@ieval_return_types", @ieval_return_types)
+    buf = ir_emit_sa(buf, "@ieval_self_param_names", @ieval_self_param_names)
+    buf = ir_emit_sa(buf, "@ieval_extra_param_names", @ieval_extra_param_names)
+    buf = ir_emit_sa(buf, "@cls_with_internal_ieval_lift", @cls_with_internal_ieval_lift)
     buf = ir_emit_ia(buf, "@pre_execution_blocks", @pre_execution_blocks)
     buf = ir_emit_ia(buf, "@post_execution_blocks", @post_execution_blocks)
     buf = ir_emit_sa(buf, "@toplevel_ivar_names", @toplevel_ivar_names)
@@ -26963,6 +27057,57 @@ class Compiler
         saved_ci_iv = @current_class_idx
         @current_class_idx = @ieval_class_idxs[iv]
         push_scope
+ # Declare the self-bound param and any extras up front with
+ # their typed slots, then refine body locals with those names
+ # excluded from the rescan so reassigns hit the param slot
+ # rather than inventing a fresh local of the RHS type.
+        ie_pnames = "".split(",")
+        spn_iv = ""
+        if iv < @ieval_self_param_names.length
+          spn_iv = @ieval_self_param_names[iv]
+        end
+        if spn_iv != ""
+          declare_var(spn_iv, "obj_" + @cls_names[@ieval_class_idxs[iv]])
+          ie_pnames.push(spn_iv)
+        end
+        extra_iv_csv = ""
+        if iv < @ieval_extra_param_names.length
+          extra_iv_csv = @ieval_extra_param_names[iv]
+        end
+        extra_iv_names = "".split(",")
+        if extra_iv_csv != ""
+          extra_iv_names = extra_iv_csv.split(";")
+        end
+        kex_iv = 0
+        while kex_iv < extra_iv_names.length
+          declare_var(extra_iv_names[kex_iv], "nil")
+          ie_pnames.push(extra_iv_names[kex_iv])
+          kex_iv = kex_iv + 1
+        end
+        ml_iv = "".split(",")
+        mt_iv = "".split(",")
+        refine_method_body_locals(bid_iv, ml_iv, mt_iv, ie_pnames)
+ # Order: self-bound at slot 0, extras, then body locals.
+        final_names = "".split(",")
+        final_types = "".split(",")
+        if spn_iv != ""
+          final_names.push(spn_iv)
+          final_types.push("obj_" + @cls_names[@ieval_class_idxs[iv]])
+        end
+        kex2_iv = 0
+        while kex2_iv < extra_iv_names.length
+          final_names.push(extra_iv_names[kex2_iv])
+          final_types.push("nil")
+          kex2_iv = kex2_iv + 1
+        end
+        k_iv = 0
+        while k_iv < ml_iv.length
+          final_names.push(ml_iv[k_iv])
+          final_types.push(mt_iv[k_iv])
+          k_iv = k_iv + 1
+        end
+        @nd_scope_names[bid_iv] = final_names.join("|")
+        @nd_scope_types[bid_iv] = final_types.join("|")
         walk_and_cache(bid_iv)
         pop_scope
         @current_class_idx = saved_ci_iv
@@ -26976,11 +27121,24 @@ class Compiler
  # into captures (in outer scope) vs true locals at emit time. The
  # scan output is purely syntactic, so we cache it here keyed by
  # the body bid. Params are the block's syntactic required names.
+ # Skip ieval-lifted blocks below: the ieval arm already set
+ # their typed scope. Spinel's Hash type-infers only StrIntHash,
+ # so the lookup keys are stringified body ids.
+    ieval_body_set = {}
+    ie_seed = 0
+    while ie_seed < @ieval_body_ids.length
+      ieval_body_set[@ieval_body_ids[ie_seed].to_s] = 1
+      ie_seed = ie_seed + 1
+    end
     bn = 0
     while bn < @nd_count
       tk = @nd_type[bn]
       if tk == "BlockNode" || tk == "LambdaNode" || tk == "ProcNode"
         body_bn = @nd_body[bn]
+        if ieval_body_set[body_bn.to_s] != nil
+          bn = bn + 1
+          next
+        end
         if body_bn >= 0
  # Collect syntactic block param names
           bp_list = "".split(",")
