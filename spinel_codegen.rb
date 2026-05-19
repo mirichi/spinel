@@ -6977,19 +6977,20 @@ class Compiler
  # Symbol-keyed hash with integer values. Keys are sp_sym (mrb_int);
  # the empty-slot sentinel is -1 (= invalid sp_sym, same as default).
   def emit_sym_int_hash_runtime
-    emit_raw("typedef struct{sp_sym*keys;mrb_int*vals;sp_sym*order;mrb_int len;mrb_int cap;mrb_int mask;}sp_SymIntHash;")
+    emit_raw("typedef struct{sp_sym*keys;mrb_int*vals;sp_sym*order;mrb_int len;mrb_int cap;mrb_int mask;mrb_int default_v;}sp_SymIntHash;")
     emit_raw("static void sp_SymIntHash_fin(void*p){sp_SymIntHash*h=(sp_SymIntHash*)p;free(h->keys);free(h->vals);free(h->order);}")
-    emit_raw("static sp_SymIntHash*sp_SymIntHash_new(void){sp_SymIntHash*h=(sp_SymIntHash*)sp_gc_alloc(sizeof(sp_SymIntHash),sp_SymIntHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;return h;}")
+    emit_raw("static sp_SymIntHash*sp_SymIntHash_new(void){sp_SymIntHash*h=(sp_SymIntHash*)sp_gc_alloc(sizeof(sp_SymIntHash),sp_SymIntHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;h->default_v=0;return h;}")
+    emit_raw("static sp_SymIntHash*sp_SymIntHash_new_with_default(mrb_int d){sp_SymIntHash*h=sp_SymIntHash_new();h->default_v=d;return h;}")
     emit_raw("static void sp_SymIntHash_grow(sp_SymIntHash*h){mrb_int oc=h->cap;sp_sym*ok=h->keys;mrb_int*ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)realloc(h->order,sizeof(sp_sym)*h->cap);h->len=0;for(mrb_int i=0;i<oc;i++){if(ok[i]>=0){mrb_int idx=(mrb_int)(((mrb_int)ok[i])&h->mask);while(h->keys[idx]>=0)idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}free(ok);free(ov);}")
-    emit_raw("static mrb_int sp_SymIntHash_get(sp_SymIntHash*h,sp_sym k){if(!h)return 0;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return 0;}")
+    emit_raw("static mrb_int sp_SymIntHash_get(sp_SymIntHash*h,sp_sym k){if(!h)return 0;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}")
     emit_raw("static void sp_SymIntHash_set(sp_SymIntHash*h,sp_sym k,mrb_int v){if(h->len*2>=h->cap)sp_SymIntHash_grow(h);mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}")
     emit_raw("static mrb_bool sp_SymIntHash_has_key(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}")
     emit_raw("static mrb_int sp_SymIntHash_length(sp_SymIntHash*h){return h->len;}")
     emit_raw("static void sp_SymIntHash_delete(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->keys[idx]=-1;h->vals[idx]=0;h->len--;mrb_int j=(idx+1)&h->mask;while(h->keys[j]>=0){mrb_int nj=(mrb_int)(((mrb_int)h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=-1;h->vals[j]=0;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}")
     emit_raw("static sp_IntArray*sp_SymIntHash_keys(sp_SymIntHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,(mrb_int)h->order[i]);return a;}")
     emit_raw("static sp_IntArray*sp_SymIntHash_values(sp_SymIntHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,sp_SymIntHash_get(h,h->order[i]));return a;}")
-    emit_raw("static sp_SymIntHash*sp_SymIntHash_dup(sp_SymIntHash*h){sp_SymIntHash*r=sp_SymIntHash_new();for(mrb_int i=0;i<h->len;i++)sp_SymIntHash_set(r,h->order[i],sp_SymIntHash_get(h,h->order[i]));return r;}")
-    emit_raw("static sp_SymIntHash*sp_SymIntHash_merge(sp_SymIntHash*a,sp_SymIntHash*b){sp_SymIntHash*r=sp_SymIntHash_new();for(mrb_int i=0;i<a->len;i++)sp_SymIntHash_set(r,a->order[i],sp_SymIntHash_get(a,a->order[i]));if(b){for(mrb_int i=0;i<b->len;i++)sp_SymIntHash_set(r,b->order[i],sp_SymIntHash_get(b,b->order[i]));}return r;}")
+    emit_raw("static sp_SymIntHash*sp_SymIntHash_dup(sp_SymIntHash*h){sp_SymIntHash*r=sp_SymIntHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_SymIntHash_set(r,h->order[i],sp_SymIntHash_get(h,h->order[i]));return r;}")
+    emit_raw("static sp_SymIntHash*sp_SymIntHash_merge(sp_SymIntHash*a,sp_SymIntHash*b){sp_SymIntHash*r=sp_SymIntHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymIntHash_set(r,a->order[i],sp_SymIntHash_get(a,a->order[i]));if(b){for(mrb_int i=0;i<b->len;i++)sp_SymIntHash_set(r,b->order[i],sp_SymIntHash_get(b,b->order[i]));}return r;}")
     emit_raw("static mrb_bool sp_SymIntHash_eq(sp_SymIntHash*a,sp_SymIntHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymIntHash_has_key(b,k))return FALSE;if(sp_SymIntHash_get(a,k)!=sp_SymIntHash_get(b,k))return FALSE;}return TRUE;}")
  # Hash inspect — Ruby's modern shorthand `{k: v, ...}`. All keys
  # in a sym_int_hash are valid identifier symbols (the parser only
@@ -7013,19 +7014,20 @@ class Compiler
 
  # Symbol-keyed hash with string values.
   def emit_sym_str_hash_runtime
-    emit_raw("typedef struct{sp_sym*keys;const char**vals;sp_sym*order;mrb_int len;mrb_int cap;mrb_int mask;}sp_SymStrHash;")
+    emit_raw("typedef struct{sp_sym*keys;const char**vals;sp_sym*order;mrb_int len;mrb_int cap;mrb_int mask;const char*default_v;}sp_SymStrHash;")
     emit_raw("static void sp_SymStrHash_fin(void*p){sp_SymStrHash*h=(sp_SymStrHash*)p;free(h->keys);free(h->vals);free(h->order);}")
-    emit_raw("static sp_SymStrHash*sp_SymStrHash_new(void){sp_SymStrHash*h=(sp_SymStrHash*)sp_gc_alloc(sizeof(sp_SymStrHash),sp_SymStrHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(const char**)calloc(h->cap,sizeof(const char*));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;return h;}")
+    emit_raw("static sp_SymStrHash*sp_SymStrHash_new(void){sp_SymStrHash*h=(sp_SymStrHash*)sp_gc_alloc(sizeof(sp_SymStrHash),sp_SymStrHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(const char**)calloc(h->cap,sizeof(const char*));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;h->default_v=NULL;return h;}")
+    emit_raw("static sp_SymStrHash*sp_SymStrHash_new_with_default(const char*d){sp_SymStrHash*h=sp_SymStrHash_new();h->default_v=d;return h;}")
     emit_raw("static void sp_SymStrHash_grow(sp_SymStrHash*h){mrb_int oc=h->cap;sp_sym*ok=h->keys;const char**ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(const char**)calloc(h->cap,sizeof(const char*));h->order=(sp_sym*)realloc(h->order,sizeof(sp_sym)*h->cap);h->len=0;for(mrb_int i=0;i<oc;i++){if(ok[i]>=0){mrb_int idx=(mrb_int)(((mrb_int)ok[i])&h->mask);while(h->keys[idx]>=0)idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}free(ok);free(ov);}")
-    emit_raw("static const char*sp_SymStrHash_get(sp_SymStrHash*h,sp_sym k){if(!h)return sp_str_empty;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return sp_str_empty;}")
+    emit_raw("static const char*sp_SymStrHash_get(sp_SymStrHash*h,sp_sym k){if(!h)return sp_str_empty;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v?h->default_v:sp_str_empty;}")
     emit_raw("static void sp_SymStrHash_set(sp_SymStrHash*h,sp_sym k,const char*v){if(h->len*2>=h->cap)sp_SymStrHash_grow(h);mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}")
     emit_raw("static mrb_bool sp_SymStrHash_has_key(sp_SymStrHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}")
     emit_raw("static mrb_int sp_SymStrHash_length(sp_SymStrHash*h){return h->len;}")
     emit_raw("static void sp_SymStrHash_delete(sp_SymStrHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->keys[idx]=-1;h->vals[idx]=NULL;h->len--;mrb_int j=(idx+1)&h->mask;while(h->keys[j]>=0){mrb_int nj=(mrb_int)(((mrb_int)h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=-1;h->vals[j]=NULL;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}")
     emit_raw("static sp_IntArray*sp_SymStrHash_keys(sp_SymStrHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,(mrb_int)h->order[i]);return a;}")
     emit_raw("static sp_StrArray*sp_SymStrHash_values(sp_SymStrHash*h){sp_StrArray*a=sp_StrArray_new();for(mrb_int i=0;i<h->len;i++)sp_StrArray_push(a,sp_SymStrHash_get(h,h->order[i]));return a;}")
-    emit_raw("static sp_SymStrHash*sp_SymStrHash_dup(sp_SymStrHash*h){sp_SymStrHash*r=sp_SymStrHash_new();for(mrb_int i=0;i<h->len;i++)sp_SymStrHash_set(r,h->order[i],sp_SymStrHash_get(h,h->order[i]));return r;}")
-    emit_raw("static sp_SymStrHash*sp_SymStrHash_merge(sp_SymStrHash*a,sp_SymStrHash*b){sp_SymStrHash*r=sp_SymStrHash_new();for(mrb_int i=0;i<a->len;i++)sp_SymStrHash_set(r,a->order[i],sp_SymStrHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymStrHash_set(r,b->order[i],sp_SymStrHash_get(b,b->order[i]));return r;}")
+    emit_raw("static sp_SymStrHash*sp_SymStrHash_dup(sp_SymStrHash*h){sp_SymStrHash*r=sp_SymStrHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_SymStrHash_set(r,h->order[i],sp_SymStrHash_get(h,h->order[i]));return r;}")
+    emit_raw("static sp_SymStrHash*sp_SymStrHash_merge(sp_SymStrHash*a,sp_SymStrHash*b){sp_SymStrHash*r=sp_SymStrHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymStrHash_set(r,a->order[i],sp_SymStrHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymStrHash_set(r,b->order[i],sp_SymStrHash_get(b,b->order[i]));return r;}")
     emit_raw("static mrb_bool sp_SymStrHash_eq(sp_SymStrHash*a,sp_SymStrHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymStrHash_has_key(b,k))return FALSE;if(!sp_str_eq(sp_SymStrHash_get(a,k),sp_SymStrHash_get(b,k)))return FALSE;}return TRUE;}")
  # Cross-variant merge: when a `sym_str_hash` and a `sym_poly_hash`
  # are merged in either direction, both result paths return a
@@ -15301,15 +15303,29 @@ class Compiler
         args_id = @nd_arguments[nid]
         if args_id >= 0
           aargs = get_args(args_id)
-          if aargs.length >= 1
- # Hash.new(default_val) - check type
+          if aargs.length >= 1 && @nd_block[nid] < 0
+ # `Hash.new(default_value)` -- propagate the default to the
+ # appropriate hash variant via `_new_with_default(d)`. The
+ # default carries through `_get` (returns it on miss), `_dup`
+ # / `_merge` (copied to the result), and is reachable via
+ # `Hash#default` / `Hash#default=`. Block-form
+ # `Hash.new { |h, k| ... }` is a separate feature (proc-default)
+ # and falls through to the bare `_new` path below. Issue
+ # #600 puzzle 2.
             dt = infer_type(aargs.first)
+            dv = compile_expr(aargs.first)
             if dt == "string"
               @needs_str_str_hash = 1
-              return "sp_StrStrHash_new()"
+              return "sp_StrStrHash_new_with_default(" + dv + ")"
             end
- # Default is int - for now just return normal hash
- # Default value is handled by the get function
+            if dt == "int" || dt == "bool" || dt == "nil"
+              return "sp_StrIntHash_new_with_default((mrb_int)(" + dv + "))"
+            end
+ # Other default types (Array, Hash, obj_<C>, etc.) need a
+ # poly-valued hash to hold them. Fall through to plain
+ # str_int_hash for now -- the analyzer pins the variant at
+ # str_int_hash anyway, so the codegen-side variant picker
+ # would mismatch. Sibling carve to extend coverage.
             return "sp_StrIntHash_new()"
           end
         end
@@ -17742,6 +17758,12 @@ class Compiler
       if mname == "dup" || mname == "clone"
         return "sp_SymIntHash_dup(" + rc + ")"
       end
+      if mname == "default"
+        return "(" + rc + "->default_v)"
+      end
+      if mname == "default="
+        return "(" + rc + "->default_v = (mrb_int)(" + compile_arg0(nid) + "))"
+      end
       if mname == "delete"
         return "(sp_SymIntHash_delete(" + rc + ", " + compile_arg0(nid) + "), 0)"
       end
@@ -17830,6 +17852,12 @@ class Compiler
       end
       if mname == "dup" || mname == "clone"
         return "sp_SymStrHash_dup(" + rc + ")"
+      end
+      if mname == "default"
+        return "(" + rc + "->default_v ? " + rc + "->default_v : (&(\"\\xff\")[1]))"
+      end
+      if mname == "default="
+        return "(" + rc + "->default_v = " + compile_expr_as_string(get_args(@nd_arguments[nid])[0]) + ")"
       end
       if mname == "delete"
         return "(sp_SymStrHash_delete(" + rc + ", " + compile_arg0(nid) + "), 0)"
@@ -17946,6 +17974,14 @@ class Compiler
       if mname == "dup" || mname == "clone"
         return "sp_SymPolyHash_dup(" + rc + ")"
       end
+      if mname == "default"
+        @needs_rb_value = 1
+        return "(" + rc + "->default_v)"
+      end
+      if mname == "default="
+        @needs_rb_value = 1
+        return "(" + rc + "->default_v = " + box_expr_to_poly(get_args(@nd_arguments[nid])[0]) + ")"
+      end
       if mname == "delete"
         return "(sp_SymPolyHash_delete(" + rc + ", " + compile_arg0(nid) + "), sp_box_nil())"
       end
@@ -18037,6 +18073,14 @@ class Compiler
       end
       if mname == "dup" || mname == "clone"
         return "sp_StrPolyHash_dup(" + rc + ")"
+      end
+      if mname == "default"
+        @needs_rb_value = 1
+        return "(" + rc + "->default_v)"
+      end
+      if mname == "default="
+        @needs_rb_value = 1
+        return "(" + rc + "->default_v = " + box_expr_to_poly(get_args(@nd_arguments[nid])[0]) + ")"
       end
     end
     if recv_type == "poly_poly_hash"
@@ -18157,6 +18201,14 @@ class Compiler
  # dup -- sibling of #510's sym_str_hash.dup. Issue #551.
       if mname == "dup" || mname == "clone"
         return "sp_StrIntHash_dup(" + rc + ")"
+      end
+ # Hash#default / #default= -- accessors for the per-instance
+ # default value set by `Hash.new(N)`. Issue #600 puzzle 2.
+      if mname == "default"
+        return "(" + rc + "->default_v)"
+      end
+      if mname == "default="
+        return "(" + rc + "->default_v = (mrb_int)(" + compile_arg0(nid) + "))"
       end
       if mname == "to_a"
         tt = "tuple:string,int"
@@ -18298,6 +18350,12 @@ class Compiler
       if mname == "dup" || mname == "clone"
         return "sp_IntStrHash_dup(" + rc + ")"
       end
+      if mname == "default"
+        return "(" + rc + "->default_v ? " + rc + "->default_v : (&(\"\\xff\")[1]))"
+      end
+      if mname == "default="
+        return "(" + rc + "->default_v = " + compile_expr_as_string(get_args(@nd_arguments[nid])[0]) + ")"
+      end
     end
     if recv_type == "str_str_hash"
       if mname == "[]"
@@ -18363,6 +18421,12 @@ class Compiler
       end
       if mname == "dup" || mname == "clone"
         return "sp_StrStrHash_dup(" + rc + ")"
+      end
+      if mname == "default"
+        return "(" + rc + "->default_v ? " + rc + "->default_v : (&(\"\\xff\")[1]))"
+      end
+      if mname == "default="
+        return "(" + rc + "->default_v = " + compile_expr_as_string(get_args(@nd_arguments[nid])[0]) + ")"
       end
     end
     ""
@@ -24063,7 +24127,40 @@ class Compiler
  # sp_StrIntHash_new() and the assignment would mismatch the
  # promoted local's struct type.
       if vt == "str_str_hash" || vt == "int_str_hash" || vt == "sym_int_hash" || vt == "sym_str_hash" || vt == "str_poly_hash" || vt == "sym_poly_hash" || vt == "poly_poly_hash"
+ # `Hash.new(default)` against a poly-widened LV: the
+ # compile_constructor_expr emit picks the variant from the
+ # default's type, but if the LV later widened (e.g. mixed-key
+ # writes), the construction mismatches the declared LV type.
+ # Build the appropriate widened variant here, boxing the
+ # default if necessary. Issue #600 puzzle 2 with widening.
         expr_id2 = @nd_expression[nid]
+        if expr_id2 >= 0 && @nd_type[expr_id2] == "CallNode" && @nd_name[expr_id2] == "new"
+          recv_hn = @nd_receiver[expr_id2]
+          if recv_hn >= 0 && @nd_type[recv_hn] == "ConstantReadNode" && @nd_name[recv_hn] == "Regexp"
+ # Regexp.new -- not Hash. Fall through.
+          elsif recv_hn >= 0 && @nd_type[recv_hn] == "ConstantReadNode" && @nd_name[recv_hn] == "Hash" && @nd_block[expr_id2] < 0
+            args_id_hn = @nd_arguments[expr_id2]
+            if args_id_hn >= 0
+              aa_hn = get_args(args_id_hn)
+              if aa_hn.length >= 1
+                if vt == "str_poly_hash"
+                  @needs_str_poly_hash = 1
+                  @needs_rb_value = 1
+                  @needs_gc = 1
+                  emit("  " + vref + " = sp_StrPolyHash_new_with_default(" + box_expr_to_poly(aa_hn[0]) + ");")
+                  return
+                end
+                if vt == "sym_poly_hash"
+                  @needs_sym_poly_hash = 1
+                  @needs_rb_value = 1
+                  @needs_gc = 1
+                  emit("  " + vref + " = sp_SymPolyHash_new_with_default(" + box_expr_to_poly(aa_hn[0]) + ");")
+                  return
+                end
+              end
+            end
+          end
+        end
         if expr_id2 >= 0 && @nd_type[expr_id2] == "HashNode"
           elems2 = parse_id_list(@nd_elements[expr_id2])
           if elems2.length == 0

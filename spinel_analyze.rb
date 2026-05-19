@@ -5277,6 +5277,19 @@ class Compiler
       end
       return "int"
     end
+ # `Hash#default` returns the per-instance default value the
+ # `Hash.new(N)` constructor set (or the implicit sentinel when
+ # never set). Same value-type as the hash's slot. Issue #600
+ # puzzle 2.
+    if mname == "default" && recv >= 0
+      rt_d = infer_type(recv)
+      if is_hash_type(rt_d) == 1
+        lt_d = hash_leaf_type(rt_d)
+        if lt_d != ""
+          return lt_d
+        end
+      end
+    end
     if mname == "intersection" || mname == "union" || mname == "difference"
       if recv >= 0
         rt = infer_type(recv)
@@ -5395,6 +5408,27 @@ class Compiler
             return "int_array"
           end
           if rn == "Hash"
+ # `Hash.new(default_value)` picks the variant whose value-slot
+ # matches the default's type. Without this, analyzer returned
+ # str_int_hash unconditionally and the codegen-side variant
+ # picker (compile_constructor_expr's Hash arm) emitted
+ # `sp_StrStrHash_new()` for `Hash.new("missing")` -- pointer
+ # type mismatch on the LV. Block-form `Hash.new { ... }`
+ # (proc default) is deferred and stays str_int_hash.
+            args_id_hn = @nd_arguments[nid]
+            if args_id_hn >= 0 && @nd_block[nid] < 0
+              aa_hn = get_args(args_id_hn)
+              if aa_hn.length >= 1
+                dt_hn = infer_type(aa_hn[0])
+                if dt_hn == "string"
+                  @needs_str_str_hash = 1
+                  return "str_str_hash"
+                end
+                if dt_hn == "int" || dt_hn == "bool" || dt_hn == "nil"
+                  return "str_int_hash"
+                end
+              end
+            end
             return "str_int_hash"
           end
           if rn == "String"
