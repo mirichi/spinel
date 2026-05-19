@@ -8,11 +8,15 @@
 #   spinel app.rb -c -o app.c     - generate C to specific file
 #   spinel app.rb -S               - print C to stdout
 #   spinel -e 'puts 42'            - compile inline source (default name: a)
+#   spinel -E app.rb a b c         - compile to /tmp, run, ARGV=[a, b, c]
 #
 # Options:
 #   -o FILE    Output file (binary or C depending on -c)
 #   -c         Generate C source only, don't compile
 #   -S         Print generated C to stdout
+#   -E         Run the compiled binary instead of saving it; the
+#              first .rb file ends spinel-flag parsing, and the rest
+#              of the command line becomes the binary's ARGV.
 #   -O LEVEL   Optimization level for cc (default: 2)
 #   --cc=CMD   C compiler command (default: cc)
 #   -e STR     Inline Ruby source (repeatable; multiple -e join with \n)
@@ -40,26 +44,34 @@ SOURCE=""
 OUTPUT=""
 C_ONLY=0
 STDOUT_MODE=0
+RUN_MODE=0
 OPT_LEVEL="2"
 CC_CMD="cc"
 EXTRA_FLAGS=""
 C_TMP=""
 C_TMP_DIR=""
+RUN_TMP_DIR=""
 EVAL_SCRIPT=""
 EVAL_USED=0
 EVAL_TMP=""
 RBS_DIR=""
 SEED_TMP=""
 
+# Parse spinel-side flags. In `-E` (run) mode, the first positional
+# `.rb` arg marks the boundary between spinel flags and the script's
+# ARGV: everything after that point is passed straight to the
+# compiled binary. The same boundary trip fires on the first
+# unrecognized token in run mode so `spinel -E -e '...' arg1 arg2`
+# also hands the trailing positionals through.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --source=*) SOURCE="${1#--source=}" ;;
-    --output=*) OUTPUT="${1#--output=}" ;;
-    --cc=*)     CC_CMD="${1#--cc=}" ;;
-    --rbs=*)    RBS_DIR="${1#--rbs=}" ;;
-    --rbs)      shift; RBS_DIR="$1" ;;
-    -o)         shift; OUTPUT="$1" ;;
-    -O)         shift; OPT_LEVEL="$1" ;;
+    --source=*) SOURCE="${1#--source=}"; shift ;;
+    --output=*) OUTPUT="${1#--output=}"; shift ;;
+    --cc=*)     CC_CMD="${1#--cc=}"; shift ;;
+    --rbs=*)    RBS_DIR="${1#--rbs=}"; shift ;;
+    --rbs)      shift; RBS_DIR="$1"; shift ;;
+    -o)         shift; OUTPUT="$1"; shift ;;
+    -O)         shift; OPT_LEVEL="$1"; shift ;;
     -e)         shift
                 if [ "$EVAL_USED" -eq 0 ]; then
                   EVAL_SCRIPT="$1"
@@ -67,13 +79,46 @@ while [ $# -gt 0 ]; do
                   EVAL_SCRIPT="$EVAL_SCRIPT
 $1"
                 fi
-                EVAL_USED=1 ;;
-    -c)         C_ONLY=1 ;;
-    -S)         STDOUT_MODE=1 ;;
-    *.rb)       [ -z "$SOURCE" ] && SOURCE="$1" ;;
+                EVAL_USED=1
+                shift ;;
+    -c)         C_ONLY=1; shift ;;
+    -S)         STDOUT_MODE=1; shift ;;
+    -E)         RUN_MODE=1; shift ;;
+    *.rb)
+                if [ -z "$SOURCE" ]; then
+                  SOURCE="$1"
+                  shift
+                  [ "$RUN_MODE" -eq 1 ] && break
+                else
+                  shift
+                fi
+                ;;
+    *)
+                if [ "$RUN_MODE" -eq 1 ]; then
+                  break
+                fi
+                shift
+                ;;
   esac
-  shift
 done
+
+# Mode-conflict checks: `-E` short-circuits to "run the produced
+# binary" so output-saving flags (`-o`, `-c`, `-S`) don't make sense
+# alongside it.
+if [ "$RUN_MODE" -eq 1 ]; then
+  if [ -n "$OUTPUT" ]; then
+    echo "spinel: -E (run) cannot be combined with -o" >&2
+    exit 2
+  fi
+  if [ "$C_ONLY" -eq 1 ]; then
+    echo "spinel: -E (run) cannot be combined with -c" >&2
+    exit 2
+  fi
+  if [ "$STDOUT_MODE" -eq 1 ]; then
+    echo "spinel: -E (run) cannot be combined with -S" >&2
+    exit 2
+  fi
+fi
 
 # `-e` mode: write the accumulated inline script to a temp file and
 # treat it as the source. Default output name is `a` since the
@@ -94,11 +139,13 @@ if [ -z "$SOURCE" ]; then
   echo "       spinel app.rb -c           - generate app.c only" >&2
   echo "       spinel app.rb -S           - print C to stdout" >&2
   echo "       spinel -e 'puts 42'        - compile inline source" >&2
+  echo "       spinel -E app.rb a b c     - compile + run with ARGV=[a, b, c]" >&2
   echo "" >&2
   echo "Options:" >&2
   echo "  -o FILE     Output file" >&2
   echo "  -c          C source only (don't compile)" >&2
   echo "  -S          Print C to stdout" >&2
+  echo "  -E          Run the compiled binary; leftover args become its ARGV" >&2
   echo "  -O LEVEL    Optimization level (default: 2)" >&2
   echo "  --cc=CMD    C compiler (default: cc)" >&2
   echo "  -e STR      Inline Ruby source (repeatable; joined with newlines)" >&2
@@ -118,7 +165,7 @@ else
 fi
 AST_TMP="$(mktemp /tmp/spinel_ast.XXXXXX)"
 IR_TMP="$(mktemp /tmp/spinel_ir.XXXXXX)"
-trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP" "$SEED_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"' EXIT
+trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP" "$SEED_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"; [ -n "$RUN_TMP_DIR" ] && rm -rf "$RUN_TMP_DIR"' EXIT
 
 # Step 1: Parse. spinel_parse is C-only; build it via `make parse`
 # (or `make all`) before invoking spinel.
@@ -199,7 +246,15 @@ if [ $C_ONLY -eq 1 ]; then
 fi
 
 # Step 3: Compile C -> binary
-BIN_FILE="${OUTPUT:-$BASENAME}"
+# In -E (run) mode the binary is short-lived: drop it into a fresh
+# temp dir so the cwd stays clean and the trap reaps the file when
+# the script exits (including via signal).
+if [ "$RUN_MODE" -eq 1 ]; then
+  RUN_TMP_DIR="$(mktemp -d /tmp/spinel_run.XXXXXX)" || { echo "spinel: mktemp -d failed" >&2; exit 1; }
+  BIN_FILE="$RUN_TMP_DIR/$BASENAME"
+else
+  BIN_FILE="${OUTPUT:-$BASENAME}"
+fi
 # Runtime library (bigint + regexp)
 SP_RT_LIB="$DIR/lib/libspinel_rt.a"
 INCLUDE_FLAGS="-I$DIR/lib"
@@ -232,6 +287,15 @@ $CC_CMD -O${OPT_LEVEL} -Wno-all -ffunction-sections -fdata-sections $INCLUDE_FLA
 if [ $? -ne 0 ]; then
   echo "spinel: C compilation failed" >&2
   exit 1
+fi
+
+if [ "$RUN_MODE" -eq 1 ]; then
+ # Hand off to the freshly compiled binary, forwarding the
+ # leftover positionals as its ARGV. Run as a subprocess (not
+ # exec) so the EXIT trap reaps RUN_TMP_DIR after the child
+ # returns. Propagate the child's exit code.
+  "$BIN_FILE" "$@"
+  exit $?
 fi
 
 echo "$SOURCE -> $BIN_FILE" >&2
