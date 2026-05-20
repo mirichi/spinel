@@ -13632,6 +13632,22 @@ class Compiler
     if recv_type != "poly" && expr_emits_poly_rb_val(recv) == 1
       recv_type = "poly"
     end
+ # Detect the each_cons[.with_index].map fusion shape before emitting
+ # `rc`. compile_map_expr's fusion path re-compiles the each_cons
+ # inner receiver itself; if we emit `rc` first, the
+ # with_index/each_cons placeholders land as `sp_PtrArray * _t = 0;`
+ # and (worse) the inner chain's side effects (`gets`) execute
+ # twice. Route directly to compile_map_expr instead, which
+ # produces the correct single fused loop. Issue #621.
+    if mname == "map" && @nd_block[nid] >= 0 && recv >= 0
+      ec_check_recv = recv
+      if @nd_type[ec_check_recv] == "CallNode" && @nd_name[ec_check_recv] == "with_index" && @nd_block[ec_check_recv] < 0
+        ec_check_recv = @nd_receiver[ec_check_recv]
+      end
+      if ec_check_recv >= 0 && @nd_type[ec_check_recv] == "CallNode" && @nd_name[ec_check_recv] == "each_cons" && @nd_block[ec_check_recv] < 0
+        return compile_map_expr(nid, "")
+      end
+    end
     rc = compile_expr_gc_rooted(recv)
  # Type-narrow unbox: when recv is a LocalVariableReadNode whose
  # narrowed type (post-`raise unless x.is_a?(C)` guard) is a
