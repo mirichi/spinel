@@ -18975,9 +18975,32 @@ class Compiler
       emit_dig_arm_typed(acc, key_expr, "SP_BUILTIN_STR_STR_HASH", "sp_StrStrHash", "sp_box_str")
     elsif key_type == "int"
       emit_dig_arm_typed(acc, key_expr, "SP_BUILTIN_INT_STR_HASH", "sp_IntStrHash", "sp_box_str")
+ # Array variants for int-keyed dig: a nested array element
+ # ([[1, [2, "3"]]].dig(0, 1, 1)) walks through poly_array
+ # elements until it hits the final leaf. Without these arms
+ # the cls_id check landed only on IntStrHash and every step
+ # collapsed the accumulator to nil. Issue #619 puzzle 6.
+      emit_dig_arm_poly_array(acc, key_expr, "SP_BUILTIN_POLY_ARRAY", "sp_PolyArray")
+      emit_dig_arm_typed_array(acc, key_expr, "SP_BUILTIN_INT_ARRAY", "sp_IntArray", "sp_box_int")
+      emit_dig_arm_typed_array(acc, key_expr, "SP_BUILTIN_STR_ARRAY", "sp_StrArray", "sp_box_str")
+      emit_dig_arm_typed_array(acc, key_expr, "SP_BUILTIN_FLT_ARRAY", "sp_FloatArray", "sp_box_float")
     end
     emit("    " + acc + " = sp_box_nil();")
     emit("  }")
+  end
+
+ # Poly-array dig arm. sp_PolyArray_get already returns sp_RbVal,
+ # so no boxing wrapper; an explicit bounds check guards against
+ # the runtime function's missing upper-bound check (the dig
+ # contract is `nil on OOB`).
+  def emit_dig_arm_poly_array(acc, key_expr, cls_id, cstruct)
+    emit("    if (" + acc + ".cls_id == " + cls_id + ") { " + cstruct + " *_da = (" + cstruct + " *)" + acc + ".v.p; mrb_int _di = " + key_expr + "; if (_di < 0) _di += _da->len; " + acc + " = (_di >= 0 && _di < _da->len) ? " + cstruct + "_get(_da, _di) : sp_box_nil(); } else")
+  end
+
+ # Typed-array dig arm. Bounds-check + box the typed element so
+ # downstream steps (or the final `==`) see a uniform sp_RbVal.
+  def emit_dig_arm_typed_array(acc, key_expr, cls_id, cstruct, box_fn)
+    emit("    if (" + acc + ".cls_id == " + cls_id + ") { " + cstruct + " *_da = (" + cstruct + " *)" + acc + ".v.p; mrb_int _di = " + key_expr + "; if (_di < 0) _di += _da->len; " + acc + " = (_di >= 0 && _di < _da->len) ? " + box_fn + "(" + cstruct + "_get(_da, _di)) : sp_box_nil(); } else")
   end
 
   def emit_dig_arm_poly(acc, key_expr, cls_id, cstruct)
