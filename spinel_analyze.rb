@@ -9872,11 +9872,26 @@ class Compiler
             if rname == "Hash"
               return "str_int_hash"
             end
+            if rname == "String"
+ # `String.new` produces sp_String *, the same type infer_type
+ # reports for the same call. Without this match, scan_ivars
+ # registers the slot as obj_String first, then the later
+ # writer-scan pass observes mutable_str via infer_type and
+ # update_ivar_type widens the disagreement to poly even
+ # though every write has the same shape. Issue #629.
+              return "mutable_str"
+            end
             if rname == "StringIO"
               return "stringio"
             end
             if rname == "Fiber"
               return "fiber"
+            end
+            if rname == "Proc"
+ # Same shape as the String arm: infer_type returns "proc" for
+ # `Proc.new {...}`; mirroring it here keeps scan_ivars and the
+ # later writer-scan in agreement so the slot stays narrow.
+              return "proc"
             end
  # Modules can't be instantiated; `module M; def self.new ...`
  # is a user-defined class method. Don't lift to obj_<mod>;
