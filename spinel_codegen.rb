@@ -25462,8 +25462,60 @@ class Compiler
         val = compile_expr(expr_id)
  # `--int-overflow=promote` widens ivar slots to bigint; an
  # int-typed RHS (literal, arithmetic, etc.) needs the
- # sp_bigint_new_int wrap before assignment.
-        if ivt == "bigint" && infer_type(expr_id) == "int"
+ # sp_bigint_new_int wrap before assignment. Detect the
+ # promote-side stale-cache shapes (IVOpWriteNode rhs whose own
+ # ivar slot is bigint, ParenthesesNode peek, attr_writer
+ # setter on a bigint-promoted slot) so the wrap fires only on
+ # actual int rhs.
+        rhs_eff_t_ivw = infer_type(expr_id)
+        if ivt == "bigint" && rhs_eff_t_ivw != "bigint"
+          eff_rhs_ivw = expr_id
+          if eff_rhs_ivw >= 0 && @nd_type[eff_rhs_ivw] == "ParenthesesNode"
+            pb_iv = @nd_body[eff_rhs_ivw]
+            if pb_iv >= 0
+              ps_iv = get_stmts(pb_iv)
+              if ps_iv.length == 1
+                eff_rhs_ivw = ps_iv[0]
+              end
+            end
+          end
+          if eff_rhs_ivw >= 0
+            erhs_t_iv = @nd_type[eff_rhs_ivw]
+            if erhs_t_iv == "InstanceVariableOperatorWriteNode" || erhs_t_iv == "InstanceVariableAndWriteNode" || erhs_t_iv == "InstanceVariableOrWriteNode" || erhs_t_iv == "InstanceVariableWriteNode"
+              if @current_class_idx >= 0
+                ivar_inner = cls_ivar_type(@current_class_idx, @nd_name[eff_rhs_ivw])
+                if base_type(ivar_inner) == "bigint"
+                  rhs_eff_t_ivw = "bigint"
+                end
+              end
+            elsif erhs_t_iv == "CallNode"
+              rcv_eff = @nd_receiver[eff_rhs_ivw]
+              mn_eff = @nd_name[eff_rhs_ivw]
+              if rcv_eff >= 0 && mn_eff.length > 1 && mn_eff[mn_eff.length - 1] == "=" && mn_eff != "==" && mn_eff != "!=" && mn_eff != "<=" && mn_eff != ">="
+                rt_eff = base_type(infer_type(rcv_eff))
+                if is_obj_type(rt_eff) == 1
+                  rcn_eff = rt_eff[4, rt_eff.length - 4]
+                  rci_eff = find_class_idx(rcn_eff)
+                  if rci_eff >= 0
+                    bn_eff = mn_eff[0, mn_eff.length - 1]
+                    if cls_has_attr_writer(rci_eff, bn_eff) == 1
+                      if base_type(cls_ivar_type(rci_eff, "@" + bn_eff)) == "bigint"
+                        rhs_eff_t_ivw = "bigint"
+                      end
+                    end
+                  end
+                end
+              end
+ # Arith / bitwise CallNode on a bigint recv emits bigint.
+              if rhs_eff_t_ivw != "bigint" && rcv_eff >= 0 && (mn_eff == "+" || mn_eff == "-" || mn_eff == "*" || mn_eff == "/" || mn_eff == "%" || mn_eff == "**" || mn_eff == "<<" || mn_eff == ">>" || mn_eff == "&" || mn_eff == "|" || mn_eff == "^")
+                if base_type(infer_type(rcv_eff)) == "bigint"
+                  rhs_eff_t_ivw = "bigint"
+                end
+              end
+            end
+          end
+        end
+        if ivt == "bigint" && rhs_eff_t_ivw == "int"
           @needs_bigint = 1
           val = "sp_bigint_new_int(" + val + ")"
         end
