@@ -2303,7 +2303,8 @@ static void sp_fiber_list_remove(sp_Fiber*f){if(f->fiber_prev)f->fiber_prev->fib
    sp_fiber_root.saved_roots (the resume side stashed them there)
    but sp_fiber_root is NOT in sp_fiber_list_head, so walking the
    list alone would miss them and free main's live locals. */
-static void sp_mark_suspended_fibers(void){if(&sp_fiber_root!=sp_fiber_current){int i;for(i=0;i<sp_fiber_root.saved_nroots;i++){void*obj=*sp_fiber_root.saved_roots[i];if(obj)sp_gc_mark(obj);}}sp_Fiber*f=sp_fiber_list_head;while(f){if(f!=sp_fiber_current){int i;for(i=0;i<f->saved_nroots;i++){void*obj=*f->saved_roots[i];if(obj)sp_gc_mark(obj);}}f=f->fiber_next;}}
+static void sp_mark_fiber_roots(sp_Fiber*f){if(f==sp_fiber_current)return;int i;for(i=0;i<f->saved_nroots;i++){void*obj=*f->saved_roots[i];if(obj)sp_gc_mark(obj);}}
+static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);sp_Fiber*f=sp_fiber_list_head;while(f){sp_mark_fiber_roots(f);f=f->fiber_next;}}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->ctx)DeleteFiber(f->ctx);if(f->saved_roots)free(f->saved_roots);sp_fiber_list_remove(f);}
 static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);}
@@ -2336,7 +2337,8 @@ static void sp_fiber_list_remove(sp_Fiber*f){if(f->fiber_prev)f->fiber_prev->fib
    sp_fiber_root.saved_roots (the resume side stashed them there)
    but sp_fiber_root is NOT in sp_fiber_list_head, so walking the
    list alone would miss them and free main's live locals. */
-static void sp_mark_suspended_fibers(void){if(&sp_fiber_root!=sp_fiber_current){int i;for(i=0;i<sp_fiber_root.saved_nroots;i++){void*obj=*sp_fiber_root.saved_roots[i];if(obj)sp_gc_mark(obj);}}sp_Fiber*f=sp_fiber_list_head;while(f){if(f!=sp_fiber_current){int i;for(i=0;i<f->saved_nroots;i++){void*obj=*f->saved_roots[i];if(obj)sp_gc_mark(obj);}}f=f->fiber_next;}}
+static void sp_mark_fiber_roots(sp_Fiber*f){if(f==sp_fiber_current)return;int i;for(i=0;i<f->saved_nroots;i++){void*obj=*f->saved_roots[i];if(obj)sp_gc_mark(obj);}}
+static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);sp_Fiber*f=sp_fiber_list_head;while(f){sp_mark_fiber_roots(f);f=f->fiber_next;}}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,SP_FIBER_STACK_SIZE);if(f->saved_roots)free(f->saved_roots);sp_fiber_list_remove(f);}
 static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);}
