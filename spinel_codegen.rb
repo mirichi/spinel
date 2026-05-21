@@ -29505,6 +29505,17 @@ class Compiler
         if idx_t == "poly" && (rt == "int_array" || rt == "float_array" || rt == "str_array" || rt == "sym_array" || is_ptr_array_type(rt) == 1 || rt == "poly_array")
           idx = "(" + idx + ").v.i"
         end
+ # Same auto-unbox for typed-hash recv whose key half is sym /
+ # str / int. `other.each { |k, v| result[k] = v }` over a poly
+ # `other` lands here when `result` is sym_poly_hash etc; without
+ # the unbox we'd pass sp_RbVal to sp_SymPolyHash_set's sp_sym
+ # parameter. Issue #634 shape B cascade.
+        if idx_t == "poly" && (rt == "sym_int_hash" || rt == "sym_str_hash" || rt == "sym_poly_hash")
+          idx = "(" + idx + ").v.sym"
+        end
+        if idx_t == "poly" && rt == "int_str_hash"
+          idx = "(" + idx + ").v.i"
+        end
       end
     end
     if arg_ids.length >= 2

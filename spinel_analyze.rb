@@ -14091,6 +14091,184 @@ class Compiler
 
  # Post-pass for #634 shape A. An optional param with an explicit
  # `= nil` default whose call sites then widen its type to a
+ # Post-pass for #634 shape B. An ivar exposed by attr_reader /
+ # attr_accessor and never explicitly assigned in initialize is
+ # observable in its zero-state by every caller; MRI returns nil
+ # for the unset read, but spinel would otherwise lower the slot
+ # to a non-nullable scalar (whose zero is `0`, not nil). Widen
+ # to poly so the uninitialized read renders as nil. Skipped when
+ # the ivar is assigned somewhere inside `initialize` (the user
+ # explicitly owns the init state) and when the post-iteration
+ # type isn't a non-nullable scalar (a real writer pinned it to
+ # a concrete pointer / class type, which the reader can return
+ # at full type fidelity without nil-vs-zero ambiguity).
+  def widen_uninit_attr_ivars_to_poly
+    ci = 0
+    while ci < @cls_names.length
+      readers = @cls_attr_readers[ci].split(";")
+      writers = @cls_attr_writers[ci].split(";")
+      attr_iname_set = "".split(",")
+      k = 0
+      while k < readers.length
+        if readers[k] != "" && not_in("@" + readers[k], attr_iname_set) == 1
+          attr_iname_set.push("@" + readers[k])
+        end
+        k = k + 1
+      end
+      k = 0
+      while k < writers.length
+        if writers[k] != "" && not_in("@" + writers[k], attr_iname_set) == 1
+          attr_iname_set.push("@" + writers[k])
+        end
+        k = k + 1
+      end
+      if attr_iname_set.length == 0
+        ci = ci + 1
+        next
+      end
+      names = @cls_ivar_names[ci].split(";")
+      types = @cls_ivar_types[ci].split(";")
+      changed_c = 0
+      k = 0
+      while k < names.length
+        if k < types.length
+          iname = names[k]
+          pt = types[k]
+          if not_in(iname, attr_iname_set) == 0 && (pt == "int" || pt == "symbol" || pt == "float" || pt == "bool")
+ # Three signals that the user has actually written into this
+ # slot (and so spinel's typed default isn't observably wrong):
+ #   1. The ivar is assigned in some method body (initialize or
+ #      otherwise) -- syntactic write.
+ #   2. scan_writer_calls observed at least one writer call site
+ #      against this slot, even via `obj.attr = value` from a
+ #      sibling scope. The synthetic attr_writer body itself is
+ #      bid=-2 so it's invisible to (1).
+ #   3. Same checks against ancestor classes' initializes
+ #      (super-call forwarding).
+              assigned = ivar_assigned_in_init_chain?(ci, iname)
+              obs = cls_ivar_observed_types_for(ci, iname)
+              if assigned == 0 && obs == ""
+                types[k] = "poly"
+                @needs_rb_value = 1
+                changed_c = 1
+              end
+          end
+        end
+        k = k + 1
+      end
+      if changed_c == 1
+        @cls_ivar_types[ci] = types.join(";")
+        @cls_ivar_types_version = @cls_ivar_types_version + 1
+      end
+      ci = ci + 1
+    end
+  end
+
+ # Returns 1 if the ivar is assigned anywhere in the class or any
+ # ancestor class (in any method body, not just `initialize`). The
+ # user-visible nil-vs-zero distinction only matters for ivars that
+ # NO method ever writes -- attr_accessor with no `@x = ...` ever
+ # leaves the slot at its scalar default, which MRI sees as nil
+ # but spinel was lowering to the type's zero. An ivar written by
+ # some sibling method (e.g. optcarrot's `@amp` assigned in `reset`
+ # but not in `initialize`) still gets the writer's typed slot —
+ # the read-before-write window exists in theory but doesn't
+ # surface in practice for those classes' actual lifecycles, and
+ # widening to poly would break the body's `@amp -= int` arithmetic.
+  def ivar_assigned_in_init_chain?(ci, iname)
+    cur = ci
+    visited = "".split(",")
+    while cur >= 0 && cur < @cls_names.length && not_in(@cls_names[cur], visited) == 1
+      visited.push(@cls_names[cur])
+      bodies_w = @cls_meth_bodies[cur].split(";")
+      bi = 0
+      while bi < bodies_w.length
+        bid_w = bodies_w[bi].to_i
+        if bid_w >= 0
+          if ivar_written_in?(bid_w, iname) == 1
+            return 1
+          end
+        end
+        bi = bi + 1
+      end
+ # `super` call anywhere in initialize delegates to the parent's
+ # initialize path — assume that may assign any ancestor ivar.
+      mnames_w = @cls_meth_names[cur].split(";")
+      bodies_w2 = @cls_meth_bodies[cur].split(";")
+      mi_init_w = 0
+      while mi_init_w < mnames_w.length
+        if mnames_w[mi_init_w] == "initialize" && mi_init_w < bodies_w2.length
+          init_bid_w = bodies_w2[mi_init_w].to_i
+          if init_bid_w >= 0 && super_called_in?(init_bid_w) == 1
+            return 1
+          end
+          mi_init_w = mnames_w.length
+        else
+          mi_init_w = mi_init_w + 1
+        end
+      end
+      if @cls_parents[cur] == ""
+        cur = -1
+      else
+        cur = find_class_idx(@cls_parents[cur])
+      end
+    end
+    0
+  end
+
+ # Walk `nid` checking for an `InstanceVariableWriteNode` named
+ # `iname`. Returns 1 on first match.
+  def ivar_written_in?(nid, iname)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "InstanceVariableWriteNode" && @nd_name[nid] == iname
+      return 1
+    end
+    if @nd_type[nid] == "InstanceVariableOperatorWriteNode" && @nd_name[nid] == iname
+      return 1
+    end
+    if @nd_type[nid] == "InstanceVariableOrWriteNode" && @nd_name[nid] == iname
+      return 1
+    end
+    if @nd_type[nid] == "InstanceVariableAndWriteNode" && @nd_name[nid] == iname
+      return 1
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      if ivar_written_in?(cs[k], iname) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+ # Walk `nid` looking for `super` / `ForwardingSuperNode`. Returns
+ # 1 on first match.
+  def super_called_in?(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "SuperNode" || @nd_type[nid] == "ForwardingSuperNode"
+      return 1
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      if super_called_in?(cs[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+ # Post-pass for #634 shape A. An optional param with an explicit
+ # `= nil` default whose call sites then widen its type to a
  # non-nullable scalar (int / symbol / float / bool) loses the
  # nil-vs-zero distinction at the no-arg call site: the missing arg
  # defaults to the zero value of the scalar, not to nil, and any
@@ -20248,6 +20426,16 @@ class Compiler
  # e.g. @left = nil in Node with attr_accessor :left → obj_Node?
  # Must run after iterative loop to override poly from type conflicts
     fix_nil_ivar_self_refs
+ # Issue #634 shape B: attr_accessor / attr_reader ivar with no
+ # initialize-time assignment is observable in its unwritten state,
+ # which MRI sees as nil. Widen the slot to poly so the unset
+ # read renders as nil instead of the scalar zero. Must run after
+ # the iterative writer-call inference loop so the ivar's type
+ # reflects every writer's contribution (a `h.klass = SomeClass`
+ # site moves the slot off the int placeholder to "class"; the
+ # filter here keys on the post-iteration type to avoid widening
+ # genuinely-typed slots).
+    widen_uninit_attr_ivars_to_poly
  # Re-run returns with corrected ivar types
     infer_all_returns
     infer_function_body_call_types

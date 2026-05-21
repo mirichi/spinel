@@ -20,39 +20,22 @@
 #    on Array / String / Integer, so the classifier is
 #    unambiguous.
 #
-# Each path's matching call-site cast (poly_array NULL cast,
-# str_poly_hash NULL cast) and runtime NULL-guard
-# (sp_PolyArray_length/get/push, sp_StrPolyHash_get, etc.)
-# handle the composition shape Sam Ruby flagged in #542 /
-# #545: typed callers continue to work; untyped callers
-# (uninitialized ivar, etc.) cast their nil/int value to NULL
-# of the param's pointer type and the body's helper calls
-# safely return the slot's zero value.
-#
-# Untyped-caller-only is the supported shape; mixed typed +
-# untyped callers on the SAME narrow specialization (e.g.
-# typed int_array caller + untyped caller) still trips at C
-# compile (typed caller pins to int_array, untyped's int can't
-# cast to int_array). The user's options are: (1) seed the
-# untyped source upstream, (2) avoid mixing typed and untyped
-# callers, (3) wait for a future narrow-array NULL-guard
-# series. Sam's roundhouse uses pattern (1) for the one
-# remaining seed (Router.match's table).
+# Updated to MRI-compat after #634 shape B landed. The prior
+# fixture seeded the body widening via `b.contents` on an
+# uninitialized `attr_accessor :contents` whose read returned
+# the int placeholder (cast to NULL at the call site, with
+# runtime NULL-guards no-op'ing the body). That setup contradicts
+# MRI -- `nil.push` raises NoMethodError. The body-widening
+# passes themselves still need test coverage; we keep that by
+# seeding from concrete literal arguments instead.
 
-# Array body inference - untyped-only callers.
+# Array body inference - typed caller via an array literal.
 def consume_arr(arr)
   arr.push(42)
   puts "arr.length=" + arr.length.to_s
 end
 
-class Box
-  attr_accessor :contents
-end
-
-b = Box.new
-consume_arr(b.contents)   # arr widens to poly_array via push;
-                          # NULL cast at call; push no-ops via
-                          # runtime guard; length returns 0.
+consume_arr([])
 
 # Hash iteration inference -- .each + .merge / .keys + [k].
 def merge_into_seed(other)
@@ -61,10 +44,7 @@ def merge_into_seed(other)
   result.keys.length
 end
 
-puts merge_into_seed(b.contents)  # widens to str_poly_hash;
-                                  # body's iteration no-ops on
-                                  # NULL hash; result keeps the
-                                  # initial seed; .keys.length = 1.
+puts merge_into_seed({b: 2, c: 3})
 
 # Hash widening via .keys (no .each, no [k] literal access) --
 # Sam's SqliteAdapter#insert/update shape (`cols = attrs.keys;
@@ -75,4 +55,4 @@ def hash_keys_count(h)
   h.keys.length
 end
 
-puts hash_keys_count(b.contents)
+puts hash_keys_count({a: 1, b: 2})
