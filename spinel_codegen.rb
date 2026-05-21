@@ -5484,6 +5484,24 @@ class Compiler
         cname = expected_base[4, expected_base.length - 4]
         return "((sp_" + cname + " *)(" + val + ").v.p)"
       end
+ # `if v.is_a?(Hash); helper(v); end` where `helper`'s param has
+ # been monomorphized to a concrete hash variant (str_str_hash,
+ # sym_int_hash, ...). Same unbox shape as the obj_ arm: extract
+ # the sp_RbVal's `.v.p` and cast to the expected hash pointer
+ # type. The runtime is_a?(Hash) guard ensures the cls_id is
+ # some hash; trusting that the variant matches the callee mirrors
+ # how the obj_ arm trusts is_a?(C). Issue #631 (sibling to #448).
+      if is_hash_type(expected_base) == 1
+        @needs_rb_value = 1
+        return "((" + c_type(expected_base) + ")(" + val + ").v.p)"
+      end
+ # Same shape for an is_a?(Array)-narrowed slot landing in a
+ # concrete typed-array param (int_array, str_array, poly_array,
+ # any `*_ptr_array`).
+      if is_array_type(expected_base) == 1
+        @needs_rb_value = 1
+        return "((" + c_type(expected_base) + ")(" + val + ").v.p)"
+      end
     end
     if expected_base == "poly" && at != "poly"
       return box_value_to_poly(at, val)
@@ -23588,7 +23606,7 @@ class Compiler
         if k < ptypes.length
           pt = ptypes[k]
           pt_base = base_type(pt)
-          if pt_base == "poly" || pt_base == "string" || is_array_type(pt_base) == 1 || (at == "poly" && is_obj_type(pt_base) == 1)
+          if pt_base == "poly" || pt_base == "string" || is_array_type(pt_base) == 1 || (at == "poly" && is_obj_type(pt_base) == 1) || (at == "poly" && is_hash_type(pt_base) == 1)
             aexpr = compile_expr_for_expected_type(arg_ids[k], pt)
             if root_constructor_args == 1
               aexpr = root_constructor_arg_if_needed(arg_ids[k], aexpr, pt, later_arg_may_gc[k])
