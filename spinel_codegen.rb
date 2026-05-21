@@ -16628,7 +16628,7 @@ class Compiler
  # cover? for numeric ranges (Ruby docs: "tests for membership").
       tmp = new_temp
       emit("  sp_Range " + tmp + " = " + rc + ";")
-      arg = compile_arg0(nid)
+      arg = compile_arg0_as_int(nid)
       return "(" + arg + " >= " + tmp + ".first && " + arg + " <= " + tmp + ".last)"
     end
     if mname == "to_a"
@@ -32420,7 +32420,11 @@ class Compiler
     emit("  mrb_bool " + tmp_res + " = " + init_val + ";")
     emit_iter_open(rc, recv_type, "lv_" + bp1, tmp_i)
     push_scope
-    declare_var(bp1, iter_elem_type(recv_type))
+    bp1_t_pred = find_var_type(bp1)
+    if bp1_t_pred != "bigint"
+      bp1_t_pred = iter_elem_type(recv_type)
+    end
+    declare_var(bp1, bp1_t_pred)
     blk = @nd_block[nid]
     bbody = @nd_body[blk]
     bexpr = "0"
