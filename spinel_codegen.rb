@@ -15165,6 +15165,10 @@ class Compiler
         if lt == "int"
           return "sp_int_neg(" + compile_expr(recv) + ")"
         end
+        if lt == "bigint"
+          @needs_bigint = 1
+          return "sp_bigint_sub(sp_bigint_new_int(0), (sp_Bigint *)" + compile_expr(recv) + ")"
+        end
         return "(-" + compile_expr(recv) + ")"
       end
       if lt == "poly"
@@ -15644,6 +15648,10 @@ class Compiler
       end
       if rt == "float"
         return "(-" + compile_expr(recv) + ")"
+      end
+      if rt == "bigint"
+        @needs_bigint = 1
+        return "sp_bigint_sub(sp_bigint_new_int(0), (sp_Bigint *)" + compile_expr(recv) + ")"
       end
       return "(-" + compile_expr(recv) + ")"
     end
