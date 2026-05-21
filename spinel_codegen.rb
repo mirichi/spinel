@@ -20386,6 +20386,23 @@ class Compiler
                   boxed = box_value_to_poly(arg_t, tmp_w)
                   return "({" + c_type(arg_t) + " " + tmp_w + " = " + arg0_w + "; " + rc + arrow + sanitize_ivar(bname) + " = " + boxed + "; " + tmp_w + ";})"
                 end
+ # promote-mode-widened ivar: wrap an int rhs through
+ # sp_bigint_new_int. Mirror the bigint coerce branches at
+ # the other ivar-write sites (line 24924, etc.).
+                if slot_t == "bigint"
+                  arg_t_bw = "int"
+                  args_id_bw = @nd_arguments[nid]
+                  if args_id_bw >= 0
+                    arg_ids_bw = get_args(args_id_bw)
+                    if arg_ids_bw.length > 0
+                      arg_t_bw = infer_type(arg_ids_bw[0])
+                    end
+                  end
+                  if arg_t_bw == "int"
+                    @needs_bigint = 1
+                    return "(" + rc + arrow + sanitize_ivar(bname) + " = sp_bigint_new_int(" + arg0_w + "))"
+                  end
+                end
                 return "(" + rc + arrow + sanitize_ivar(bname) + " = " + arg0_w + ")"
               end
               j = j + 1
@@ -28381,16 +28398,23 @@ class Compiler
  # expression-form attr_writer above.
               slot_t = cls_ivar_type(r_ci, "@" + bname)
               arg0_w = compile_arg0(nid)
-              if slot_t == "poly"
-                args_id_w = @nd_arguments[nid]
-                arg_t = "int"
-                if args_id_w >= 0
-                  arg_ids_w = get_args(args_id_w)
-                  if arg_ids_w.length > 0
-                    arg_t = infer_type(arg_ids_w[0])
-                  end
+              arg_t_aw = "int"
+              args_id_aw = @nd_arguments[nid]
+              if args_id_aw >= 0
+                arg_ids_aw = get_args(args_id_aw)
+                if arg_ids_aw.length > 0
+                  arg_t_aw = infer_type(arg_ids_aw[0])
                 end
-                arg0_w = box_value_to_poly(arg_t, arg0_w)
+              end
+              if slot_t == "poly"
+                arg0_w = box_value_to_poly(arg_t_aw, arg0_w)
+              elsif slot_t == "bigint" && arg_t_aw == "int"
+ # promote-mode-widened ivar: wrap an int rhs.
+                @needs_bigint = 1
+                arg0_w = "sp_bigint_new_int(" + arg0_w + ")"
+              elsif slot_t == "int" && arg_t_aw == "bigint"
+                @needs_bigint = 1
+                arg0_w = "sp_bigint_to_int((sp_Bigint *)" + arg0_w + ")"
               end
               emit("  " + rc + arrow2 + sanitize_ivar(bname) + " = " + arg0_w + ";")
               return 1
