@@ -32989,7 +32989,13 @@ class Compiler
       emit("  SP_GC_ROOT(" + tmp_arrn + ");")
       emit("  for (mrb_int " + tmp_in + " = 0; " + tmp_in + " < " + ncount + "; " + tmp_in + "++) {")
       if bpn != ""
-        emit("    lv_" + bpn + " = " + tmp_in + ";")
+        bpn_t_mp = find_var_type(bpn)
+        if bpn_t_mp == "bigint"
+          @needs_bigint = 1
+          emit("    lv_" + bpn + " = sp_bigint_new_int(" + tmp_in + ");")
+        else
+          emit("    lv_" + bpn + " = " + tmp_in + ";")
+        end
       end
       @indent = @indent + 1
       if blk_n >= 0
@@ -33336,8 +33342,17 @@ class Compiler
       emit("  for (mrb_int " + tmp_i + " = " + first_e + "; " + tmp_i + " " + excl + " " + last_e + "; " + tmp_i + "++) {")
       have_bp_r = (get_block_param(nid, 0) != "")
       if have_bp_r
-        declare_var(bp1, "int")
-        emit("    lv_" + bp1 + " = " + tmp_i + ";")
+        bp1_t_rng = find_var_type(bp1)
+        if bp1_t_rng != "bigint"
+          bp1_t_rng = "int"
+        end
+        declare_var(bp1, bp1_t_rng)
+        if bp1_t_rng == "bigint"
+          @needs_bigint = 1
+          emit("    lv_" + bp1 + " = sp_bigint_new_int(" + tmp_i + ");")
+        else
+          emit("    lv_" + bp1 + " = " + tmp_i + ";")
+        end
       end
       @indent = @indent + 1
       if blk_r >= 0
@@ -33364,6 +33379,12 @@ class Compiler
               emit("  sp_PtrArray_push(" + tmp_arr + ", (void *)" + lastv_r + ");")
             end
           else
+ # promote-mode block tail returning bigint into IntArray;
+ # unbox before pushing.
+            if infer_type(stmts_r2.last) == "bigint"
+              @needs_bigint = 1
+              lastv_r = "sp_bigint_to_int((sp_Bigint *)" + lastv_r + ")"
+            end
             emit("  sp_IntArray_push(" + tmp_arr + ", " + lastv_r + ");")
           end
         else
