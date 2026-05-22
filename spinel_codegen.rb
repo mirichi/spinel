@@ -8659,12 +8659,50 @@ class Compiler
     if @nd_type[nid] == "DefNode"
       return
     end
+ # When descending into a CallNode that holds a block (each, map,
+ # etc.), the block's params shadow outer same-named locals.
+ # Without pushing them into scope, `yield x` inside the block sees
+ # outer x (often promoted to bigint) and infers wrongly. Push a
+ # frame with the block param types resolved against the iterator's
+ # element type so the yield arm's infer_type picks them up.
+    pushed_byat_scope = 0
+    if @nd_type[nid] == "CallNode" && @nd_block[nid] >= 0
+      blk_byat = @nd_block[nid]
+      bp_byat = @nd_parameters[blk_byat]
+      if bp_byat >= 0
+        inner_byat = @nd_parameters[bp_byat]
+        if inner_byat >= 0
+          reqs_byat = parse_id_list(@nd_requireds[inner_byat])
+          if reqs_byat.length > 0
+            recv_byat = @nd_receiver[nid]
+            recv_t_byat = recv_byat >= 0 ? infer_type(recv_byat) : ""
+            elem_t_byat = recv_t_byat == "" ? "int" : iter_elem_type(recv_t_byat)
+            if elem_t_byat == "" || elem_t_byat == "void"
+              elem_t_byat = "int"
+            end
+            push_scope
+            pushed_byat_scope = 1
+            bpi_byat = 0
+            while bpi_byat < reqs_byat.length
+              bn_byat = @nd_name[reqs_byat[bpi_byat]]
+              if bn_byat != "" && bn_byat != "_"
+                declare_var(bn_byat, elem_t_byat)
+              end
+              bpi_byat = bpi_byat + 1
+            end
+          end
+        end
+      end
+    end
     cs = []
     push_child_ids(nid, cs)
     k = 0
     while k < cs.length
       body_yield_arg_types(cs[k], types)
       k = k + 1
+    end
+    if pushed_byat_scope == 1
+      pop_scope
     end
   end
 
@@ -35482,7 +35520,13 @@ class Compiler
 
     if rt == "int_array"
       emit("  for (mrb_int " + tmp + " = 0; " + tmp + " < sp_IntArray_length(" + recv_expr + "); " + tmp + "++) {")
-      emit("    lv_" + inner_bp_remapped + " = sp_IntArray_get(" + recv_expr + ", " + tmp + ");")
+      inner_bp_t_eyi = find_var_type(inner_bp_remapped)
+      if inner_bp_t_eyi == "bigint"
+        @needs_bigint = 1
+        emit("    lv_" + inner_bp_remapped + " = sp_bigint_new_int(sp_IntArray_get(" + recv_expr + ", " + tmp + "));")
+      else
+        emit("    lv_" + inner_bp_remapped + " = sp_IntArray_get(" + recv_expr + ", " + tmp + ");")
+      end
       @indent = @indent + 1
       redo_label = push_redo_label
       emit_redo_label(redo_label)
@@ -35504,7 +35548,17 @@ class Compiler
                 yk = 0
                 while yk < yaids.length
                   if yk < outer_bp_names.length
-                    emit("  lv_" + outer_bp_names[yk] + " = " + compile_expr_remap(yaids[yk], map_from, map_to) + ";")
+                    yarg_v_eyi = compile_expr_remap(yaids[yk], map_from, map_to)
+                    yarg_t_eyi = infer_type(yaids[yk])
+                    outer_bp_t_eyi = find_var_type(outer_bp_names[yk])
+                    if outer_bp_t_eyi == "bigint" && yarg_t_eyi == "int"
+                      @needs_bigint = 1
+                      yarg_v_eyi = "sp_bigint_new_int(" + yarg_v_eyi + ")"
+                    elsif outer_bp_t_eyi == "int" && yarg_t_eyi == "bigint"
+                      @needs_bigint = 1
+                      yarg_v_eyi = "sp_bigint_to_int((sp_Bigint *)" + yarg_v_eyi + ")"
+                    end
+                    emit("  lv_" + outer_bp_names[yk] + " = " + yarg_v_eyi + ";")
                   end
                   yk = yk + 1
                 end
