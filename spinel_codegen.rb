@@ -2755,6 +2755,35 @@ class Compiler
           end
         end
       end
+ # Generic `obj.method(...)` cache-miss path: when the recv is
+ # statically a user-class instance and the class defines a method
+ # of that name, route through cls_method_return so the now-
+ # promoted return type flows up. Without this, promote-mode CallNodes
+ # that walk_and_cache skipped (or that annotated as stale "int"
+ # before the promote sweep) silently default to "int" and the
+ # outer return / arith arms double-wrap with sp_bigint_new_int.
+      cmp_recv_obj = @nd_receiver[nid]
+      if cmp_recv_obj >= 0
+        cmp_recv_t_obj = base_type(infer_type(cmp_recv_obj))
+        if is_obj_type(cmp_recv_t_obj) == 1
+          cmp_cn_obj = cmp_recv_t_obj[4, cmp_recv_t_obj.length - 4]
+          cmp_ci_obj = find_class_idx(cmp_cn_obj)
+          if cmp_ci_obj >= 0
+            cmp_names_obj = @cls_meth_names[cmp_ci_obj].split(";")
+            cmp_returns_obj = @cls_meth_returns[cmp_ci_obj].split(";")
+            cmp_jj_obj = 0
+            while cmp_jj_obj < cmp_names_obj.length
+              if cmp_names_obj[cmp_jj_obj] == cmp_mname && cmp_jj_obj < cmp_returns_obj.length
+                cmp_ret_obj = cmp_returns_obj[cmp_jj_obj]
+                if cmp_ret_obj != ""
+                  return cmp_ret_obj
+                end
+              end
+              cmp_jj_obj = cmp_jj_obj + 1
+            end
+          end
+        end
+      end
       return "int"
     end
     if t == "IfNode"
