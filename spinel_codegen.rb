@@ -15412,6 +15412,23 @@ class Compiler
               parts.push("sp_bigint_to_s((sp_Bigint *)" + compile_expr(aargs[0]) + ")")
             elsif at == "float"
               parts.push("sp_float_to_s(" + compile_expr(aargs[0]) + ")")
+            elsif at == "poly"
+ # `"a" + poly_local + "b"` -- the 2-arg sp_str_concat path at
+ # the single-`+` site already coerces via sp_poly_to_s; mirror
+ # that here for chained concat collapsing into sp_str_concat3 /
+ # sp_str_concat_arr. Without this, the chained form silently
+ # passed an sp_RbVal into a `const char *` parameter and cc
+ # rejected the generated code. Common shape: a local typed
+ # through `if x.nil?; ""; else; x; end` when x came from a
+ # poly-valued hash lookup -- the union stays sp_RbVal but its
+ # string-side payload is always a valid c-string at runtime.
+              parts.push("sp_poly_to_s(" + compile_expr(aargs[0]) + ")")
+            elsif at == "symbol"
+              parts.push("sp_sym_to_s(" + compile_expr(aargs[0]) + ")")
+            elsif at == "mutable_str"
+              parts.push("(" + compile_expr(aargs[0]) + ")->data")
+            elsif at == "bigint"
+              parts.push("sp_bigint_to_s(" + compile_expr(aargs[0]) + ")")
             else
               parts.push(compile_expr(aargs[0]))
             end
@@ -32150,16 +32167,25 @@ class Compiler
       end
       if at == "int"
         emit("  printf(\"%lld\", (long long)" + val + ");")
+      elsif at == "mutable_str"
+        emit("  fputs(" + val + "->data, stdout);")
+      elsif at == "string" || at == "string?"
+        emit("  if (" + val + ") fputs(" + val + ", stdout);")
+      elsif at == "float"
+        emit("  fputs(sp_float_to_s(" + val + "), stdout);")
+      elsif at == "bool"
+        emit("  fputs(" + val + " ? \"true\" : \"false\", stdout);")
+      elsif at == "poly"
+ # `print poly_local` -- route through sp_poly_to_s rather than
+ # falling through to the `printf("%lld", (long long)val)` path,
+ # which is a C-level type error (sp_RbVal is a struct; the cast
+ # rejects). sp_poly_to_s switches on the tag and returns a
+ # valid c-string for every variant, matching CRuby's
+ # `print obj` -> `obj.to_s` semantics.
+        @needs_rb_value = 1
+        emit("  fputs(sp_poly_to_s(" + val + "), stdout);")
       else
-        if at == "mutable_str"
-          emit("  fputs(" + val + "->data, stdout);")
-        else
-          if at == "string"
-            emit("  fputs(" + val + ", stdout);")
-          else
-            emit("  printf(\"%lld\", (long long)" + val + ");")
-          end
-        end
+        emit("  printf(\"%lld\", (long long)" + val + ");")
       end
       k = k + 1
     end
