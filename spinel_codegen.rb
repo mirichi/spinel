@@ -18004,15 +18004,26 @@ class Compiler
           emit("      mrb_int lv_" + bp + " = " + tmp + "->data[" + tmp + "->start + _j];")
           bbody = @nd_body[blk]
           bexpr = "0"
+          bexpr_t_sb = "int"
           if bbody >= 0
             bs = get_stmts(bbody)
             if bs.length > 0
               bexpr = compile_expr(bs.last)
+              bexpr_t_sb = infer_type(bs.last)
             end
           end
-          emit("      mrb_int _ka = " + bexpr + ";")
+          ka_init_sb = bexpr
+          if bexpr_t_sb == "bigint"
+            @needs_bigint = 1
+            ka_init_sb = "sp_bigint_to_int((sp_Bigint *)" + bexpr + ")"
+          end
+          emit("      mrb_int _ka = " + ka_init_sb + ";")
           emit("      lv_" + bp + " = " + tmp + "->data[" + tmp + "->start + _j + 1];")
-          emit("      mrb_int _kb = " + bexpr + ";")
+          kb_init_sb = bexpr
+          if bexpr_t_sb == "bigint"
+            kb_init_sb = "sp_bigint_to_int((sp_Bigint *)" + bexpr + ")"
+          end
+          emit("      mrb_int _kb = " + kb_init_sb + ";")
           emit("      if (_ka > _kb) { mrb_int _t = " + tmp + "->data[" + tmp + "->start + _j]; " + tmp + "->data[" + tmp + "->start + _j] = " + tmp + "->data[" + tmp + "->start + _j + 1]; " + tmp + "->data[" + tmp + "->start + _j + 1] = _t; }")
           emit("    }")
           emit("  }")
