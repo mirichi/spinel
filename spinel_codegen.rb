@@ -21725,7 +21725,7 @@ class Compiler
       i = i + 1
     end
  # Built-in type dispatch (cls_id < 0).
-    emit_poly_builtin_dispatch(recv_tmp, mname, arg_compiled, arg_types, tmp, is_poly_ret, narrowed_int_idx)
+    emit_poly_builtin_dispatch(recv_tmp, mname, arg_compiled, arg_types, tmp, is_poly_ret, narrowed_int_idx, ret_type)
     emit("  }")
  # Warn when the user-class dispatch loop emitted zero arms. The
  # result temp keeps its default (0) and downstream code consuming
@@ -21745,7 +21745,7 @@ class Compiler
  # Emit branches for the built-in (negative cls_id) entries. Each
  # entry maps a (SP_BUILTIN_*, method) pair to a C expression.
  # Adding a new built-in type means one more `if` branch here.
-  def emit_poly_builtin_dispatch(recv_tmp, mname, arg_compiled, arg_types, result_tmp, is_poly_ret, narrowed_int = 0)
+  def emit_poly_builtin_dispatch(recv_tmp, mname, arg_compiled, arg_types, result_tmp, is_poly_ret, narrowed_int = 0, result_t = "")
     a0 = ""
     if arg_compiled.length > 0
       a0 = arg_compiled[0]
@@ -22013,14 +22013,28 @@ class Compiler
         if ck > 0
           ca = ca + ", "
         end
-        ca = ca + arg_compiled[ck]
+ # proc ABI args are mrb_int — unbox bigint args so the array
+ # init holds plain ints.
+        av_pc = arg_compiled[ck]
+        if ck < arg_types.length && arg_types[ck] == "bigint"
+          @needs_bigint = 1
+          av_pc = "sp_bigint_to_int((sp_Bigint *)" + av_pc + ")"
+        end
+        ca = ca + av_pc
         ck = ck + 1
       end
       if ca == ""
         ca = "0"
       end
       proc_c = "sp_proc_call((sp_Proc *)" + recv_tmp + ".v.p, (mrb_int[]){" + ca + "})"
-      proc_rhs = is_poly_ret == 1 ? "sp_box_int(" + proc_c + ")" : proc_c
+      if is_poly_ret == 1
+        proc_rhs = "sp_box_int(" + proc_c + ")"
+      elsif base_type(result_t) == "bigint"
+        @needs_bigint = 1
+        proc_rhs = "sp_bigint_new_int(" + proc_c + ")"
+      else
+        proc_rhs = proc_c
+      end
       emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_PROC) " + result_tmp + " = " + proc_rhs + ";")
     end
     if mname == "[]" && arg_compiled.length >= 1 && a0_is_int
@@ -36670,6 +36684,35 @@ class Compiler
               if ma_ret.length > 0 && base_type(infer_type(ma_ret[0])) == "bigint"
                 expr_type = "bigint"
               end
+            end
+          end
+        end
+ # Generic poly.method: when every user class defining `mname`
+ # returns bigint, the dispatcher result is bigint. Walk the
+ # whole class set instead of relying on the narrow-set ivar
+ # heuristic (which requires the recv to be an ivar read).
+        if expr_type != "bigint"
+          ml_recv2 = @nd_receiver[last]
+          if ml_recv2 >= 0 && infer_type(ml_recv2) == "poly"
+            all_bigint_pm = 0
+            any_defines_pm = 0
+            cic_pm = 0
+            while cic_pm < @cls_names.length
+              if cls_find_method(cic_pm, ml_ret) >= 0
+                if any_defines_pm == 0
+                  all_bigint_pm = 1
+                end
+                any_defines_pm = 1
+                rt_pm = cls_method_return(cic_pm, ml_ret)
+                if base_type(rt_pm) != "bigint"
+                  all_bigint_pm = 0
+                  cic_pm = @cls_names.length
+                end
+              end
+              cic_pm = cic_pm + 1
+            end
+            if any_defines_pm == 1 && all_bigint_pm == 1
+              expr_type = "bigint"
             end
           end
         end
