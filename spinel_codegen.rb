@@ -24669,6 +24669,26 @@ class Compiler
         emit("  sp_PolyArray_push(" + tmp + ", sp_box_poly_array(" + conv + "));")
       else
         val = compile_expr(eid)
+ # Stale cache may say "int" for an arith CallNode whose
+ # actual emit is bigint. Promote at the box boundary so
+ # box_value_to_poly's bigint arm fires (unbox + sp_box_int).
+        if et != "bigint" && @nd_type[eid] == "CallNode"
+          eml = @nd_name[eid]
+          if eml == "+" || eml == "-" || eml == "*" || eml == "/" || eml == "%" || eml == "**"
+            er = @nd_receiver[eid]
+            if er >= 0 && base_type(infer_type(er)) == "bigint"
+              et = "bigint"
+            else
+              ea = @nd_arguments[eid]
+              if ea >= 0
+                aa_lit = get_args(ea)
+                if aa_lit.length > 0 && base_type(infer_type(aa_lit[0])) == "bigint"
+                  et = "bigint"
+                end
+              end
+            end
+          end
+        end
         emit("  sp_PolyArray_push(" + tmp + ", " + box_value_to_poly(et, val) + ");")
       end
       k = k + 1
@@ -24778,6 +24798,26 @@ class Compiler
           emit("  sp_PolyArray_push(" + tmp + ", sp_box_poly_array(" + conv + "));")
         else
           val = compile_expr(elems[k])
+ # Stale cache may say "int" for an arith CallNode whose
+ # actual emit is bigint. Promote at the box boundary so
+ # box_value_to_poly's bigint arm fires.
+          if et != "bigint" && @nd_type[elems[k]] == "CallNode"
+            ear_mn = @nd_name[elems[k]]
+            if ear_mn == "+" || ear_mn == "-" || ear_mn == "*" || ear_mn == "/" || ear_mn == "%" || ear_mn == "**"
+              ear_r = @nd_receiver[elems[k]]
+              if ear_r >= 0 && base_type(infer_type(ear_r)) == "bigint"
+                et = "bigint"
+              else
+                ear_a = @nd_arguments[elems[k]]
+                if ear_a >= 0
+                  aa_ear = get_args(ear_a)
+                  if aa_ear.length > 0 && base_type(infer_type(aa_ear[0])) == "bigint"
+                    et = "bigint"
+                  end
+                end
+              end
+            end
+          end
           emit("  sp_PolyArray_push(" + tmp + ", " + box_value_to_poly(et, val) + ");")
         end
         k = k + 1
