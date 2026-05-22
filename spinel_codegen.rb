@@ -10669,6 +10669,44 @@ class Compiler
     end
   end
 
+ # Return 1 if the AST rooted at `nid` reads any LocalVariableReadNode
+ # whose name appears in `main_lnames` (main()'s declared locals).
+ #
+ # Used by emit_main to detect single-target top-level constants whose
+ # initializer depends on a local that hasn't been assigned yet at the
+ # const-init pre-loop. Without this guard, codegen plants
+ #   cst_X = lv_y.iv_z;
+ # at the top of main, before `lv_y = sp_Y_new()` runs — so the chain
+ # reads from a zero-init struct (silently returns 0, or SIGSEGVs when
+ # the call reaches FFI). matz/spinel#647; sibling of #630 (multi-write
+ # fix in 9ac50a6).
+  def expr_reads_main_local(nid, main_lnames)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "LocalVariableReadNode"
+      nm = @nd_name[nid]
+      li = 0
+      while li < main_lnames.length
+        if main_lnames[li] == nm
+          return 1
+        end
+        li = li + 1
+      end
+      return 0
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      if expr_reads_main_local(cs[k], main_lnames) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
  # Walk the AST looking for class-hierarchy usage patterns
  # (`<klass>.superclass`, `.ancestors`, `<`, `<=`, dynamic
  # is_a? / kind_of? / instance_of?, case-when on a Class const).
@@ -11088,13 +11126,42 @@ class Compiler
       j = j + 1
     end
 
+ # Compute deferred const inits: a top-level `CONST = recv.method`
+ # whose RHS reads from a main local must wait for the body to run,
+ # otherwise the pre-emit below plants `cst_X = lv_y.iv_z;` before
+ # `lv_y = sp_Y_new()` and reads from a zero-init struct
+ # (matz/spinel#647). The single-target sibling of #630 (9ac50a6
+ # multi-write fix): there the push was skipped entirely; here the
+ # const must still be declared but the init emit moves to source
+ # order, handled in the body-stmt loop below.
+    defer_const_init = "".split(",")
+    dci = 0
+    while dci < @const_names.length
+      defer_const_init.push("0")
+      dci = dci + 1
+    end
+    dci = 0
+    while dci < @const_names.length
+      scope_dci = ""
+      if dci < @const_scope_names.length
+        scope_dci = @const_scope_names[dci]
+      end
+      if scope_dci == "" && dci < @const_expr_ids.length
+        eid_dci = @const_expr_ids[dci]
+        if eid_dci >= 0 && expr_reads_main_local(eid_dci, lnames) == 1
+          defer_const_init[dci] = "1"
+        end
+      end
+      dci = dci + 1
+    end
+
  # Constants (initialize global declarations)
     i = 0
     while i < @const_names.length
  # expr_id == -1 means this constant came from a `A, B, C = expr`
  # multi-write: its value is computed by the deferred init block
  # below, not from a single per-target expression.
-      if i < @const_expr_ids.length && @const_expr_ids[i] >= 0
+      if i < @const_expr_ids.length && @const_expr_ids[i] >= 0 && defer_const_init[i] != "1"
         old_scope = @current_lexical_scope
         if i < @const_scope_names.length
           @current_lexical_scope = @const_scope_names[i]
@@ -11276,12 +11343,46 @@ class Compiler
       pe = pe + 1
     end
 
- # Compile main statements
+ # Compile main statements. ConstantWriteNode is normally skipped
+ # because the const-init pre-loop above already emitted it. The
+ # exception is constants flagged in defer_const_init[]: those have
+ # an RHS that reads from a main local, so the pre-loop deliberately
+ # left them out and we emit them here in source order.
     stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"
           if @nd_type[sid] != "ConstantWriteNode"
             compile_stmt(sid)
+          else
+            cwn_name = @nd_name[sid]
+            cwn_idx = -1
+            ck = 0
+            while ck < @const_names.length
+              if @const_names[ck] == cwn_name
+                scope_ck = ""
+                if ck < @const_scope_names.length
+                  scope_ck = @const_scope_names[ck]
+                end
+                if scope_ck == ""
+                  cwn_idx = ck
+                  break
+                end
+              end
+              ck = ck + 1
+            end
+            if cwn_idx >= 0 && cwn_idx < defer_const_init.length && defer_const_init[cwn_idx] == "1"
+              eid_b = @const_expr_ids[cwn_idx]
+              if eid_b >= 0
+                old_scope_b = @current_lexical_scope
+                @current_lexical_scope = ""
+                val_b = compile_expr(eid_b)
+                @current_lexical_scope = old_scope_b
+                emit("  cst_" + cwn_name + " = " + val_b + ";")
+                if type_is_pointer(@const_types[cwn_idx]) == 1
+                  emit("  SP_GC_ROOT(cst_" + cwn_name + ");")
+                end
+              end
+            end
           end
         end
       end
