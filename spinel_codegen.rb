@@ -35155,6 +35155,14 @@ class Compiler
           rc_r = compile_expr_remap(recv, map_from, map_to)
           if rt_r == "str_array" && mname == "[]"
             arg_r = compile_expr_remap_arg0(nid, map_from, map_to)
+            args_id_sr = @nd_arguments[nid]
+            if args_id_sr >= 0
+              aa_sr = get_args(args_id_sr)
+              if aa_sr.length > 0 && infer_type(aa_sr[0]) == "bigint"
+                @needs_bigint = 1
+                arg_r = "sp_bigint_to_int((sp_Bigint *)" + arg_r + ")"
+              end
+            end
             return "sp_StrArray_get(" + rc_r + ", " + arg_r + ")"
           end
           if rt_r == "int_array" && mname == "[]"
