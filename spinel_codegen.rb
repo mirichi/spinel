@@ -7875,8 +7875,19 @@ class Compiler
  # that still expect const char * (catch/throw tag, hash key, etc.).
   def compile_expr_as_string(nid)
     s = compile_expr(nid)
-    if infer_type(nid) == "symbol"
+    t = infer_type(nid)
+    if t == "symbol"
       return "sp_sym_to_s(" + s + ")"
+    end
+ # Issue #651: a poly-typed value (commonly an ivar inferred as
+ # poly because a `kwarg: nil`-defaulted param writes it) flowing
+ # into a setter that expects `const char *` (sp_StrStrHash_set,
+ # sp_SymStrHash_set, ...) needs the unboxed string payload. The
+ # is_a?(String)-narrowed read site already does this; extend to
+ # the un-narrowed shape so the typed-hash setter type-checks.
+    if t == "poly"
+      @needs_rb_value = 1
+      return "(" + s + ").v.s"
     end
     s
   end
