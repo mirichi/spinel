@@ -20396,6 +20396,17 @@ class Compiler
     if is_nullable_type(rbs_t) == 1 && inf_t == "nil"
       return false
     end
+ # Issue #639: case-by-symbol dispatch writing union-typed values
+ # into typed ivars (`when :id then @id = value` where `value` is
+ # `Integer | String`). spinel observes `value` as "poly" and
+ # would flag conflict with the declared `Integer`, but MRI
+ # semantics narrow the union per case-arm so the runtime type
+ # matches the ivar slot. Trust RBS — the matching codegen-side
+ # unbox at the IVW writes via `.v.i` / `.v.s` / `.v.f` so the
+ # C-level assignment type-checks.
+    if inf_t == "poly" && rbs_t != "poly" && is_nullable_type(rbs_t) == 0
+      return false
+    end
  # Container variant refinements where one is the other's poly form.
     if (rbs_t == "int_array" && inf_t == "poly_array") ||
        (rbs_t == "poly_array" && inf_t == "int_array")

@@ -26032,6 +26032,27 @@ class Compiler
         val = box_expr_to_poly(expr_id)
       else
         val = compile_expr(expr_id)
+ # Issue #639: ivar slot is concrete (RBS-pinned Integer / String
+ # etc.) but rhs is poly because the source flow lost the type
+ # (case-by-symbol dispatch where each `when :sym` arm narrows a
+ # union-typed value to the ivar's slot type at runtime). Unbox
+ # via the matching union field so the C-level assignment
+ # type-checks; the runtime narrowing the user wrote keeps it
+ # sound.
+        rhs_t_ivw_p = infer_type(expr_id)
+        if rhs_t_ivw_p == "poly" && ivt != "" && ivt != "poly"
+          @needs_rb_value = 1
+          ivt_b = base_type(ivt)
+          if ivt_b == "int" || ivt_b == "bool" || ivt_b == "symbol"
+            val = "(" + val + ").v.i"
+          elsif ivt_b == "string" || ivt_b == "mutable_str"
+            val = "(" + val + ").v.s"
+          elsif ivt_b == "float"
+            val = "(" + val + ").v.f"
+          elsif is_obj_type(ivt_b) == 1 || is_array_type(ivt_b) == 1 || is_hash_type(ivt_b) == 1 || is_ptr_array_type(ivt_b) == 1 || ivt_b == "proc"
+            val = "(" + c_type(ivt) + ")(" + val + ").v.p"
+          end
+        end
  # `--int-overflow=promote` widens ivar slots to bigint; an
  # int-typed RHS (literal, arithmetic, etc.) needs the
  # sp_bigint_new_int wrap before assignment. Detect the
