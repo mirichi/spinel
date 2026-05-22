@@ -23866,6 +23866,14 @@ class Compiler
                 result = result + compile_expr(def_id)
               end
             else
+ # Issue #642: a positional param with no default and no call-
+ # site arg was silently filled with `0` / `sp_box_nil()`. The
+ # generated binary then ran with garbage in the missing slot,
+ # producing the canonical "looks-like-200-OK" failure mode the
+ # tep#13 reporter hit. Warn loud so the user sees the missing
+ # arg at compile time; still emit `0` so the codegen completes
+ # (a hard error would tear up partially-implemented patterns).
+              warn_missing_positional_arg(mi, k, pnames[k])
               if k < ptypes.length && ptypes[k] == "poly"
                 result = result + "sp_box_nil()"
               else
@@ -23873,6 +23881,7 @@ class Compiler
               end
             end
           else
+            warn_missing_positional_arg(mi, k, pnames[k])
             if k < ptypes.length && ptypes[k] == "poly"
               result = result + "sp_box_nil()"
             else
@@ -23884,6 +23893,27 @@ class Compiler
       k = k + 1
     end
     result
+  end
+
+ # Emit a one-shot warning per (callee, missing-param) the first
+ # time a call site omits that slot with no default available.
+ # Dedupe so a missing arg threaded through 50 call sites surfaces
+ # once. Lives alongside warn_unresolved_call's dedupe stash.
+  def warn_missing_positional_arg(mi, slot_idx, pname)
+    if mi < 0 || mi >= @meth_names.length
+      return
+    end
+    callee_name = @meth_names[mi]
+    key = "_miss_arg_:" + callee_name + ":" + slot_idx.to_s + ":" + pname
+    i = 0
+    while i < @unresolved_call_warnings.length
+      if @unresolved_call_warnings[i] == key
+        return
+      end
+      i = i + 1
+    end
+    @unresolved_call_warnings.push(key)
+    $stderr.puts "warning: call to '" + callee_name + "' is missing required arg #" + (slot_idx + 1).to_s + " (" + pname + "); emitting 0 (this is wrong — define a default or pass the arg)"
   end
 
   def compile_constructor_args(ci, nid)
