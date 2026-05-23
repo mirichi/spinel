@@ -15779,14 +15779,55 @@ class Compiler
           end
         end
       end
+ # `Module.accessor.<method>`: recv is a CallNode whose inner
+ # recv is a ConstantReadNode for a module name with a resolved
+ # accessor (resolve_module_singleton_accessors). Walk to the
+ # candidate class(es) and check the cls method return type.
+      if @nd_type[rcv_eb_user] == "CallNode"
+        inner_recv_eb = @nd_receiver[rcv_eb_user]
+        inner_mname_eb = @nd_name[rcv_eb_user]
+        if inner_recv_eb >= 0 && @nd_type[inner_recv_eb] == "ConstantReadNode"
+          mod_name_eb = @nd_name[inner_recv_eb]
+          if module_name_exists(mod_name_eb) == 1
+            rconsts_eb = module_acc_resolved(mod_name_eb, inner_mname_eb)
+            if rconsts_eb != "" && rconsts_eb != "?"
+              cands_eb = rconsts_eb.split(";")
+              ki_eb = 0
+              while ki_eb < cands_eb.length
+                cn_eb_ms = cands_eb[ki_eb]
+                rt_eb_ms = lookup_cls_meth_return(cn_eb_ms, mn_eb)
+                if base_type(rt_eb_ms) == "bigint"
+                  return 1
+                end
+                ki_eb = ki_eb + 1
+              end
+            end
+          end
+        end
+      end
     end
     if mn_eb != "+" && mn_eb != "-" && mn_eb != "*" && mn_eb != "/" && mn_eb != "%" && mn_eb != "**" &&
        mn_eb != "&" && mn_eb != "|" && mn_eb != "^" && mn_eb != "<<" && mn_eb != ">>" &&
        mn_eb != "~" && mn_eb != "-@"
       return 0
     end
+ # Arith/bitop result is bigint only when at least one side is
+ # bigint AND the recv is itself a numeric type (int/float/bigint
+ # or nullable). `string + bigint_var` (legal-shape Ruby
+ # dead-code in promote mode -- e.g. an included module body
+ # that's never reached with int args) has the recv side decide
+ # the dispatch: the string concat code path handles it. Treating
+ # the inner `+` as bigint cascades through compile_operator_expr
+ # and emits sp_bigint_add on string args.
     rcv_eb = @nd_receiver[nid]
-    if rcv_eb >= 0 && expr_emit_is_bigint(rcv_eb) == 1
+    if rcv_eb < 0
+      return 0
+    end
+    rcv_t_arith = base_type(infer_type(rcv_eb))
+    if rcv_t_arith != "int" && rcv_t_arith != "float" && rcv_t_arith != "bigint" && rcv_t_arith != "numeric"
+      return 0
+    end
+    if expr_emit_is_bigint(rcv_eb) == 1
       return 1
     end
     args_eb = @nd_arguments[nid]
