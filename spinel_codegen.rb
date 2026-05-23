@@ -2147,35 +2147,82 @@ class Compiler
     end
     cast = "(sp_" + pfx + " *)"
     adapter_name = "sp_" + pfx + "_" + sanitize_name(mname) + "_builtin_method_adapter"
+    promote_abi_b = (@int_overflow_mode == "promote") ? 1 : 0
+    if promote_abi_b == 1
+      @needs_bigint = 1
+      slot_c_b = "sp_Bigint *"
+      unbox_i = "sp_bigint_to_int(_i)"
+      unbox_v = "sp_bigint_to_int(_v)"
+      ret_box_v = "_v"
+    else
+      slot_c_b = "mrb_int"
+      unbox_i = "_i"
+      unbox_v = "_v"
+      ret_box_v = "_v"
+    end
     if recv_type == "int_array" && mname == "[]"
-      @lambda_funcs << "static mrb_int "
+      @lambda_funcs << "static "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " "
       @lambda_funcs << adapter_name
-      @lambda_funcs << "(void *_self, mrb_int _i) {\n"
-      @lambda_funcs << "  return sp_IntArray_get("
-      @lambda_funcs << cast
-      @lambda_funcs << "_self, _i);\n"
+      @lambda_funcs << "(void *_self, "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " _i) {\n"
+      if promote_abi_b == 1
+        @lambda_funcs << "  return sp_bigint_new_int(sp_IntArray_get("
+        @lambda_funcs << cast
+        @lambda_funcs << "_self, "
+        @lambda_funcs << unbox_i
+        @lambda_funcs << "));\n"
+      else
+        @lambda_funcs << "  return sp_IntArray_get("
+        @lambda_funcs << cast
+        @lambda_funcs << "_self, "
+        @lambda_funcs << unbox_i
+        @lambda_funcs << ");\n"
+      end
       @lambda_funcs << "}\n"
       return
     end
     if recv_type == "int_array" && mname == "[]="
-      @lambda_funcs << "static mrb_int "
+      @lambda_funcs << "static "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " "
       @lambda_funcs << adapter_name
-      @lambda_funcs << "(void *_self, mrb_int _i, mrb_int _v) {\n"
+      @lambda_funcs << "(void *_self, "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " _i, "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " _v) {\n"
       @lambda_funcs << "  sp_IntArray_set("
       @lambda_funcs << cast
-      @lambda_funcs << "_self, _i, _v);\n"
-      @lambda_funcs << "  return _v;\n"
+      @lambda_funcs << "_self, "
+      @lambda_funcs << unbox_i
+      @lambda_funcs << ", "
+      @lambda_funcs << unbox_v
+      @lambda_funcs << ");\n"
+      @lambda_funcs << "  return "
+      @lambda_funcs << ret_box_v
+      @lambda_funcs << ";\n"
       @lambda_funcs << "}\n"
       return
     end
     if recv_type == "int_array" && mname == "push"
-      @lambda_funcs << "static mrb_int "
+      @lambda_funcs << "static "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " "
       @lambda_funcs << adapter_name
-      @lambda_funcs << "(void *_self, mrb_int _v) {\n"
+      @lambda_funcs << "(void *_self, "
+      @lambda_funcs << slot_c_b
+      @lambda_funcs << " _v) {\n"
       @lambda_funcs << "  sp_IntArray_push("
       @lambda_funcs << cast
-      @lambda_funcs << "_self, _v);\n"
-      @lambda_funcs << "  return _v;\n"
+      @lambda_funcs << "_self, "
+      @lambda_funcs << unbox_v
+      @lambda_funcs << ");\n"
+      @lambda_funcs << "  return "
+      @lambda_funcs << ret_box_v
+      @lambda_funcs << ";\n"
       @lambda_funcs << "}\n"
       return
     end
@@ -2216,25 +2263,38 @@ class Compiler
     pt_list = cls_cmeth_ptypes_get(ci, j)
     base_name = "sp_" + cname + "_cls_" + sanitize_name(mname)
     adapter_name = "sp_" + cname + "_" + sanitize_name(mname) + "_cls_method_adapter"
- # Method ABI is `(void *, mrb_int...)` regardless of the callee's
- # actual param types. `--int-overflow=promote` widens cls method
- # params (and possibly the return) to bigint, so the adapter
- # wraps each mrb_int arg via sp_bigint_new_int and unwraps a
- # bigint return via sp_bigint_to_int before handing back.
-    adapter_rt = rt
-    if base_type(rt) == "bigint"
-      adapter_rt = "int"
+ # Method ABI in promote mode is `(void *, sp_Bigint *...) -> sp_Bigint*`.
+ # In raise/wrap mode it's `(void *, mrb_int...) -> mrb_int`.
+ # The adapter unwraps incoming sp_Bigint* args to whatever the
+ # callee param expects, and (re)wraps the callee return to match
+ # the ABI return type.
+    promote_abi = (@int_overflow_mode == "promote") ? 1 : 0
+    if promote_abi == 1
       @needs_bigint = 1
+      adapter_rt_c = "sp_Bigint *"
+      slot_c = "sp_Bigint *"
+    else
+      adapter_rt_c = "mrb_int"
+      slot_c = "mrb_int"
     end
-    sig = c_type(adapter_rt) + " " + adapter_name + "(void *_unused"
+    sig = adapter_rt_c + " " + adapter_name + "(void *_unused"
     body_args = ""
     pi2 = 0
     while pi2 < pt_list.length
-      sig = sig + ", mrb_int _a" + pi2.to_s
+      sig = sig + ", " + slot_c + " _a" + pi2.to_s
       arg_expr = "_a" + pi2.to_s
-      if pi2 < pt_list.length && base_type(pt_list[pi2]) == "bigint"
-        arg_expr = "sp_bigint_new_int(_a" + pi2.to_s + ")"
-        @needs_bigint = 1
+      param_b = base_type(pt_list[pi2])
+      if promote_abi == 1
+ # Slot is sp_Bigint*. Unwrap to mrb_int when the callee
+ # param expects a non-bigint primitive.
+        if param_b == "int" || param_b == "symbol" || param_b == "bool"
+          arg_expr = "sp_bigint_to_int(_a" + pi2.to_s + ")"
+        end
+      else
+        if param_b == "bigint"
+          arg_expr = "sp_bigint_new_int(_a" + pi2.to_s + ")"
+          @needs_bigint = 1
+        end
       end
       if pi2 == 0
         body_args = arg_expr
@@ -2253,19 +2313,39 @@ class Compiler
       @lambda_funcs << "("
       @lambda_funcs << body_args
       @lambda_funcs << ");\n"
-      @lambda_funcs << "  return 0;\n"
-    elsif base_type(rt) == "bigint"
-      @lambda_funcs << "  return sp_bigint_to_int("
-      @lambda_funcs << base_name
-      @lambda_funcs << "("
-      @lambda_funcs << body_args
-      @lambda_funcs << "));\n"
+      if promote_abi == 1
+        @lambda_funcs << "  return sp_bigint_new_int(0);\n"
+      else
+        @lambda_funcs << "  return 0;\n"
+      end
+    elsif promote_abi == 1
+      if base_type(rt) == "bigint"
+        @lambda_funcs << "  return "
+        @lambda_funcs << base_name
+        @lambda_funcs << "("
+        @lambda_funcs << body_args
+        @lambda_funcs << ");\n"
+      else
+        @lambda_funcs << "  return sp_bigint_new_int((mrb_int)"
+        @lambda_funcs << base_name
+        @lambda_funcs << "("
+        @lambda_funcs << body_args
+        @lambda_funcs << "));\n"
+      end
     else
-      @lambda_funcs << "  return "
-      @lambda_funcs << base_name
-      @lambda_funcs << "("
-      @lambda_funcs << body_args
-      @lambda_funcs << ");\n"
+      if base_type(rt) == "bigint"
+        @lambda_funcs << "  return sp_bigint_to_int("
+        @lambda_funcs << base_name
+        @lambda_funcs << "("
+        @lambda_funcs << body_args
+        @lambda_funcs << "));\n"
+      else
+        @lambda_funcs << "  return "
+        @lambda_funcs << base_name
+        @lambda_funcs << "("
+        @lambda_funcs << body_args
+        @lambda_funcs << ");\n"
+      end
     end
     @lambda_funcs << "}\n"
     nil
