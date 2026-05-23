@@ -1040,6 +1040,20 @@ static int flatten(pm_node_t *node) {
     R("right", n->right);
     break;
   }
+  case PM_ARRAY_PATTERN_NODE: {
+    /* `case x in [a, b, c]`. requireds is the list of fixed-position
+       sub-patterns. rest / posts cover `[a, *, c]`. constant covers
+       `Foo[a, b]` (Foo() destructuring). Minimal initial support:
+       emit requireds as a node-id array; rest / posts / constant
+       handled later when the codegen path catches up. Issue #669. */
+    pm_array_pattern_node_t *n = (pm_array_pattern_node_t *)node;
+    N("ArrayPatternNode");
+    R("constant", n->constant);
+    A("requireds", &n->requireds);
+    R("rest", n->rest);
+    A("posts", &n->posts);
+    break;
+  }
   case PM_PINNED_EXPRESSION_NODE: {
     /* `case x in ^(expr)`. The pinned expression is evaluated at
        match time and compared by `==` against the scrutinee. */

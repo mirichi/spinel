@@ -28986,6 +28986,10 @@ class Compiler
       emit("  " + c_type(pred_type) + " " + tmp + " = " + pred_val + ";")
     end
     conds = parse_id_list(@nd_conditions[nid])
+ # Track LV names already declared by any preceding ArrayPatternNode
+ # arm in this case-match so re-using a name (`in [a, b]` then
+ # `in [a, b, c]`) doesn't double-declare the C local.
+    declared_arr_pat_lvs = "".split(",")
     k = 0
     while k < conds.length
       inid = conds[k]
@@ -28995,11 +28999,18 @@ class Compiler
           kw = "} else if"
         end
         pat = @nd_pattern[inid]
-        cond_str = compile_in_pattern(pat, tmp, pred_type)
-        emit("  " + kw + " (" + cond_str + ") {")
-        @indent = @indent + 1
-        compile_stmts_body(@nd_body[inid])
-        @indent = @indent - 1
+ # Array pattern `[a, b, c]`: declare the bound LVs at the
+ # case-match level before any per-arm cond, bind them inline,
+ # and gate match on length + per-elem sub-pattern check. Issue #669.
+        if @nd_type[pat] == "ArrayPatternNode"
+          compile_array_pattern_arm(pat, tmp, pred_type, kw, inid, declared_arr_pat_lvs)
+        else
+          cond_str = compile_in_pattern(pat, tmp, pred_type)
+          emit("  " + kw + " (" + cond_str + ") {")
+          @indent = @indent + 1
+          compile_stmts_body(@nd_body[inid])
+          @indent = @indent - 1
+        end
       end
       k = k + 1
     end
@@ -29013,6 +29024,81 @@ class Compiler
     if conds.length > 0
       emit("  }")
     end
+  end
+
+ # `case x in [a, b, c]` arm. Declares the bound LVs in the case-
+ # match's scope, gates the if on length + per-position sub-pattern,
+ # binds each LV inline, then compiles the body. Only the
+ # LocalVariableTargetNode case (capture) is supported as a leaf;
+ # other patterns (literals, pinned, nested) fall back to "0" so the
+ # arm doesn't silently match.
+  def compile_array_pattern_arm(pat_id, tmp, pred_type, kw, inid, declared_lvs = "".split(","))
+    requireds = parse_id_list(@nd_requireds[pat_id])
+ # Pick a get expression and elem c_type based on the scrutinee's
+ # static array kind. Fall back to mrb_int for unknown shapes.
+    elem_t = "int"
+    get_fn = "sp_IntArray_get"
+    len_expr = ""
+    cast_pref = ""
+    if pred_type == "int_array" || pred_type == "sym_array"
+      elem_t = "int"
+      get_fn = "sp_IntArray_get"
+      len_expr = "sp_IntArray_length(" + tmp + ")"
+    elsif pred_type == "str_array"
+      elem_t = "string"
+      get_fn = "sp_StrArray_get"
+      len_expr = "sp_StrArray_length(" + tmp + ")"
+    elsif pred_type == "float_array"
+      elem_t = "float"
+      get_fn = "sp_FloatArray_get"
+      len_expr = "sp_FloatArray_length(" + tmp + ")"
+    elsif pred_type == "poly_array"
+      elem_t = "poly"
+      get_fn = "sp_PolyArray_get"
+      len_expr = "sp_PolyArray_length(" + tmp + ")"
+    elsif is_ptr_array_type(pred_type) == 1
+      inner_t = ptr_array_elem_type(pred_type)
+      elem_t = inner_t
+      get_fn = "sp_PtrArray_get"
+      len_expr = "sp_PtrArray_length(" + tmp + ")"
+      cast_pref = "(" + c_type(inner_t) + ")"
+    else
+ # Unknown scrutinee shape -- emit a stub arm so the rest of the
+ # case-match still type-checks but the body is unreachable.
+      emit("  " + kw + " (0) {")
+      @indent = @indent + 1
+      compile_stmts_body(@nd_body[inid])
+      @indent = @indent - 1
+      return
+    end
+    n = requireds.length
+ # scan_locals already registered each LocalVariableTargetNode
+ # in the surrounding scope's storage (defaults to int). The
+ # codegen-side declare_method_locals_from emits the C declaration
+ # at function entry. No per-arm emit needed here -- the bind
+ # below assigns into the pre-declared slot.
+    emit("  " + kw + " (" + len_expr + " == " + n.to_s + ") {")
+    @indent = @indent + 1
+    qi = 0
+    while qi < n
+      tgt = requireds[qi]
+      if @nd_type[tgt] == "LocalVariableTargetNode"
+        nm_b = @nd_name[tgt]
+ # Box the element when the LV slot was promoted to bigint (promote
+ # mode widens scalar int slots). For non-int element types the
+ # bind matches the declared slot directly.
+        slot_t_b = find_var_type(nm_b)
+        get_expr = cast_pref + get_fn + "(" + tmp + ", " + qi.to_s + "LL)"
+        if base_type(slot_t_b) == "bigint" && elem_t == "int"
+          @needs_bigint = 1
+          get_expr = "sp_bigint_new_int(" + get_expr + ")"
+        end
+        emit("lv_" + nm_b + " = " + get_expr + ";")
+      end
+      qi = qi + 1
+    end
+    compile_stmts_body(@nd_body[inid])
+    @indent = @indent - 1
   end
 
   def compile_in_pattern(pat_id, tmp, pred_type)

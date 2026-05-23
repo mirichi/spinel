@@ -106,6 +106,10 @@ class Compiler
     @reinfer_lv_target = ""
     @reinfer_lv_cur = ""
     @reinfer_lv_found = ""
+ # Side channel used by scan_locals' ArrayPatternNode handler to
+ # type each bound LV with the enclosing CaseMatchNode's scrutinee
+ # element type. Issue #669.
+    @scan_case_match_pred_elem = ""
  # 1 once analysis has converged and freeze_analysis has filled
  # @nd_inferred_type. Switches infer_type to consult the cache
  # first; analysis iterations themselves keep recomputing because
@@ -24556,6 +24560,76 @@ class Compiler
  # to a more specific variant on first []= write.
       @scan_empty_hash_flags = "".split(",")
     end
+ # `case x in [a, b, c]` -- the bound LVs in the array pattern's
+ # requireds list need to live in the surrounding scope so the
+ # arm's body can read them and a sibling arm can re-bind the same
+ # name without redeclaring. Issue #669.
+    if @nd_type[nid] == "ArrayPatternNode"
+      ap_reqs = parse_id_list(@nd_requireds[nid])
+ # Element type from the enclosing case-match's scrutinee, if we
+ # can see it via @scan_case_match_pred_type (a side channel set
+ # by scan_locals' CaseMatchNode handler below). Default to int.
+      ap_elem_t = @scan_case_match_pred_elem != "" ? @scan_case_match_pred_elem : "int"
+      ap_ri = 0
+      while ap_ri < ap_reqs.length
+        ap_tid = ap_reqs[ap_ri]
+        if @nd_type[ap_tid] == "LocalVariableTargetNode"
+          ap_lname = @nd_name[ap_tid]
+          if not_in(ap_lname, names) == 1 && not_in(ap_lname, params) == 1
+            names.push(ap_lname)
+            types.push(ap_elem_t)
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          else
+ # Same name re-used across sibling arms with different element
+ # type (e.g. `case x in [a, b]` then `case y in [a]` where x
+ # and y are different array families): widen the existing slot
+ # to poly so both string and int bindings fit.
+            existing_idx = -1
+            ni = 0
+            while ni < names.length
+              if names[ni] == ap_lname
+                existing_idx = ni
+                ni = names.length
+              else
+                ni = ni + 1
+              end
+            end
+            if existing_idx >= 0 && types[existing_idx] != ap_elem_t
+              types[existing_idx] = "poly"
+              @needs_rb_value = 1
+            end
+          end
+        end
+        ap_ri = ap_ri + 1
+      end
+    end
+ # CaseMatchNode: stash the scrutinee's element type so the
+ # ArrayPatternNode handler above can type the bound LVs.
+    if @nd_type[nid] == "CaseMatchNode"
+      saved_pred_elem = @scan_case_match_pred_elem
+      pred_nid = @nd_predicate[nid]
+      if pred_nid >= 0
+        cmt = infer_type(pred_nid)
+        if cmt == "int_array" || cmt == "sym_array"
+          @scan_case_match_pred_elem = "int"
+        elsif cmt == "str_array"
+          @scan_case_match_pred_elem = "string"
+        elsif cmt == "float_array"
+          @scan_case_match_pred_elem = "float"
+        elsif cmt == "poly_array"
+          @scan_case_match_pred_elem = "poly"
+        elsif is_ptr_array_type(cmt) == 1
+          @scan_case_match_pred_elem = ptr_array_elem_type(cmt)
+        else
+          @scan_case_match_pred_elem = ""
+        end
+      end
+      scan_locals_children(nid, names, types, params)
+      @scan_case_match_pred_elem = saved_pred_elem
+      return
+    end
     if @nd_type[nid] == "MultiWriteNode"
       targets = parse_id_list(@nd_targets[nid])
       val_id2 = @nd_expression[nid]
@@ -25804,6 +25878,12 @@ class Compiler
     end
     if @nd_receiver[nid] >= 0
       scan_locals(@nd_receiver[nid], names, types, params)
+    end
+ # `in <pattern>` arm: recurse into the pattern so ArrayPatternNode's
+ # bound LVs (LocalVariableTargetNode in requireds) reach the
+ # scan_locals' pattern handler. Issue #669.
+    if @nd_pattern[nid] >= 0
+      scan_locals(@nd_pattern[nid], names, types, params)
     end
     if @nd_collection[nid] >= 0
       scan_locals(@nd_collection[nid], names, types, params)
