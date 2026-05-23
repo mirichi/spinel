@@ -14570,6 +14570,20 @@ class Compiler
     if recv_type == "bigint"
       # Cast away volatile from bigint locals (see compile_bigint_arg).
       rc_b = "(sp_Bigint *)" + rc
+      if mname == "[]"
+ # Integer#[idx] bit-index on bigint receiver.
+        args_id_bi = @nd_arguments[nid]
+        if args_id_bi >= 0
+          a_bi = get_args(args_id_bi)
+          if a_bi.length > 0
+            idx_t_bi = infer_type(a_bi[0])
+            if idx_t_bi == "int" || idx_t_bi == "poly" || idx_t_bi == "bigint"
+              idx_bi = compile_arg0_as_int(nid)
+              return "((sp_bigint_to_int(" + rc_b + ") >> (" + idx_bi + ")) & 1)"
+            end
+          end
+        end
+      end
       if mname == "to_s"
         return "sp_bigint_to_s(" + rc_b + ")"
       end
