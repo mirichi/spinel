@@ -15649,6 +15649,22 @@ class Compiler
       end
       return 0
     end
+ # `lv_x &&= ...` / `lv_x ||= ...` / `lv_x += ...` returns the
+ # updated slot value. When the LV is bigint, the result is too.
+    if t == "LocalVariableAndWriteNode" || t == "LocalVariableOrWriteNode" || t == "LocalVariableOperatorWriteNode"
+      if base_type(find_var_type(@nd_name[nid])) == "bigint"
+        return 1
+      end
+    end
+ # Same shape for ivar / cvar op-writes.
+    if t == "InstanceVariableAndWriteNode" || t == "InstanceVariableOrWriteNode" || t == "InstanceVariableOperatorWriteNode"
+      if @current_class_idx >= 0
+        ivar_t_eb = cls_ivar_type(@current_class_idx, @nd_name[nid])
+        if base_type(ivar_t_eb) == "bigint"
+          return 1
+        end
+      end
+    end
     if t != "CallNode"
       return 0
     end
