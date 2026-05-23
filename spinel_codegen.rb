@@ -17165,13 +17165,23 @@ class Compiler
     end
     if mname == "setbyte"
  # `s.setbyte(i, v)` mutates the receiver in place. Spinel
- # strings are stored as `const char *`, and the canonical
- # interning path keeps literal strings in read-only memory.
- # The previous emit cast `rc` to `char *` and wrote through —
- # for a literal source this SEGVs at the write. Issue #504.
- # Until proper mutable-string support lands, drop the mutation
- # and return 0 — the user's downstream read of the modified
- # string will see the unchanged value, but we don't crash.
+ # strings are stored as `const char *`, and compile-time
+ # can't tell the writable heap buffers from rodata literals
+ # at every receiver shape (LV pointing at a literal looks the
+ # same as LV pointing at a dup). Issue #504 originally
+ # disabled the emit because the prior naive cast SEGV'd on
+ # literals; now the runtime helper sp_str_setbyte gates the
+ # write on the marker byte at s[-1] (0xfe/0xfc heap, 0xfd
+ # sp_String, 0xff literal -> no-op). Literal recvs stay safe;
+ # `result = a.dup; result.setbyte(i, b)` (bm_ruby_xor) now
+ # mutates.
+      args_id_sb = @nd_arguments[nid]
+      if args_id_sb >= 0
+        a_sb = get_args(args_id_sb)
+        if a_sb.length >= 2
+          return "sp_str_setbyte(" + rc + ", " + compile_expr_as_int(a_sb[0]) + ", " + compile_expr_as_int(a_sb[1]) + ")"
+        end
+      end
       warn_unresolved_call(mname, "string")
       return "0"
     end

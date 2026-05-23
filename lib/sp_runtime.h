@@ -1254,6 +1254,28 @@ static const char*sp_str_lstrip(const char*s){while(*s&&isspace((unsigned char)*
 static const char*sp_str_rstrip(const char*s){size_t l=strlen(s);while(l>0&&isspace((unsigned char)s[l-1]))l--;char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
 static const char*sp_str_dup(const char*s){char*r=sp_str_alloc_raw(strlen(s)+1);strcpy(r,s);return r;}
 
+/* String#setbyte: mutate s[i] = v in place. Spinel strings are
+   stored as `const char *` so the compile-time path can't tell
+   writable buffers from rodata literals. The runtime marker byte
+   at s[-1] resolves it:
+     0xfe / 0xfc -> sp_str_alloc heap (writable, GC unmarked / marked)
+     0xfd        -> sp_String wrapper buffer (writable)
+     0xff        -> rodata literal (writing here would SEGV)
+     other       -> FFI / unknown provenance, conservative no-op
+   Whitelisted markers get the write; everything else falls through.
+   Returns the byte value (matches CRuby's setbyte return). Issue
+   #504 originally disabled the mutating emit because the compile-
+   time path couldn't avoid the literal-SEGV; this runtime gate
+   plugs the gap so dup'd strings work (bm_ruby_xor). */
+static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
+  if (!s) return v;
+  unsigned char m = ((const unsigned char *)s)[-1];
+  if (m == 0xfe || m == 0xfc || m == 0xfd) {
+    ((char *)s)[i] = (char)v;
+  }
+  return v;
+}
+
 typedef struct{char*data;int64_t len;int64_t cap;}sp_String;
 static void sp_String_fin(void*p){free(((sp_String*)p)->data-1);}
 static sp_String*sp_String_new(const char*s){
