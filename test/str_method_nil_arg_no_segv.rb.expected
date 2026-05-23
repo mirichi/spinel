@@ -3,4 +3,5 @@
 nil
 6
 "foo"
-a
+frozen literal: can't modify frozen String
+b

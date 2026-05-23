@@ -1254,25 +1254,27 @@ static const char*sp_str_lstrip(const char*s){while(*s&&isspace((unsigned char)*
 static const char*sp_str_rstrip(const char*s){size_t l=strlen(s);while(l>0&&isspace((unsigned char)s[l-1]))l--;char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
 static const char*sp_str_dup(const char*s){char*r=sp_str_alloc_raw(strlen(s)+1);strcpy(r,s);return r;}
 
-/* String#setbyte: mutate s[i] = v in place. Spinel strings are
-   stored as `const char *` so the compile-time path can't tell
-   writable buffers from rodata literals. The runtime marker byte
-   at s[-1] resolves it:
+/* String#setbyte: mutate s[i] = v in place. Spinel adopts
+   `# frozen_string_literal: true` semantics globally — all
+   string literals are frozen, mutation requires a heap-allocated
+   buffer (e.g. via .dup or string concatenation). The runtime
+   marker byte at s[-1] tells us the provenance:
      0xfe / 0xfc -> sp_str_alloc heap (writable, GC unmarked / marked)
      0xfd        -> sp_String wrapper buffer (writable)
-     0xff        -> rodata literal (writing here would SEGV)
-     other       -> FFI / unknown provenance, conservative no-op
-   Whitelisted markers get the write; everything else falls through.
-   Returns the byte value (matches CRuby's setbyte return). Issue
-   #504 originally disabled the mutating emit because the compile-
-   time path couldn't avoid the literal-SEGV; this runtime gate
-   plugs the gap so dup'd strings work (bm_ruby_xor). */
+     0xff        -> rodata literal (frozen -> FrozenError)
+     other       -> FFI / unknown provenance, treated as frozen
+   Returns the byte value (CRuby setbyte return). */
 static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
-  if (!s) return v;
+  if (!s) {
+    sp_raise_cls("FrozenError", "can't modify frozen String");
+    return v;
+  }
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc || m == 0xfd) {
     ((char *)s)[i] = (char)v;
+    return v;
   }
+  sp_raise_cls("FrozenError", "can't modify frozen String");
   return v;
 }
 

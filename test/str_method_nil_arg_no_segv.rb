@@ -18,11 +18,17 @@ p "foo".rindex(/missing/)  # CRuby + spinel post-#532: nil. (was: -1)
 p "abcdabcd".rindex(/c/)   # CRuby & spinel: 6 (new sp_re_rindex helper)
 p "foo".send(:<<)          # CRuby: ArgumentError. spinel: "foo" (was: meaningless int)
 
-# setbyte on a literal: CRuby returns the int and mutates the
-# string in place. Spinel strings are `const char *` so we
-# can't mutate; the helper is a no-op + warning now. Test just
-# verifies "doesn't crash" -- the warn output goes to stderr,
-# which the harness drops.
+# setbyte on a literal: spinel adopts frozen-string-literal: true
+# semantics globally, so literals raise FrozenError on mutation.
+# Heap-allocated strings (via .dup, +, etc.) mutate as usual.
+# Test pins both behaviors: literal -> raise, dup -> mutate.
 (str = "a")
-str.setbyte(0, 98)
-puts str   # spinel: "a" (mutation was dropped). Was: SEGV.
+begin
+  str.setbyte(0, 98)
+  puts "literal not frozen: " + str
+rescue FrozenError => e
+  puts "frozen literal: " + e.message
+end
+str2 = "a".dup
+str2.setbyte(0, 98)
+puts str2  # "b" (heap, mutates)
