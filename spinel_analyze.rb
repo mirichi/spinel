@@ -933,8 +933,42 @@ class Compiler
       if found_inc != ""
         return found_inc
       end
+      found_par = resolve_const_via_parent_chain(@current_class_idx, name)
+      if found_par != ""
+        return found_par
+      end
     end
     name
+  end
+
+ # Walk @cls_parents (superclass chain) from `class_idx`, trying each
+ # ancestor's namespace plus each ancestor's includes. Mirrors CRuby's
+ # constant lookup which walks the class hierarchy after lexical scope.
+ # Caps depth at 16 to bail on pathological chains.
+  def resolve_const_via_parent_chain(class_idx, name, depth = 16)
+    if depth <= 0
+      return ""
+    end
+    if class_idx < 0 || class_idx >= @cls_parents.length
+      return ""
+    end
+    pname = @cls_parents[class_idx]
+    if pname == ""
+      return ""
+    end
+    cand = pname + "_" + name
+    if const_namespace_exists(cand) == 1
+      return cand
+    end
+    pi = find_class_idx(pname)
+    if pi >= 0
+      sub_inc = resolve_const_via_include_chain(pi, name, depth - 1)
+      if sub_inc != ""
+        return sub_inc
+      end
+      return resolve_const_via_parent_chain(pi, name, depth - 1)
+    end
+    ""
   end
 
  # Recursively walk @cls_includes from `class_idx`, trying each
