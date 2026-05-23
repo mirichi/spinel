@@ -782,7 +782,17 @@ static char *slurp(const char *path, size_t *len_out) {
     return buf;
 }
 
-static void process_file(const char *path, FILE *out) {
+/* Per-pass selector for process_file. Splitting the per-file work
+ * into two phases (collect names; emit decls) lets walk() run twice
+ * over the directory tree so cross-file module reopens have every
+ * class registered before any unqualified-Const reference is
+ * resolved. Issue #658. */
+typedef enum {
+    PHASE_COLLECT_NAMES = 0,
+    PHASE_EMIT = 1
+} process_phase_t;
+
+static void process_file_phase(const char *path, FILE *out, process_phase_t phase) {
     size_t len = 0;
     char *src = slurp(path, &len);
     if (src == NULL) {
@@ -795,29 +805,35 @@ static void process_file(const char *path, FILE *out) {
     rbs_signature_t *sig = NULL;
     bool ok = rbs_parse_signature(p, &sig);
     if (!ok || sig == NULL) {
-        fprintf(stderr, "spinel_rbs_extract: parse failed in %s\n", path);
-        if (p->error != NULL && p->error->message != NULL) {
-            fprintf(stderr, "  %s\n", p->error->message);
+        if (phase == PHASE_EMIT) {
+            fprintf(stderr, "spinel_rbs_extract: parse failed in %s\n", path);
+            if (p->error != NULL && p->error->message != NULL) {
+                fprintf(stderr, "  %s\n", p->error->message);
+            }
         }
         rbs_parser_free(p);
         free(src);
         return;
     }
-    /* Pre-pass: register every Class/Module's qualified name so the
-     * emit pass can disambiguate unqualified type references via
-     * lexical-chain walk (issue #656). */
-    rbs_node_list_node_t *pre = sig->declarations->head;
-    while (pre != NULL) {
-        collect_decl_names(p, pre->node, "");
-        pre = pre->next;
-    }
-    rbs_node_list_node_t *cur = sig->declarations->head;
-    while (cur != NULL) {
-        traverse_decl(p, cur->node, "", out);
-        cur = cur->next;
+    if (phase == PHASE_COLLECT_NAMES) {
+        rbs_node_list_node_t *pre = sig->declarations->head;
+        while (pre != NULL) {
+            collect_decl_names(p, pre->node, "");
+            pre = pre->next;
+        }
+    } else {
+        rbs_node_list_node_t *cur = sig->declarations->head;
+        while (cur != NULL) {
+            traverse_decl(p, cur->node, "", out);
+            cur = cur->next;
+        }
     }
     rbs_parser_free(p);
     free(src);
+}
+
+static void process_file(const char *path, FILE *out) {
+    process_file_phase(path, out, PHASE_EMIT);
 }
 
 /* ---- directory walk ---------------------------------------- */
@@ -828,14 +844,16 @@ static bool ends_with(const char *s, const char *suffix) {
     return strcmp(s + sl - su, suffix) == 0;
 }
 
-static void walk(const char *path, FILE *out) {
+static void walk_phase(const char *path, FILE *out, process_phase_t phase) {
     struct stat st;
     if (stat(path, &st) != 0) {
-        fprintf(stderr, "spinel_rbs_extract: %s: not found\n", path);
+        if (phase == PHASE_EMIT) {
+            fprintf(stderr, "spinel_rbs_extract: %s: not found\n", path);
+        }
         return;
     }
     if (S_ISREG(st.st_mode)) {
-        if (ends_with(path, ".rbs")) process_file(path, out);
+        if (ends_with(path, ".rbs")) process_file_phase(path, out, phase);
         return;
     }
     if (!S_ISDIR(st.st_mode)) return;
@@ -847,22 +865,35 @@ static void walk(const char *path, FILE *out) {
         char full[4096];
         int n = snprintf(full, sizeof(full), "%s/%s", path, ent->d_name);
         if (n < 0 || (size_t) n >= sizeof(full)) {
-            fprintf(stderr, "spinel_rbs_extract: path too long, skipping: %s/%s\n",
-                    path, ent->d_name);
+            if (phase == PHASE_EMIT) {
+                fprintf(stderr, "spinel_rbs_extract: path too long, skipping: %s/%s\n",
+                        path, ent->d_name);
+            }
             continue;
         }
-        walk(full, out);
+        walk_phase(full, out, phase);
     }
     closedir(d);
 }
+
+static void walk(const char *path, FILE *out) { walk_phase(path, out, PHASE_EMIT); }
 
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: spinel_rbs_extract DIR [DIR ...]\n");
         return 1;
     }
+    /* Two-pass walk: first phase collects every Class / Module's
+     * qualified name across all .rbs files into known_names; second
+     * phase emits decls. Splitting the pre-pass from the emit pass
+     * lets a bare `Bar` inside `baz.rbs`'s reopen of `module Foo`
+     * see `Foo::Bar` from a sibling `bar.rbs` regardless of which
+     * file readdir visited first. Issue #658 (followup to #656). */
     for (int i = 1; i < argc; i++) {
-        walk(argv[i], stdout);
+        walk_phase(argv[i], stdout, PHASE_COLLECT_NAMES);
+    }
+    for (int i = 1; i < argc; i++) {
+        walk_phase(argv[i], stdout, PHASE_EMIT);
     }
     return 0;
 }
