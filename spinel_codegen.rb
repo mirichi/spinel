@@ -34856,7 +34856,7 @@ class Compiler
       block_is_typed_array = (block_ret_r == "int_array" || block_ret_r == "str_array" ||
                               block_ret_r == "float_array" || block_ret_r == "sym_array" ||
                               is_ptr_array_type(block_ret_r) == 1 || block_ret_r == "poly_array")
-      if block_ret_r != "int" && block_ret_r != "string" && block_ret_r != "float" && block_ret_r != "poly" && block_is_typed_array == false
+      if block_ret_r != "int" && block_ret_r != "string" && block_ret_r != "float" && block_ret_r != "poly" && block_ret_r != "bigint" && block_is_typed_array == false
         return "0"
       end
       @needs_int_array = 1
@@ -34969,26 +34969,8 @@ class Compiler
             end
           else
  # promote-mode block tail returning bigint into IntArray;
- # unbox before pushing. The plain infer_type doesn't catch the
- # arith-callnode-with-bigint-arg shape (cache stale at "int"), so
- # also peek the operator's arg side.
-            tail_t_rng = infer_type(stmts_r2.last)
-            if tail_t_rng != "bigint" && @nd_type[stmts_r2.last] == "CallNode"
-              tn_mn = @nd_name[stmts_r2.last]
-              if tn_mn == "+" || tn_mn == "-" || tn_mn == "*" || tn_mn == "/" || tn_mn == "%" || tn_mn == "**"
-                tn_recv = @nd_receiver[stmts_r2.last]
-                tn_args_id = @nd_arguments[stmts_r2.last]
-                if tn_recv >= 0 && base_type(infer_type(tn_recv)) == "bigint"
-                  tail_t_rng = "bigint"
-                elsif tn_args_id >= 0
-                  tn_aa = get_args(tn_args_id)
-                  if tn_aa.length > 0 && base_type(infer_type(tn_aa[0])) == "bigint"
-                    tail_t_rng = "bigint"
-                  end
-                end
-              end
-            end
-            if tail_t_rng == "bigint"
+ # unbox before pushing.
+            if infer_type(stmts_r2.last) == "bigint" || expr_emit_is_bigint(stmts_r2.last) == 1
               @needs_bigint = 1
               lastv_r = "sp_bigint_to_int((sp_Bigint *)" + lastv_r + ")"
             end
