@@ -23051,7 +23051,13 @@ class Compiler
               @needs_rb_value = 1
               ai_val = "sp_bigint_new_int((" + ai_val + ").v.i)"
             elsif mi < arg_types.length && base_type(arg_types[mi]) == "int"
-              ai_val = "sp_bigint_new_int(" + ai_val + ")"
+ # Stale int cache: the emit already returns sp_Bigint*
+ # (arith/bitop with a bigint operand). Don't double-wrap.
+              if ai_val.start_with?("sp_bigint_") || ai_val.start_with?("(sp_Bigint *)")
+ # keep as-is
+              else
+                ai_val = "sp_bigint_new_int(" + ai_val + ")"
+              end
             end
           else
             if mi < arg_types.length && arg_types[mi] == "poly"
