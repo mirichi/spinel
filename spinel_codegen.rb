@@ -27901,22 +27901,29 @@ class Compiler
     pred_type = infer_type(pred)
     pred_val = compile_expr(pred)
     tmp = new_temp
+ # For typed containers (int_array, sym_array, str_array, hash
+ # variants, range, time, user-class obj_*, ...) the temp must be
+ # declared with the receiver's actual C type so the pattern arms
+ # can dereference `tmp->len` / `tmp->data[i]` and per-variant hash
+ # lookups can pass the right pointer type. Without this the temp
+ # was declared as `mrb_int` for everything non-poly/string/float
+ # and any pattern shape touching the scrutinee structurally
+ # crashed at cc time. Primitive shapes (int/bool/symbol/nil) keep
+ # the historic `mrb_int` slot.
     if pred_type == "poly"
       emit("  sp_RbVal " + tmp + " = " + pred_val + ";")
+    elsif pred_type == "string"
+      emit("  const char *" + tmp + " = " + pred_val + ";")
+    elsif pred_type == "float"
+      emit("  mrb_float " + tmp + " = " + pred_val + ";")
+    elsif pred_type == "bigint"
+      @needs_bigint = 1
+      emit("  mrb_int " + tmp + " = sp_bigint_to_int((sp_Bigint *)" + pred_val + ");")
+      pred_type = "int"
+    elsif pred_type == "int" || pred_type == "bool" || pred_type == "symbol" || pred_type == "nil" || pred_type == ""
+      emit("  mrb_int " + tmp + " = " + pred_val + ";")
     else
-      if pred_type == "string"
-        emit("  const char *" + tmp + " = " + pred_val + ";")
-      else
-        if pred_type == "float"
-          emit("  mrb_float " + tmp + " = " + pred_val + ";")
-        elsif pred_type == "bigint"
-          @needs_bigint = 1
-          emit("  mrb_int " + tmp + " = sp_bigint_to_int((sp_Bigint *)" + pred_val + ");")
-          pred_type = "int"
-        else
-          emit("  mrb_int " + tmp + " = " + pred_val + ";")
-        end
-      end
+      emit("  " + c_type(pred_type) + " " + tmp + " = " + pred_val + ";")
     end
     conds = parse_id_list(@nd_conditions[nid])
     k = 0
@@ -28008,10 +28015,65 @@ class Compiler
       end
       return tmp + " == 0"
     end
+    if pt == "SymbolNode"
+ # `case sym in :foo` -- literal symbol pattern. Without this arm
+ # the dispatch fell through to the trailing "1" fallback and any
+ # symbol pattern silently always matched.
+      sym_lit = compile_symbol_literal(@nd_content[pat_id])
+      if pred_type == "poly"
+        return "(" + tmp + ".tag == SP_TAG_SYM && (sp_sym)" + tmp + ".v.i == (" + sym_lit + "))"
+      end
+      return "(sp_sym)(" + tmp + ") == (" + sym_lit + ")"
+    end
+    if pt == "FloatNode"
+ # `case f in 3.14` -- literal float pattern. Same fallthrough
+ # silent-match bug as SymbolNode.
+      fval = @nd_value[pat_id]
+      if pred_type == "poly"
+        return "(" + tmp + ".tag == SP_TAG_FLT && " + tmp + ".v.f == " + fval + ")"
+      end
+      return tmp + " == " + fval
+    end
     if pt == "AlternationPatternNode"
       left = compile_in_pattern(@nd_left[pat_id], tmp, pred_type)
       right = compile_in_pattern(@nd_right[pat_id], tmp, pred_type)
       return "(" + left + " || " + right + ")"
+    end
+ # PinnedVariableNode / PinnedExpressionNode: `case x in ^var` /
+ # `in ^(expr)`. Both share the `@nd_expression` slot -- the parse
+ # layer routes the variable into the expression field so codegen
+ # treats them uniformly. Match by `==` against the pinned value;
+ # poly-tagged scrutinees get both tag and value checks so a pinned
+ # Integer doesn't spuriously match against a string with the same
+ # underlying byte pattern.
+    if pt == "PinnedVariableNode" || pt == "PinnedExpressionNode"
+      pinned = compile_expr(@nd_expression[pat_id])
+      pinned_type = infer_type(@nd_expression[pat_id])
+      if pred_type == "poly"
+        if pinned_type == "int"
+          return "(" + tmp + ".tag == SP_TAG_INT && " + tmp + ".v.i == (" + pinned + "))"
+        end
+        if pinned_type == "string"
+          return "(" + tmp + ".tag == SP_TAG_STR && strcmp(" + tmp + ".v.s, " + pinned + ") == 0)"
+        end
+        if pinned_type == "symbol"
+          return "(" + tmp + ".tag == SP_TAG_SYM && (sp_sym)" + tmp + ".v.i == (" + pinned + "))"
+        end
+        if pinned_type == "float"
+          return "(" + tmp + ".tag == SP_TAG_FLT && " + tmp + ".v.f == (" + pinned + "))"
+        end
+        if pinned_type == "bool"
+          return "(" + tmp + ".tag == SP_TAG_BOOL && " + tmp + ".v.b == (" + pinned + "))"
+        end
+        if pinned_type == "nil"
+          return tmp + ".tag == SP_TAG_NIL"
+        end
+        return "0"
+      end
+      if pinned_type == "string" && pred_type == "string"
+        return "strcmp(" + tmp + ", " + pinned + ") == 0"
+      end
+      return "(" + tmp + ") == (" + pinned + ")"
     end
     "1"
   end

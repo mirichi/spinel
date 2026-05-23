@@ -1040,6 +1040,28 @@ static int flatten(pm_node_t *node) {
     R("right", n->right);
     break;
   }
+  case PM_PINNED_EXPRESSION_NODE: {
+    /* `case x in ^(expr)`. The pinned expression is evaluated at
+       match time and compared by `==` against the scrutinee. */
+    pm_pinned_expression_node_t *n = (pm_pinned_expression_node_t *)node;
+    N("PinnedExpressionNode");
+    R("expression", n->expression);
+    break;
+  }
+  case PM_PINNED_VARIABLE_NODE: {
+    /* `case x in ^var`. The wrapped variable can be any read-shape
+       node prism emits for `^var` -- LocalVariableReadNode,
+       InstanceVariableReadNode, ClassVariableReadNode,
+       GlobalVariableReadNode, ConstantReadNode,
+       NumberedReferenceReadNode, BackReferenceReadNode. Routed to
+       the same `@nd_expression` slot as PinnedExpressionNode so the
+       codegen treats them uniformly -- both are "match the scrutinee
+       by `==` against this expression". */
+    pm_pinned_variable_node_t *n = (pm_pinned_variable_node_t *)node;
+    N("PinnedVariableNode");
+    R("expression", n->variable);
+    break;
+  }
   case PM_NUMBERED_PARAMETERS_NODE: {
     pm_numbered_parameters_node_t *n = (pm_numbered_parameters_node_t *)node;
     N("NumberedParametersNode");
