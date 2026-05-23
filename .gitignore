@@ -34,3 +34,8 @@ HANDOFF.md
 .claude/
 CLAUDE.local.md
 file_write_poly_arg
+
+# Test binaries accidentally produced in repo root
+/hash_shorthand
+/pattern_pin
+/method_dispatch_poly_array
