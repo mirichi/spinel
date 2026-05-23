@@ -99,6 +99,13 @@ class Compiler
  # entry so the codegen path becomes O(1) per node lookup instead
  # of recursively re-walking the subtree on every infer_type call.
     @nd_inferred_type = "".split(",")
+ # Scratch state used by promote_reinfer_array_returns +
+ # walk_reinfer_lv_writes. Self-host can't capture block params
+ # across closures yet, so the helpers thread per-walk parameters
+ # through ivars.
+    @reinfer_lv_target = ""
+    @reinfer_lv_cur = ""
+    @reinfer_lv_found = ""
  # 1 once analysis has converged and freeze_analysis has filled
  # @nd_inferred_type. Switches infer_type to consult the cache
  # first; analysis iterations themselves keep recomputing because
@@ -20594,6 +20601,88 @@ class Compiler
     end
   end
 
+ # Post-precompute_all_scope_decls pass. Widens LV slots whose
+ # declared *_ptr_array gets a wider rhs under promote (typically
+ # a .map call whose block now returns bigint or a poly_array
+ # literal).
+  def promote_reinfer_lv_scope_types
+    if @int_overflow_mode != "promote"
+      return
+    end
+    sj = 0
+    while sj < @nd_scope_types.length
+      stj = @nd_scope_types[sj]
+      snj = sj < @nd_scope_names.length ? @nd_scope_names[sj] : ""
+      if stj != "" && snj != ""
+        psj = stj.split("|")
+        pnj = snj.split("|")
+        chj = 0
+        ppj = 0
+        while ppj < psj.length && ppj < pnj.length
+          cur_t = psj[ppj]
+          if cur_t == "int_array_ptr_array" || cur_t == "str_array_ptr_array" || cur_t == "float_array_ptr_array" || cur_t == "sym_array_ptr_array"
+            new_t = reinfer_lv_array_type_from_scope(sj, pnj[ppj], cur_t)
+            if new_t != "" && new_t != cur_t
+              psj[ppj] = new_t
+              @needs_rb_value = 1
+              chj = 1
+            end
+          end
+          ppj = ppj + 1
+        end
+        if chj == 1
+          @nd_scope_types[sj] = psj.join("|")
+        end
+      end
+      sj = sj + 1
+    end
+  end
+
+ # Walk every LocalVariableWriteNode in the AST whose name is
+ # `lv_name`, re-infer the rhs, and return the widest type observed.
+ # The default scope_types entry was set by scan_locals on the first
+ # writer; under promote the same writer's rhs may now infer wider
+ # (e.g. a .map call's bret widens int_array -> poly_array). Uses
+ # @reinfer_lv_observed as an accumulator instead of a block param
+ # because self-host doesn't yet support closures.
+  def reinfer_lv_array_type_from_scope(scope_nid, lv_name, cur_t)
+    if scope_nid < 0
+      return ""
+    end
+    @reinfer_lv_target = lv_name
+    @reinfer_lv_cur = cur_t
+    @reinfer_lv_found = ""
+    walk_reinfer_lv_writes(scope_nid)
+    @reinfer_lv_found
+  end
+
+  def walk_reinfer_lv_writes(nid)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "LocalVariableWriteNode" && @nd_name[nid] == @reinfer_lv_target
+      expr = @nd_expression[nid]
+      if expr >= 0
+        rhs_t = infer_type(expr)
+        if rhs_t == "poly_array" || (is_ptr_array_type(rhs_t) == 1 && rhs_t != @reinfer_lv_cur)
+          @reinfer_lv_found = "poly_array"
+        end
+      end
+    end
+    if @nd_body[nid] >= 0
+      walk_reinfer_lv_writes(@nd_body[nid])
+    end
+    if @nd_subsequent[nid] >= 0
+      walk_reinfer_lv_writes(@nd_subsequent[nid])
+    end
+    sub_stmts = parse_id_list(@nd_stmts[nid])
+    kk = 0
+    while kk < sub_stmts.length
+      walk_reinfer_lv_writes(sub_stmts[kk])
+      kk = kk + 1
+    end
+  end
+
   def promote_reinfer_array_returns_table(ci, ret_tbl, body_tbl)
     if ci >= ret_tbl.length
       return
@@ -21749,6 +21838,13 @@ class Compiler
     compute_live_instance_methods
     @analysis_frozen = 1
     precompute_all_scope_decls
+ # Widen LV slots whose declared *_ptr_array gets a wider rhs
+ # under promote (.map call whose block now returns bigint /
+ # poly_array literal). Must run after precompute populates
+ # @nd_scope_types / @nd_scope_names, but before the int -> bigint
+ # sweep below so the widened slot stays poly_array and isn't
+ # touched by the scalar-only int -> bigint rule.
+    promote_reinfer_lv_scope_types
  # precompute_all_scope_decls re-derives scope_types from
  # @meth_param_types and from the local refinement pass; in promote
  # mode, the latter may have left some method-body locals as "int"

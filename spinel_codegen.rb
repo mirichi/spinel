@@ -26215,20 +26215,27 @@ class Compiler
         else
           val = compile_expr(elems[k])
  # Stale cache may say "int" for an arith CallNode whose
- # actual emit is bigint. Promote at the box boundary so
- # box_value_to_poly's bigint arm fires.
-          if et != "bigint" && @nd_type[elems[k]] == "CallNode"
+ # actual emit is bigint OR poly. Promote at the box boundary
+ # so box_value_to_poly picks the matching arm.
+          if et != "bigint" && et != "poly" && @nd_type[elems[k]] == "CallNode"
             ear_mn = @nd_name[elems[k]]
             if ear_mn == "+" || ear_mn == "-" || ear_mn == "*" || ear_mn == "/" || ear_mn == "%" || ear_mn == "**"
               ear_r = @nd_receiver[elems[k]]
               if ear_r >= 0 && base_type(infer_type(ear_r)) == "bigint"
                 et = "bigint"
+              elsif ear_r >= 0 && base_type(infer_type(ear_r)) == "poly"
+                et = "poly"
               else
                 ear_a = @nd_arguments[elems[k]]
                 if ear_a >= 0
                   aa_ear = get_args(ear_a)
-                  if aa_ear.length > 0 && base_type(infer_type(aa_ear[0])) == "bigint"
-                    et = "bigint"
+                  if aa_ear.length > 0
+                    a0_t = base_type(infer_type(aa_ear[0]))
+                    if a0_t == "bigint"
+                      et = "bigint"
+                    elsif a0_t == "poly"
+                      et = "poly"
+                    end
                   end
                 end
               end
@@ -35058,6 +35065,7 @@ class Compiler
  # array-of-IntArrays; static type is int_array_ptr_array
  # and inspect knows how to render it.
       nested_arr_outer = 0
+      times_use_poly = 0
       if res_type == "string"
         @needs_str_array = 1
         emit("  sp_StrArray *" + tmp_arrn + " = sp_StrArray_new();")
@@ -35067,6 +35075,15 @@ class Compiler
         @needs_gc = 1
         nested_arr_outer = 1
         emit("  sp_PtrArray *" + tmp_arrn + " = sp_PtrArray_new();")
+      elsif res_type == "bigint"
+ # Under promote mode the analyzer's infer_call_type widens
+ # N.times.map { bigint_expr } to poly_array. Match that on the
+ # codegen side -- build a PolyArray boxing each value -- so the
+ # downstream chain (e.g. .each_cons) reads the right runtime
+ # type. Without this, the chain saw IntArray-cast-to-PolyArray.
+        @needs_rb_value = 1
+        times_use_poly = 1
+        emit("  sp_PolyArray *" + tmp_arrn + " = sp_PolyArray_new();")
       else
         @needs_int_array = 1
         emit("  sp_IntArray *" + tmp_arrn + " = sp_IntArray_new();")
@@ -35104,6 +35121,11 @@ class Compiler
             emit("  sp_FloatArray_push(" + tmp_arrn + ", " + lastv + ");")
           elsif nested_arr_outer == 1
             emit("  sp_PtrArray_push(" + tmp_arrn + ", " + lastv + ");")
+          elsif times_use_poly == 1
+ # PolyArray accumulator for promote-mode bigint block return.
+ # Box each value to sp_box_int after unboxing the bigint.
+            @needs_bigint = 1
+            emit("  sp_PolyArray_push(" + tmp_arrn + ", sp_box_int(sp_bigint_to_int((sp_Bigint *)" + lastv + ")));")
           else
  # promote-mode block tail returning bigint into IntArray;
  # unbox before pushing.
