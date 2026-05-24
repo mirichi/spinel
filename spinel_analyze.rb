@@ -3209,9 +3209,9 @@ class Compiler
           return "fiber"
         end
  # Built-in exception class .new (RuntimeError, StandardError,
- # ArgumentError, etc.) lowers to a first-class sp_Exception *
- # (cls_name + msg in a single heap allocation).
-        if is_builtin_exception_class_name(rcname) == 1
+ # ArgumentError, etc.) and user subclasses of built-in exception
+ # classes both lower to a first-class sp_Exception *.
+        if is_exception_class_name(rcname) == 1
           return "exception"
         end
       end
@@ -5534,9 +5534,9 @@ class Compiler
           if module_name_exists(rn) == 1
             return ""
           end
- # Built-in exception class `.new` returns "exception" so the LV
- # slot lowers to sp_Exception *.
-          if is_builtin_exception_class_name(rn) == 1
+ # Exception class `.new` (built-in or user subclass thereof)
+ # returns "exception" so the LV slot lowers to sp_Exception *.
+          if is_exception_class_name(rn) == 1
             return "exception"
           end
           return "obj_" + rn
@@ -7433,6 +7433,42 @@ class Compiler
       return 1
     end
     0
+  end
+
+ # 1 if `name` is a user-defined class whose parent chain ends at a
+ # built-in exception class. `<UserExc>.new(msg)` also lowers to
+ # sp_exc_new("<UserExc>", msg) so spinel's exception machinery
+ # (raise / rescue / .message / .class / .is_a?) treats user
+ # subclasses identically to the built-ins.
+  def is_user_exception_subclass(name)
+    ci = find_class_idx(name)
+    if ci < 0
+      return 0
+    end
+    walk = ci
+    while walk >= 0
+      pname = ""
+      if walk < @cls_parents.length
+        pname = @cls_parents[walk]
+      end
+      if pname == ""
+        return 0
+      end
+      if is_builtin_exception_class_name(pname) == 1
+        return 1
+      end
+      walk = find_class_idx(pname)
+    end
+    0
+  end
+
+ # 1 if `name` is either a built-in exception class or a user
+ # class that transitively inherits from one.
+  def is_exception_class_name(name)
+    if is_builtin_exception_class_name(name) == 1
+      return 1
+    end
+    is_user_exception_subclass(name)
   end
 
   def is_builtin_type_name(name)

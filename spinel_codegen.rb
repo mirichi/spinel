@@ -941,6 +941,114 @@ class Compiler
     0
   end
 
+ # 1 if `name` is a user class that transitively inherits from a
+ # built-in exception class. Mirrors spinel_analyze's helper.
+  def is_user_exception_subclass(name)
+    ci = find_class_idx(name)
+    if ci < 0
+      return 0
+    end
+    walk = ci
+    while walk >= 0
+      pname = ""
+      if walk < @cls_parents.length
+        pname = @cls_parents[walk]
+      end
+      if pname == ""
+        return 0
+      end
+      if is_builtin_exception_class_name(pname) == 1
+        return 1
+      end
+      walk = find_class_idx(pname)
+    end
+    0
+  end
+
+  def is_exception_class_name(name)
+    if is_builtin_exception_class_name(name) == 1
+      return 1
+    end
+    is_user_exception_subclass(name)
+  end
+
+ # Default message C expression for `<ExcClass>.new` with no args.
+ # For user subclasses, scans the program AST for the matching
+ # `class <ExcClass>` body and pulls out its `def initialize` first
+ # OptionalParameterNode default (must be a string literal). Otherwise
+ # falls back to the class-name string literal, matching CRuby's
+ # `RuntimeError.new.message` convention.
+  def exc_default_msg_expr(cname)
+    def_id = find_initialize_def_for_class(0, cname)
+    if def_id >= 0
+      params_id = @nd_parameters[def_id]
+      if params_id >= 0
+        opts = parse_id_list(@nd_optionals[params_id])
+        if opts.length > 0
+ # OptionalParameterNode.value is stored in @nd_expression by the
+ # AST loader (see compiler_helpers.rb's set_ref_field "value" arm).
+          dv = @nd_expression[opts[0]]
+          if dv >= 0 && @nd_type[dv] == "StringNode"
+            return compile_expr(dv)
+          end
+        end
+      end
+    end
+ # Fallback: class name (matches `RuntimeError.new.message`).
+    "(&(\"\\xff\" \"" + cname + "\")[1])"
+  end
+
+ # Walk the AST from `nid` looking for a `class <cname> ... end`
+ # whose body contains `def initialize`. Returns the DefNode id of
+ # that initialize, or -1.
+  def find_initialize_def_for_class(nid, cname)
+    if nid < 0
+      return -1
+    end
+    if @nd_type[nid] == "ClassNode"
+      cpath = @nd_constant_path[nid]
+      if cpath >= 0 && @nd_type[cpath] == "ConstantReadNode" && @nd_name[cpath] == cname
+        body = @nd_body[nid]
+        if body >= 0
+          return find_initialize_def_in_body(body)
+        end
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      r = find_initialize_def_for_class(cs[k], cname)
+      if r >= 0
+        return r
+      end
+      k = k + 1
+    end
+    -1
+  end
+
+ # Walk the given class-body subtree looking for the first
+ # `def initialize` DefNode. Returns -1 if not found.
+  def find_initialize_def_in_body(nid)
+    if nid < 0
+      return -1
+    end
+    if @nd_type[nid] == "DefNode" && @nd_name[nid] == "initialize"
+      return nid
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      r = find_initialize_def_in_body(cs[k])
+      if r >= 0
+        return r
+      end
+      k = k + 1
+    end
+    -1
+  end
+
   def current_lexical_scope_name
     if @current_lexical_scope != ""
       return @current_lexical_scope
@@ -1179,7 +1287,8 @@ class Compiler
       r_inner = @nd_receiver[arg_id]
       if r_inner >= 0 && @nd_type[r_inner] == "ConstantReadNode"
         cname_inner = @nd_name[r_inner]
-        if is_builtin_exception_class_name(cname_inner) == 1
+        if is_exception_class_name(cname_inner) == 1
+          @needs_exc_class_hierarchy = 1
           args_id_inner = @nd_arguments[arg_id]
           if args_id_inner >= 0
             aa_inner = get_args(args_id_inner)
@@ -17520,20 +17629,33 @@ class Compiler
       cname = implicit_new_class_name(recv)
     end
     if cname != ""
- # Built-in exception class `.new("msg")`: lower to a heap-allocated
- # sp_Exception { cls_name; msg } via sp_exc_new. The LV slot type
- # is "exception" (sp_Exception *); subsequent `.class` / `.message`
- # / `.is_a?` / `raise <e>` dispatch through sp_exc_*.
-      if is_builtin_exception_class_name(cname) == 1
+ # Built-in exception class `.new("msg")` (or a user subclass of
+ # one): lower to a heap-allocated sp_Exception { cls_name; msg }
+ # via sp_exc_new. The LV slot type is "exception" (sp_Exception *);
+ # subsequent `.class` / `.message` / `.is_a?` / `raise <e>` dispatch
+ # through sp_exc_*. User-defined `initialize(msg)` bodies in such
+ # subclasses are bypassed: the supported pattern is
+ # `def initialize(msg = "..."); super(msg); end`. The `super(msg)`
+ # body is not actually executed; the no-arg call substitutes the
+ # subclass's first-param default in its place. Mutating-initialize
+ # bodies (setting unrelated ivars, etc.) are out of scope.
+      if is_exception_class_name(cname) == 1
         @needs_exc_class_hierarchy = 1
         @needs_setjmp = 1   # pulls in sp_exc_* runtime helpers
-        msg_expr_be = "(&(\"\\xff\")[1])"
+        msg_expr_be = ""
         args_id_be = @nd_arguments[nid]
         if args_id_be >= 0
           aa_be = get_args(args_id_be)
           if aa_be.length >= 1
             msg_expr_be = compile_expr(aa_be[0])
           end
+        end
+        if msg_expr_be == ""
+ # No call-site arg: walk the user-subclass's #initialize for an
+ # OptionalParameterNode default. CRuby's default for the bare
+ # built-in `Exception.new` is the class name; fall back to that
+ # so `RuntimeError.new.message` == "RuntimeError".
+          msg_expr_be = exc_default_msg_expr(cname)
         end
         return "sp_exc_new(\"" + cname + "\", " + msg_expr_be + ")"
       end
