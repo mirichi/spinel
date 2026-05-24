@@ -39,3 +39,5 @@ file_write_poly_arg
 /hash_shorthand
 /pattern_pin
 /method_dispatch_poly_array
+/const_init_defers_for_main_local
+/array_new_block_typed_container
