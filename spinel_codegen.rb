@@ -3625,13 +3625,10 @@ class Compiler
  # element types must be marked, otherwise the GC frees the inner object
  # while the tuple keeps a dangling pointer.
   def tuple_field_needs_mark(et)
-    if et == "poly"
+    if gc_trace_kind(et) != "none"
       return 1
     end
-    if et == "int" || et == "float" || et == "bool" || et == "symbol" || et == "void" || et == "nil"
-      return 0
-    end
-    type_is_pointer(et)
+    0
   end
 
  # Returns the scan function name for the tuple, or "NULL" if no field
@@ -5026,8 +5023,12 @@ class Compiler
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
       end
-      if @needs_gc == 1 && @cls_is_value_type[ci] == 0
-        emit("  SP_GC_ROOT(self);")
+      if @needs_gc == 1
+        if @cls_is_value_type[ci] == 0
+          emit("  SP_GC_ROOT(self);")
+        else
+          emit_gc_root_for_expr("self", "obj_" + cname)
+        end
       end
       compile_body_return(bid, ret_type)
     end
@@ -7295,6 +7296,7 @@ class Compiler
  # forward declaration.
     emit_class_runtime
     emit_class_structs
+    emit_gc_scan_function_prototypes
     emit_raw("/*TUPLE_INSERT_POINT*/")
     emit_gc_scan_functions
     emit_toplevel_ivar_decls
@@ -7380,10 +7382,9 @@ class Compiler
           while fi < parts.length
             if tuple_field_needs_mark(parts[fi]) == 1
               field = "_t->_" + fi.to_s
-              if parts[fi] == "poly"
-                body = body + " sp_mark_rbval(" + field + ");"
-              else
-                body = body + " sp_gc_mark((void *)" + field + ");"
+              stmt = gc_mark_stmt_for_expr(field, parts[fi])
+              if stmt != ""
+                body = body + " " + stmt
               end
             end
             fi = fi + 1
@@ -8671,13 +8672,133 @@ class Compiler
     0
   end
 
+  def ivar_needs_gc_mark(t)
+    if gc_trace_kind(t) != "none"
+      return 1
+    end
+    0
+  end
+
+  def value_type_scan_class_name(t)
+    bt = base_type(t)
+    if is_value_type_obj(bt) == 1
+      return bt[4, bt.length - 4]
+    end
+    ""
+  end
+
+  def value_type_needs_gc_scan(t)
+    cname = value_type_scan_class_name(t)
+    if cname == ""
+      return 0
+    end
+    ci = find_class_idx(cname)
+    if ci >= 0 && class_has_ptr_ivars(ci) == 1
+      return 1
+    end
+    0
+  end
+
+  def gc_trace_kind(t)
+    bt = base_type(t)
+    if bt == "poly"
+      return "poly"
+    end
+    if value_type_needs_gc_scan(bt) == 1
+      return "value_type"
+    end
+    if type_is_pointer(bt) == 1
+      return "ptr"
+    end
+    "none"
+  end
+
+  def emit_gc_root_line(stmt, raw)
+    if raw == 1
+      emit_raw("  " + stmt)
+    else
+      emit("  " + stmt)
+    end
+    0
+  end
+
+  def emit_value_type_field_roots(expr, t, raw, global)
+    cname = value_type_scan_class_name(t)
+    if cname == ""
+      return
+    end
+    ci = find_class_idx(cname)
+    if ci < 0
+      return
+    end
+    names = @cls_ivar_names[ci].split(";")
+    types = @cls_ivar_types[ci].split(";")
+    j = 0
+    while j < names.length
+      if j < types.length
+        emit_gc_root_for_expr_impl(expr + "." + sanitize_ivar(names[j]), types[j], raw, global)
+      end
+      j = j + 1
+    end
+    0
+  end
+
+  def emit_gc_root_for_expr_impl(expr, t, raw, global)
+    kind = gc_trace_kind(t)
+    if kind == "ptr"
+      if global == 1
+        emit_gc_root_line("_sp_gc_root_push((void**)&" + expr + ");", raw)
+      else
+        emit_gc_root_line("SP_GC_ROOT(" + expr + ");", raw)
+      end
+    elsif kind == "value_type"
+      emit_value_type_field_roots(expr, t, raw, global)
+    end
+    0
+  end
+
+  def gc_mark_stmt_for_expr(expr, t)
+    kind = gc_trace_kind(t)
+    if kind == "poly"
+      return "sp_mark_rbval(" + expr + ");"
+    end
+    if kind == "value_type"
+      cname = value_type_scan_class_name(t)
+      return "sp_" + cname + "_gc_scan(&" + expr + ");"
+    end
+    if kind == "ptr"
+      return "if (" + expr + ") sp_gc_mark((void *)" + expr + ");"
+    end
+    ""
+  end
+
+  def emit_gc_root_for_expr(expr, t)
+    emit_gc_root_for_expr_impl(expr, t, 0, 0)
+  end
+
+  def emit_raw_gc_root_for_expr(expr, t)
+    emit_gc_root_for_expr_impl(expr, t, 1, 0)
+  end
+
+  def emit_global_gc_roots_for_expr(expr, t)
+    emit_gc_root_for_expr_impl(expr, t, 0, 1)
+  end
+
+  def type_needs_gc_root(t)
+    kind = gc_trace_kind(t)
+    if kind == "ptr" || kind == "value_type"
+      return 1
+    end
+    0
+  end
+
   def class_has_ptr_ivars(ci)
     names = @cls_ivar_names[ci].split(";")
     types = @cls_ivar_types[ci].split(";")
     j = 0
     while j < names.length
       if j < types.length
-        if ivar_is_gc_ptr(types[j]) == 1
+        if ivar_needs_gc_mark(types[j]) == 1
           return 1
         end
       end
@@ -8692,8 +8813,7 @@ class Compiler
     0
   end
 
- # Emit `self->iv_<name> = NULL;` / `sp_box_nil();` for each
- # GC-traced ivar on the class chain. Called right after
+ # Clear each GC-traced field on the class chain. Called right after
  # SP_POOL_NEW + SP_GC_ROOT(self) to defuse the recycled-slot
  # stale-pointer hazard: if a sub-allocation in the initialize
  # body triggers GC before the body writes every pointer ivar,
@@ -8715,13 +8835,14 @@ class Compiler
     j = 0
     while j < names.length
       if j < types.length
-        if ivar_is_gc_ptr(types[j]) == 1
-          field = "self->" + sanitize_ivar(names[j])
-          if types[j] == "poly"
-            emit_raw("  " + field + " = sp_box_nil();")
-          else
-            emit_raw("  " + field + " = NULL;")
-          end
+        kind = gc_trace_kind(types[j])
+        field = "self->" + sanitize_ivar(names[j])
+        if kind == "poly"
+          emit_raw("  " + field + " = sp_box_nil();")
+        elsif kind == "ptr"
+          emit_raw("  " + field + " = NULL;")
+        elsif kind == "value_type"
+          emit_raw("  " + field + " = (" + c_type(types[j]) + "){0};")
         end
       end
       j = j + 1
@@ -8729,10 +8850,24 @@ class Compiler
   end
 
   def emit_gc_mark_ivar(field, t)
-    if t == "poly"
-      emit_raw("  sp_mark_rbval(" + field + ");")
-    else
-      emit_raw("  if (" + field + ") sp_gc_mark((void *)" + field + ");")
+    stmt = gc_mark_stmt_for_expr(field, t)
+    if stmt != ""
+      emit_raw("  " + stmt)
+    end
+  end
+
+  def emit_gc_scan_function_prototypes
+    emitted_proto = 0
+    i = 0
+    while i < @cls_names.length
+      if cls_emit_skipped(i) == 0 && class_has_ptr_ivars(i) == 1
+        emit_raw("static void sp_" + @cls_names[i] + "_gc_scan(void *p);")
+        emitted_proto = 1
+      end
+      i = i + 1
+    end
+    if emitted_proto == 1
+      emit_raw("")
     end
   end
 
@@ -8768,7 +8903,7 @@ class Compiler
                 end
               end
             end
-            if skip_inherited == 0 && ivar_is_gc_ptr(types[j]) == 1
+            if skip_inherited == 0 && ivar_needs_gc_mark(types[j]) == 1
               emit_gc_mark_ivar("self->" + sanitize_ivar(names[j]), types[j])
             end
           end
@@ -8783,7 +8918,7 @@ class Compiler
             pj = 0
             while pj < pnames.length
               if pj < ptypes.length
-                if ivar_is_gc_ptr(ptypes[pj]) == 1
+                if ivar_needs_gc_mark(ptypes[pj]) == 1
                   emit_gc_mark_ivar("self->" + sanitize_ivar(pnames[pj]), ptypes[pj])
                 end
               end
@@ -9724,6 +9859,29 @@ class Compiler
  # to that DefNode's own class context, neither of which we want
  # to attribute to the outer cls method).
 
+  def emit_constructor_param_roots(ci, init_idx)
+    if init_idx < 0
+      return
+    end
+    all_params_str = @cls_meth_params[ci].split("|")
+    all_ptypes_str = @cls_meth_ptypes[ci].split("|")
+    if init_idx >= all_params_str.length
+      return
+    end
+    cp_names = all_params_str[init_idx].split(",")
+    cp_types = "".split(",")
+    if init_idx < all_ptypes_str.length
+      cp_types = all_ptypes_str[init_idx].split(",")
+    end
+    cpi = 0
+    while cpi < cp_names.length
+      if cpi < cp_types.length
+        emit_raw_gc_root_for_expr("lv_" + cp_names[cpi], cp_types[cpi])
+      end
+      cpi = cpi + 1
+    end
+  end
+
   def emit_constructor(ci)
     saved_gc_scope = @in_gc_scope
     cname = @cls_names[ci]
@@ -9732,6 +9890,7 @@ class Compiler
       emit_raw("static sp_" + cname + " sp_" + cname + "_new(" + constructor_params_decl(ci) + ") {")
       emit_raw("  sp_" + cname + " self = {0};")
       @in_gc_scope = 0
+      emit_constructor_param_roots(ci, init_idx)
     else
  # Per-class free-list pool. Unmarked instances are pushed onto a
  # bounded pool by sp_gc_collect (via the recycle hook in sp_gc_hdr)
@@ -9742,6 +9901,7 @@ class Compiler
       emit_raw("static inline sp_" + cname + " *sp_" + cname + "_new(" + constructor_params_decl(ci) + ") {")
       emit_raw("  SP_GC_SAVE();")
       @in_gc_scope = 1
+      emit_constructor_param_roots(ci, init_idx)
       scan_fn = "NULL"
       if class_has_ptr_ivars(ci) == 1
         scan_fn = "sp_" + cname + "_gc_scan"
@@ -9765,28 +9925,6 @@ class Compiler
  # a stale .v.p, so reset it to a tagged nil that sp_mark_rbval
  # treats as inert.
       emit_clear_ptr_ivars_for_new(ci)
-    end
-
- # Root pointer-type constructor parameters
-    if init_idx >= 0
-      all_params_str = @cls_meth_params[ci].split("|")
-      all_ptypes_str = @cls_meth_ptypes[ci].split("|")
-      if init_idx < all_params_str.length
-        cp_names = all_params_str[init_idx].split(",")
-        cp_types = "".split(",")
-        if init_idx < all_ptypes_str.length
-          cp_types = all_ptypes_str[init_idx].split(",")
-        end
-        cpi = 0
-        while cpi < cp_names.length
-          if cpi < cp_types.length
-            if type_is_pointer(cp_types[cpi]) == 1
-              emit_raw("  SP_GC_ROOT(lv_" + cp_names[cpi] + ");")
-            end
-          end
-          cpi = cpi + 1
-        end
-      end
     end
 
     init_ci = find_init_class(ci)
@@ -10296,13 +10434,13 @@ class Compiler
       if @in_gc_scope == 1
         if @cls_is_value_type[ci] == 0
           emit("  SP_GC_ROOT(self);")
+        else
+          emit_gc_root_for_expr("self", "obj_" + cname)
         end
         j = 0
         while j < pnames.length
           if j < ptypes.length
-            if type_is_pointer(ptypes[j]) == 1
-              emit("  SP_GC_ROOT(lv_" + pnames[j] + ");")
-            end
+            emit_gc_root_for_expr("lv_" + pnames[j], ptypes[j])
           end
           j = j + 1
         end
@@ -10355,6 +10493,21 @@ class Compiler
       else
         declare_method_locals(bid, pnames)
       end
+      if @in_gc_scope == 0
+        if @needs_gc == 1
+          emit("  SP_GC_SAVE();")
+          @in_gc_scope = 1
+        end
+      end
+      if @in_gc_scope == 1
+        j = 0
+        while j < pnames.length
+          if j < ptypes.length
+            emit_gc_root_for_expr("lv_" + pnames[j], ptypes[j])
+          end
+          j = j + 1
+        end
+      end
       compile_body_return(bid, rt)
     end
 
@@ -10387,7 +10540,7 @@ class Compiler
     has_gc_locals = 0
     j = 0
     while j < lnames.length
-      if type_is_pointer(ltypes[j]) == 1
+      if type_needs_gc_root(ltypes[j]) == 1
         has_gc_locals = 1
       end
       j = j + 1
@@ -10604,9 +10757,7 @@ class Compiler
         j = 0
         while j < pnames.length
           if j < ptypes.length
-            if type_is_pointer(ptypes[j]) == 1
-              emit("  SP_GC_ROOT(lv_" + pnames[j] + ");")
-            end
+            emit_gc_root_for_expr("lv_" + pnames[j], ptypes[j])
           end
           j = j + 1
         end
@@ -10657,7 +10808,7 @@ class Compiler
     has_gc_locals = 0
     j = 0
     while j < lnames.length
-      if type_is_pointer(ltypes[j]) == 1
+      if type_needs_gc_root(ltypes[j]) == 1
         has_gc_locals = 1
       end
       j = j + 1
@@ -10750,9 +10901,7 @@ class Compiler
   def emit_gc_roots(lnames, ltypes)
     j = 0
     while j < lnames.length
-      if type_is_pointer(ltypes[j]) == 1
-        emit("  SP_GC_ROOT(lv_" + lnames[j] + ");")
-      end
+      emit_gc_root_for_expr("lv_" + lnames[j], ltypes[j])
       j = j + 1
     end
   end
@@ -11304,9 +11453,9 @@ class Compiler
  # for the program's lifetime.
     ti = 0
     while ti < @toplevel_ivar_names.length
-      if type_is_pointer(@toplevel_ivar_types[ti]) == 1
-        emit("  _sp_gc_root_push((void**)&" + sanitize_ivar(@toplevel_ivar_names[ti]) + ");")
-      end
+      tivar = sanitize_ivar(@toplevel_ivar_names[ti])
+      ttype = @toplevel_ivar_types[ti]
+      emit_global_gc_roots_for_expr(tivar, ttype)
       ti = ti + 1
     end
     if @needs_gc == 1
@@ -11342,9 +11491,9 @@ class Compiler
  # runtime helper signatures (sp_str_length, sp_IntArray_length,
  # etc.) without affecting correctness. Mirrors the per-method
  # logic in declare_method_locals (#548).
-      if type_is_pointer(ltypes[j]) == 1
-        emit("  " + ctp + "lv_" + lnames[j] + " = " + c_default_val(ltypes[j]) + ";")
-        emit("  SP_GC_ROOT(lv_" + lnames[j] + ");")
+      if type_needs_gc_root(ltypes[j]) == 1
+        emit("  " + ctp + " lv_" + lnames[j] + " = " + c_default_val(ltypes[j]) + ";")
+        emit_gc_root_for_expr("lv_" + lnames[j], ltypes[j])
       else
         vol = ""
         if @needs_setjmp == 1
@@ -11463,9 +11612,7 @@ class Compiler
         if guarded_646
           emit("  sp_init_in_progress_" + @const_names[i] + " = 0;")
         end
-        if type_is_pointer(@const_types[i]) == 1
-          emit("  SP_GC_ROOT(cst_" + @const_names[i] + ");")
-        end
+        emit_gc_root_for_expr("cst_" + @const_names[i], @const_types[i])
       end
       i = i + 1
     end
@@ -11615,9 +11762,7 @@ class Compiler
                   val_b = "sp_bigint_to_int((sp_Bigint *)" + val_b + ")"
                 end
                 emit("  cst_" + cwn_name + " = " + val_b + ";")
-                if type_is_pointer(@const_types[cwn_idx]) == 1
-                  emit("  SP_GC_ROOT(cst_" + cwn_name + ");")
-                end
+                emit_gc_root_for_expr("cst_" + cwn_name, @const_types[cwn_idx])
               end
             end
           end
@@ -13235,6 +13380,9 @@ class Compiler
     if is_nullable_type(t) == 1
       t = base_type(t)
     end
+    if value_type_needs_gc_scan(t) == 1
+      return 1
+    end
     if t == "string" || t == "mutable_str"
       return 1
     end
@@ -13251,7 +13399,7 @@ class Compiler
       return 1
     end
     if is_obj_type(t) == 1
-      return 1
+      return type_is_pointer(t)
     end
     if is_tuple_type(t) == 1
       return 1
@@ -13282,7 +13430,7 @@ class Compiler
     @needs_gc = 1
     tmp = new_temp
     emit("  " + c_type(t) + " " + tmp + " = " + val + ";")
-    emit("  SP_GC_ROOT(" + tmp + ");")
+    emit_gc_root_for_expr(tmp, t)
     tmp
   end
 
@@ -14774,7 +14922,7 @@ class Compiler
       end
     end
  # Root receiver if it may be collected during argument evaluation
-    if expr_may_gc(recv) == 1 && type_is_pointer(recv_type) == 1
+    if expr_may_gc(recv) == 1 && type_needs_gc_root(recv_type) == 1
       args_id = @nd_arguments[nid]
       if args_id >= 0
         aargs = get_args(args_id)
@@ -14789,7 +14937,7 @@ class Compiler
         if has_gc_arg == 1
           tmp = new_temp
           emit("  " + c_type(recv_type) + " " + tmp + " = " + rc + ";")
-          emit("  SP_GC_ROOT(" + tmp + ");")
+          emit_gc_root_for_expr(tmp, recv_type)
           rc = tmp
         end
       end
@@ -24824,9 +24972,7 @@ class Compiler
       @needs_gc = 1
       src_tmp = new_temp
       emit("  " + c_type(src_t) + " " + src_tmp + " = " + compile_expr(splat_src_id) + ";")
-      if type_is_pointer(src_t) == 1
-        emit("  SP_GC_ROOT(" + src_tmp + ");")
-      end
+      emit_gc_root_for_expr(src_tmp, src_t)
       src_v = src_tmp
     end
     src_len_expr = length_c_expr(src_t, src_v)
@@ -25676,9 +25822,7 @@ class Compiler
         at = infer_type(arg_ids[k])
         ct = c_type(at)
         emit("  " + ct + " " + tmp + " = " + cast_away_volatile_arg(arg_ids[k], compile_expr(arg_ids[k])) + ";")
-        if type_is_pointer(at) == 1
-          emit("  SP_GC_ROOT(" + tmp + ");")
-        end
+        emit_gc_root_for_expr(tmp, at)
         temps.push(tmp)
       else
         temps.push(cast_away_volatile_arg(arg_ids[k], compile_expr(arg_ids[k])))
@@ -25699,13 +25843,7 @@ class Compiler
 
   def constructor_arg_needs_root(arg_type)
     bt = base_type(arg_type)
-    if is_obj_type(bt) == 1
-      return 1
-    end
-    if is_array_type(bt) == 1 || is_ptr_array_type(bt) == 1 || is_tuple_type(bt) == 1
-      return 1
-    end
-    if bt == "fiber" || bt == "bigint" || bt == "lambda" || bt == "poly_array"
+    if type_needs_gc_root(bt) == 1
       return 1
     end
     0
@@ -25734,7 +25872,7 @@ class Compiler
     @needs_gc = 1
     tmp = new_temp
     emit("  " + c_type(arg_type) + " " + tmp + " = " + expr + ";")
-    emit("  SP_GC_ROOT(" + tmp + ");")
+    emit_gc_root_for_expr(tmp, arg_type)
     tmp
   end
 
