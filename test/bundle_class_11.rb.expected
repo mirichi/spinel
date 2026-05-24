@@ -1,13 +1,8 @@
-5
-15
-12
-24
-6
+h:alpha
+3
+5000
+ok
+{"name":"alice","city":"NYC"}
+{"a":1,"b":2,"c":3}
 7
-5
-1
-8
-4
-hello world
-false
-true
+hash

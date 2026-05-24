@@ -1,187 +1,234 @@
 # Bundled tests:
-#   - case_poly_when_lit
-#   - chained_attr_setter
-#   - chained_ivar_op_assign_emits_inner_write
-#   - chained_ivar_write_split
-#   - chained_ivar_write_subclass
+#   - hash_fetch_hash_default_narrowing
+#   - hash_fetch_string_default_on_int_leaf
+#   - heterogeneous_dispatch_int_return_narrow
+#   - if_static_false_skips_dead_branch_compile
+#   - imeth_name_collision_recv_aware
 
-# === case_poly_when_lit ===
-# Issue #387: `case <poly> when :sym_lit` previously lowered to
-# `mrb_int _t = lv_poly;` (a struct→int copy that doesn't compile)
-# followed by `_t == SPS_<sym>` (which would compare the union's
-# tag byte to the sym id even if the assignment had compiled).
-#
-# Fix: when pred type is poly, hold the temp as `sp_RbVal` and
-# emit per-when-arm tag-check + value-compare matched to the
-# literal's type (sym / str / int / float / nil / true / false).
+# === hash_fetch_hash_default_narrowing ===
+# Sequel to hash_fetch_hash_default: when `params.fetch "k", {}`
+# is followed by `is_a?(Hash)` narrowing into an if-expression
+# whose else arm returns an empty hash, the receiving local was
+# typed as the concrete hash variant (str_int_hash) by the
+# pass-1 scan_locals (the if-expr's then-arm reads raw_sub but
+# raw_sub is still in the deferred-declaration window), then
+# stuck there because the pass-2 merge had no "concrete → poly"
+# rule. The codegen-emitted assignment then puts an sp_RbVal
+# poly into the typed slot, failing C compile with
+# `incompatible types when assigning to type 'sp_StrIntHash *'
+#  from type 'sp_RbVal'`.
 
-class T_case_poly_when_lit_C
-  def lookup(name)
-    case name
-    when :id     then "id-result"
-    when :body   then "body-result"
-    when "raw"   then "raw-result"
-    when 42      then "forty-two"
-    when nil     then "nil-result"
-    when true    then "true-result"
-    when false   then "false-result"
-    else              "other"
+class T_hash_fetch_hash_default_narrowing_ArticleParams
+  def self.from_raw(params)
+    raw_sub = params.fetch "article", {}
+    sub = if raw_sub.is_a?(Hash)
+      raw_sub
+    else
+      {}
     end
+    sub.is_a?(Hash) ? "got-hash" : "no-hash"
   end
 end
 
-c = T_case_poly_when_lit_C.new
-puts c.lookup(:id)
-puts c.lookup(:body)
-puts c.lookup("raw")
-puts c.lookup(42)
-puts c.lookup(nil)
-puts c.lookup(true)
-puts c.lookup(false)
-puts c.lookup(:unknown)
-puts c.lookup("string-key")
-puts c.lookup(99)
+puts T_hash_fetch_hash_default_narrowing_ArticleParams.from_raw({ "x" => 1 })
+puts T_hash_fetch_hash_default_narrowing_ArticleParams.from_raw({ "y" => 2 })
 
-# === chained_attr_setter ===
-# `@a = obj.attr = val` and similar chains used to mistype the
-# outer LHS. `infer_call_type` had no special case for an
-# attr-writer CallNode (`obj.attr = val`), so it fell through to
-# the int default. Codegen was emitting the right C-level
-# assignment expression `(rc->iv_attr = arg)` (which evaluates
-# to the rhs in C), but the surrounding LHS was declared as
-# `mrb_int`, so `outer = (rc->iv_attr = obj_value)` typed the
-# outer slot as int and any later use went through the wrong
-# dispatch.
+# === hash_fetch_string_default_on_int_leaf ===
+# #454: `params.fetch "k", ""` on a Hash[String, Int] (or
+# Hash[Symbol, Int]) emitted a type-mismatched ternary
+# (`has_key ? get_int : char_star_default`) and failed C compile
+# under -Werror=int-conversion.
 #
-# Fix: when `infer_call_type` sees a CallNode whose name ends
-# with `=` (and isn't `==` / `<=` / etc.), and the receiver is
-# obj-typed and has an attr_writer for the slot, return the rhs
-# argument's type. Ruby semantics: an assignment expression
-# evaluates to the rhs.
+# Narrow fix: when the default is a string literal and the hash
+# leaf is int, widen the call's static return type to "string"
+# and route the get arm through sp_int_to_s so both arms agree
+# on `const char *`. Limited to (int leaf + string default);
+# broader (poly leaf, hash default, etc.) cascades through the
+# `is_a?(Hash)` narrowing in real-blog params and is left for
+# a follow-up.
 
-class T_chained_attr_setter_Box
-  def initialize(n); @n = n; @arr = []; @arr << n; end
-  attr_reader :n
+class T_hash_fetch_string_default_on_int_leaf_P
+  def self.lookup_str(params)
+    params.fetch "title", ""
+  end
+
+  def self.lookup_sym(params)
+    params.fetch :title, ""
+  end
 end
 
-class T_chained_attr_setter_Holder
-  attr_writer :box
+# Hit path: the integer at the key gets stringified.
+puts T_hash_fetch_string_default_on_int_leaf_P.lookup_str({ "x" => 1, "title" => 42 })
+# Miss path: the empty-string default.
+puts T_hash_fetch_string_default_on_int_leaf_P.lookup_str({ "x" => 1 })
+
+# Sym-keyed counterpart.
+puts T_hash_fetch_string_default_on_int_leaf_P.lookup_sym({ x: 1, title: 99 })
+puts T_hash_fetch_string_default_on_int_leaf_P.lookup_sym({ x: 1 })
+
+# Matched-default control (no fix needed; existing behavior).
+class T_hash_fetch_string_default_on_int_leaf_Q
+  def self.lookup(params)
+    params.fetch "x", 0
+  end
 end
+puts T_hash_fetch_string_default_on_int_leaf_Q.lookup({ "x" => 7 })
+puts T_hash_fetch_string_default_on_int_leaf_Q.lookup({ "other" => 1 })
 
-# Simple chain — the result of `h.box = T_chained_attr_setter_Box.new(...)` should be
-# a T_chained_attr_setter_Box, not an int.
-h = T_chained_attr_setter_Holder.new
-b = (h.box = T_chained_attr_setter_Box.new(42))
-puts b.n   # 42
+# === heterogeneous_dispatch_int_return_narrow ===
+# Approach-2 narrowing: when `<poly>[k]` chases an `arr[i]` whose
+# `arr` is a poly_array with observed elements that all return int
+# from `[]` (IntArray + Method-objects), narrow the outer dispatch
+# return type from poly to int. Without narrowing, the outer call
+# returns sp_RbVal and downstream sites — `total + 1`, `~bits`,
+# `iv += 1`, etc. — fail the C compile or cascade widen ivars to
+# poly.
 
-# Optcarrot-shape chain: `@a = obj.x = expr`. Both `@a` and
-# `obj.x` get the same T_chained_attr_setter_Box; reading either back gives the
-# same value.
-class T_chained_attr_setter_Apu
-  def initialize(n); @n = n; @arr = []; @arr << n; end
-  attr_reader :n
-end
-
-class T_chained_attr_setter_Cpu
-  attr_writer :apu
-  attr_reader :apu
-end
-
-class T_chained_attr_setter_Nes
+class T_heterogeneous_dispatch_int_return_narrow_Box
   def initialize
-    @cpu = T_chained_attr_setter_Cpu.new
-    @apu = @cpu.apu = T_chained_attr_setter_Apu.new(99)
+    @slots = [nil] * 4         # int_array initially
+    @int_arr = [10, 20, 30, 40]
+    @slots[0] = method(:double_at)   # widens via obj_Method_ptr_array
+    @slots[1] = @int_arr             # then widens to poly_array
+    @total = 0
   end
-  attr_reader :apu, :cpu
+
+  def double_at(i)
+    i * 2
+  end
+
+  # Direct ivar access: narrowing fires via `InstanceVariableReadNode`.
+  def via_ivar(i)
+    @slots[i][i]
+  end
+
+  # Local-variable alias: narrowing fires via `LocalVariableReadNode`
+  # with the AST-walking fallback in `find_lv_ivar_alias_in_ast`.
+  def via_local(i)
+    cache = @slots
+    cache[i][i]
+  end
+
+  def run
+    # IntArray arm of @slots[1]: returns @int_arr[1] = 20.
+    @total = via_ivar(1)
+    @total += 1
+    puts @total                # 21
+    # Method arm of @slots[0]: returns double_at(0) = 0.
+    @total = via_local(0)
+    @total += 1
+    puts @total                # 1
+  end
 end
 
-n = T_chained_attr_setter_Nes.new
-puts n.apu.n        # 99
-puts n.cpu.apu.n    # 99
+T_heterogeneous_dispatch_int_return_narrow_Box.new.run
 
-# === chained_ivar_op_assign_emits_inner_write ===
-# `@b = @a &= 0x80` parses as InstanceVariableWriteNode whose value
-# is an InstanceVariableOperatorWriteNode. Without an inner-write
-# emitter, the `@a &= ...` evaporated and `@b = ...` saw `0` —
-# both ivars ended up wrong. Verifies the chained form against the
-# parens-rewrite (`@b = (@a = @a & 0x80)`) and the manual two-stmt
-# split — all three should produce the same `@a=128 @b=128`.
+# === if_static_false_skips_dead_branch_compile ===
+# `compile_cond_expr` already returns the literal "FALSE" for a
+# predicate whose static type is `nil` (e.g. an attr-style read
+# of an ivar only ever assigned `nil`). The if/unless emit then
+# wraps the dead body in `if (FALSE) { … }`, but the body's C
+# statements still pass through gcc — and they often type-error
+# against ivars/methods whose shapes only make sense when the
+# predicate is true. Skipping body emission lets the rest of
+# the program compile.
 
-class T_chained_ivar_op_assign_emits_inner_write_C
-  attr_reader :a, :b
+class T_if_static_false_skips_dead_branch_compile_Profiler
   def initialize
-    @a = 0xff
-    @b = 0
+    # `@mode` is statically nil — only ever assigned this literal.
+    # The read in the predicate below folds to `if (FALSE)`.
+    @mode = nil
   end
-  def m_chain
-    @b = @a &= 0x80
-  end
-  def m_paren
-    @b = (@a = @a & 0x80)
-  end
-  def m_split
-    @a = @a & 0x80
-    @b = @a
+
+  def run
+    # Dead branch when @mode is nil. Pre-fix, spinel emits the
+    # body anyway: `sp_str_sub("...", "MODE", iv_mode)` with
+    # iv_mode typed as `mrb_int` (its only init being `= nil`)
+    # — the 3rd arg fails -Wint-conversion.
+    if @mode
+      out = "label_MODE".sub("MODE", @mode)
+      puts out
+    end
+    puts "ran"
   end
 end
 
-c1 = T_chained_ivar_op_assign_emits_inner_write_C.new; c1.m_chain; puts "chain: a=#{c1.a} b=#{c1.b}"
-c2 = T_chained_ivar_op_assign_emits_inner_write_C.new; c2.m_paren; puts "paren: a=#{c2.a} b=#{c2.b}"
-c3 = T_chained_ivar_op_assign_emits_inner_write_C.new; c3.m_split; puts "split: a=#{c3.a} b=#{c3.b}"
-
-# === chained_ivar_write_split ===
-# Chained `@a = @b = ... = literal` where the targets have different
-# concrete slot types (here: a string ivar and an int ivar). Without
-# splitting the chain into per-target writes, the outer assignment's
-# RHS picks up the inner ivar's recorded type, and the T_chained_ivar_write_split_C compiler
-# rejects the cross-typed slot store.
-
-class T_chained_ivar_write_split_C
+# `if @nil_ivar; ... else; ... end` with a trailing stmt forces
+# the if into statement position (compile_if_stmt). The else arm
+# is the live one when the predicate is statically nil.
+class T_if_static_false_skips_dead_branch_compile_Either
   def initialize
-    @a = "hello"
-    @b = 42
+    @verbose = nil
   end
 
-  def reset
-    @a = @b = nil
-  end
-
-  def show
-    puts @a
-    puts @b
-  end
-end
-
-c = T_chained_ivar_write_split_C.new
-c.show
-c.reset
-puts "reset ok"
-
-# === chained_ivar_write_subclass ===
-# Issue #238 follow-up to #235: chained `@a = @b = nil` in a parent
-# class, with concrete writes in a subclass that pin the slots to
-# typed pointers (string + int). Without restricting the
-# chain-head bypass to `at == "int"`, the parent's nil-chain forces
-# "nil" into the slot type each iteration of the inference fixpoint
-# while the subclass's typed write cascades back up — the slot
-# ping-pongs between obj_X and obj_X? and lands on poly, which
-# then rejects the typed-pointer store as a C type error.
-
-class T_chained_ivar_write_subclass_Base
-  def reset
-    @a = @b = nil
+  def run
+    if @verbose
+      out = "label_MODE".sub("MODE", @verbose)
+      puts out
+    else
+      puts "quiet"
+    end
+    puts "done"
   end
 end
 
-class T_chained_ivar_write_subclass_Sub < T_chained_ivar_write_subclass_Base
+T_if_static_false_skips_dead_branch_compile_Profiler.new.run
+T_if_static_false_skips_dead_branch_compile_Either.new.run
+
+# === imeth_name_collision_recv_aware ===
+# Issue #429. Two unrelated classes each defining `def get(k)`
+# with different return types caused the analyzer's int-recv
+# cross-class widening to pick the first match -- so a local
+# `r = c.get("/foo")` where c is statically obj_IntClient ended
+# up declared `const char *` (from T_imeth_name_collision_recv_aware_StrBag#get's String return),
+# crashing the C compile when sp_IntClient_get returned an
+# sp_IntBag *.
+#
+# Fix: scan_locals' first pass calls infer_type before the
+# scope decls land, so `c`'s var-type is "" / "int" at that
+# point. infer_recv_method_type's int-recv arm enumerates
+# every user class with `mname` and picks the first non-int
+# return. The fix bails out of that path when (a) the recv is
+# a LocalVariableReadNode whose var-type isn't pinned yet, and
+# (b) the candidate classes disagree on the return type --
+# leaving a later iteration of the iterative loop to pick the
+# right one via the is_obj_type arm once `c`'s declaration
+# has propagated.
+#
+# Coverage: the canonical "two classes, same imeth name,
+# different return types, statically-typed call sites for
+# each" shape from Ori's repro.
+
+class T_imeth_name_collision_recv_aware_StrBag
   def initialize
-    @a = "hello"
-    @b = 42
+    @h = {"a" => "b"}
+    @h.delete("a")
+    @h["x"] = "got-x"
   end
-  attr_reader :a, :b
+  def get(k)
+    @h[k]
+  end
 end
 
-s = T_chained_ivar_write_subclass_Sub.new
-puts s.a
-puts s.b
+class T_imeth_name_collision_recv_aware_IntBag
+  attr_accessor :status
+  def initialize
+    @status = 42
+  end
+end
+
+class T_imeth_name_collision_recv_aware_IntClient
+  def get(path)
+    out = T_imeth_name_collision_recv_aware_IntBag.new
+    out.status = path.length
+    out
+  end
+end
+
+s = T_imeth_name_collision_recv_aware_StrBag.new
+puts s.get("x")
+
+c = T_imeth_name_collision_recv_aware_IntClient.new
+r = c.get("/foo")
+puts r.status
 

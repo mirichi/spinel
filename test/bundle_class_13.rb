@@ -1,69 +1,61 @@
 # Bundled tests:
-#   - chained_or_assign_collection_array_nested
-#   - chained_or_assign_collection_element
+#   - imeth_override_widen_to_poly
+#   - implicit_self_param_poly
 
-# === chained_or_assign_collection_array_nested ===
-# 4-level chained `||=` mirroring optcarrot's PPU#setup_lut
-# `@lut_update` shape:
+# === imeth_override_widen_to_poly ===
+# #567 (Sam Ruby). Sibling of #563. When an override widens a
+# value param to sp_RbVal (poly) because its call sites pass
+# mixed types, but the parent's same param stays scalar, the C
+# function signatures of base and override disagree. The
+# override-dispatch gate cls_imeth_override_ptypes_match
+# rejected the family, so a `self[k] = v` inside a parent body
+# fell through to the static call on the parent's raise stub
+# rather than dispatching to the override.
 #
-#     (((@h[b] ||= [])[i] ||= [nil, nil])[0] ||= []) << v
-#
-# Levels 1, 2, 3 are all `||=` against poly-element receivers
-# (poly_poly_hash, then a poly value carrying a poly_array twice).
-# Pre-fix only level 1 was lowered; levels 2 and 3 fell through to
-# the int default and the chain collapsed to `0 << ...`. The fix
-# threads sp_RbVal temps through every level and promotes ArrayNode
-# rhs literals (`[]`, `[nil, nil]`) to poly_array so each
-# intermediate `cls_id == SP_BUILTIN_POLY_ARRAY` probe matches at
-# runtime.
+# Fix: post-fixpoint, unify the family's ptypes at any slot
+# where at least one member is "poly" so all member signatures
+# agree. The cls_id switch then fires and routes to the
+# concrete override.
 
-class T_chained_or_assign_collection_array_nested_C
-  def initialize
-    @h = {}
-  end
-  def push(b, i, v)
-    (((@h[b] ||= [])[i] ||= [nil, nil])[0] ||= []) << v
-  end
-  def count(b, i); @h[b][i][0].length; end
+class T_imeth_override_widen_to_poly_Base
+  def []=(name, value); raise NotImplementedError; end
+  def fill; self[:title] = "Hello"; end
 end
 
-c = T_chained_or_assign_collection_array_nested_C.new
-c.push(0, 5, 10)
-c.push(0, 5, 20)
-c.push(0, 7, 30)
-c.push(1, 0, 100)
-puts c.count(0, 5)   # 2
-puts c.count(0, 7)   # 1
-puts c.count(1, 0)   # 1
-
-# === chained_or_assign_collection_element ===
-# `(@h[k] ||= []) << v` — chained `||=` over a Hash element with a
-# trailing method call. The parenthesised subexpression evaluates
-# to the (just-created or pre-existing) Array; `<<` then pushes
-# into it.
-#
-# Pre-fix the IndexOrWriteNode expression-form fell through to the
-# default catch-all and emitted literal `0` as the chain
-# receiver — the resulting `sp_poly_shl(0, …)` failed T_chained_or_assign_collection_element_C compile
-# (`0` is `int`, sp_poly_shl wants `sp_RbVal`). Spinel now lowers
-# `(h[k] ||= v)` into a get-then-set temp that the chain reads.
-
-class T_chained_or_assign_collection_element_C
-  def initialize
-    @h = {}                       # promotes to sym_poly_hash on first []=
+class T_imeth_override_widen_to_poly_Article < T_imeth_override_widen_to_poly_Base
+  attr_accessor :id, :title
+  def []=(name, value)
+    case name
+    when :id then @id = value
+    when :title then @title = value
+    end
   end
-  def add(k, v)
-    (@h[k] ||= []) << v
-  end
-  def count(k); @h[k].length; end
 end
 
-c = T_chained_or_assign_collection_element_C.new
-c.add(:a, 1)
-c.add(:a, 2)
-c.add(:b, 10)
-c.add(:b, 20)
-c.add(:b, 30)
-puts c.count(:a)   # 2
-puts c.count(:b)   # 3
+a = T_imeth_override_widen_to_poly_Article.new
+a.id = 0
+a.title = ""
+a[:id] = 42
+a[:title] = "Other"
+a.fill
+puts a.title.inspect
+
+# === implicit_self_param_poly ===
+class T_implicit_self_param_poly_TokenSink
+  def initialize
+    @value = ""
+  end
+
+  def set_token(value)
+    @value = value.to_s
+  end
+
+  def run
+    set_token(1)
+    set_token("done")
+    puts @value
+  end
+end
+
+T_implicit_self_param_poly_TokenSink.new.run
 

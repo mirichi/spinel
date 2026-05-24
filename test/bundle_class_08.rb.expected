@@ -1,10 +1,9 @@
-BASE
-CHILD
-GRANDCHILD
-BASE
-42
-true
-[1, 2, 3]
-
-1.0
-ok
+inner=10
+outer=2
+log=io
+15
+done
+item not found
+something went wrong
+generic error
+done

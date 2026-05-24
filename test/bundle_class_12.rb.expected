@@ -1,21 +1,15 @@
-id-result
-body-result
-raw-result
-forty-two
-nil-result
-true-result
-false-result
-other
-other
-other
+got-hash
+got-hash
 42
+
 99
-99
-chain: a=128 b=128
-paren: a=128 b=128
-split: a=128 b=128
-hello
-42
-reset ok
-hello
-42
+
+7
+0
+21
+1
+ran
+quiet
+done
+got-x
+4
