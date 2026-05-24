@@ -14677,7 +14677,15 @@ class Compiler
         end
       end
     end
-    "int"
+ # Preserve the fully-inferred type (string / str_str_hash /
+ # obj_<C> / etc.) so the codegen-side block_params_csig_for_body
+ # picks the matching c_type instead of collapsing to mrb_int.
+ # "int" / "nil" / "" all map to mrb_int at codegen and don't
+ # need to be distinguished here.
+    if t == "" || t == "nil"
+      return "int"
+    end
+    t
   end
 
  # Mirror of body_yield_arg_types but each per-position slot is
@@ -14697,10 +14705,16 @@ class Compiler
             at = project_yield_arg_t(args[k])
             if types[k] == ""
               types[k] = at
-            elsif types[k] != at && at == "bigint"
- # Any bigint slot wins -- once we've seen a bigint at this
- # position, the sig has to accommodate.
-              types[k] = "bigint"
+            elsif types[k] != at
+              if at == "bigint" || types[k] == "bigint"
+ # Any bigint slot wins so the sig is wide enough to carry it.
+                types[k] = "bigint"
+              else
+ # Mixed non-bigint types: fall through to the same unifier
+ # body_yield_arg_types uses (collapse to "poly" via
+ # unify_call_types' rules, or pick the widest pointer).
+                types[k] = unify_call_types(types[k], at, args[k])
+              end
             end
           end
           k = k + 1
@@ -14732,7 +14746,66 @@ class Compiler
       types.push("")
       k = k + 1
     end
+ # Set up scope so project_yield_arg_t's `infer_type` (the
+ # LocalVariableReadNode arm in particular) lands on the right
+ # types. body_max_yield_arity guarantees body_id >= 0 here, and
+ # @nd_scope_names/types are precomputed by
+ # precompute_all_scope_decls. Params come from the method's
+ # ptypes_str (passed by caller) since they live outside the body's
+ # scope_names entry.
+    push_scope
+ # Locate the method's params (top-level or class-instance) so the
+ # `yield <param>` shape resolves through find_var_type to the
+ # (post-promote) param type instead of falling back to "int".
+    pnames_arr = "".split(",")
+    ptypes_arr = ptypes_str.split(",")
+    mi_ll = 0
+    while mi_ll < @meth_body_ids.length
+      if @meth_body_ids[mi_ll] == body_id
+        pnames_arr = @meth_param_names[mi_ll].split(",")
+        mi_ll = @meth_body_ids.length
+      else
+        mi_ll = mi_ll + 1
+      end
+    end
+    if pnames_arr.length == 0
+      ci_ll = 0
+      while ci_ll < @cls_names.length
+        bodies_ll = ci_ll < @cls_meth_bodies.length ? @cls_meth_bodies[ci_ll].split(";") : "".split(",")
+        midx_ll = 0
+        while midx_ll < bodies_ll.length
+          if bodies_ll[midx_ll].to_i == body_id
+            pnames_arr = cls_meth_pnames_get(ci_ll, midx_ll)
+            ci_ll = @cls_names.length
+            midx_ll = bodies_ll.length
+          else
+            midx_ll = midx_ll + 1
+          end
+        end
+        ci_ll = ci_ll + 1
+      end
+    end
+    j_p = 0
+    while j_p < pnames_arr.length
+      if pnames_arr[j_p] != "" && j_p < ptypes_arr.length
+        declare_var(pnames_arr[j_p], ptypes_arr[j_p])
+      end
+      j_p = j_p + 1
+    end
+    lnames = "".split(",")
+    ltypes = "".split(",")
+    sn_b = @nd_scope_names[body_id]
+    if sn_b != ""
+      lnames = sn_b.split("|")
+      ltypes = @nd_scope_types[body_id].split("|")
+    end
+    j = 0
+    while j < lnames.length
+      declare_var(lnames[j], ltypes[j])
+      j = j + 1
+    end
     project_yield_arg_types(body_id, types)
+    pop_scope
     proj = "".split(",")
     j = 0
     while j < types.length

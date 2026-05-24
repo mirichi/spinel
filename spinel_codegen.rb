@@ -9093,9 +9093,77 @@ class Compiler
  # resolve those reads. Re-runs at both forward-decl emit time
  # and impl emit time; results converge once @meth_* / @cls_*
  # tables stabilize through the type-inference fixpoint.
+ # Look up the analyze-projected block param types ("int|bigint|...")
+ # for the method whose body_id == bid. Searches top-level methods
+ # first, then class instance methods, then class methods. Returns
+ # "" if no projection was stored (the body isn't a yield-using
+ # method or analyze populated only "" for it).
+  def blk_param_types_for_body(bid)
+    if bid < 0
+      return ""
+    end
+    if @meth_blk_param_types != nil
+      mi_b = 0
+      while mi_b < @meth_body_ids.length
+        if @meth_body_ids[mi_b] == bid
+          if mi_b < @meth_blk_param_types.length
+            return @meth_blk_param_types[mi_b]
+          end
+          return ""
+        end
+        mi_b = mi_b + 1
+      end
+    end
+    if @cls_cmeth_blk_param_types != nil
+      flat_idx_cm = 0
+      ci_cm = 0
+      while ci_cm < @cls_names.length
+        cm_bodies_b = ci_cm < @cls_cmeth_bodies.length ? @cls_cmeth_bodies[ci_cm].split(";") : "".split(",")
+        midx_cm_b = 0
+        while midx_cm_b < cm_bodies_b.length
+          if cm_bodies_b[midx_cm_b].to_i == bid
+            if flat_idx_cm < @cls_cmeth_blk_param_types.length
+              return @cls_cmeth_blk_param_types[flat_idx_cm]
+            end
+            return ""
+          end
+          flat_idx_cm = flat_idx_cm + 1
+          midx_cm_b = midx_cm_b + 1
+        end
+        ci_cm = ci_cm + 1
+      end
+    end
+    ""
+  end
+
   def block_params_csig_for_body(bid, arity)
     if bid < 0 || arity <= 0
       return block_params_csig(arity)
+    end
+ # Analyze-side projection: @meth_blk_param_types is populated by
+ # infer_proc_blk_param_types with per-position yield-arg types
+ # ("int" / "bigint") for top-level yield-using methods. When the
+ # body's bid matches a yield method's body id, prefer that
+ # projection -- it cross-checks promote-mode arith / IntegerNode
+ # shapes that walk_and_cache's cache may have left as stale "int".
+ # Issue #664 promote-mode tail.
+    pre = blk_param_types_for_body(bid)
+    if pre != ""
+      pre_parts = pre.split("|")
+      parts_pre = "".split(",")
+      k_pre = 0
+      while k_pre < arity
+        t_pre = k_pre < pre_parts.length ? pre_parts[k_pre] : "int"
+        if t_pre == "" || t_pre == "int"
+          parts_pre.push("mrb_int")
+        elsif t_pre == "bigint"
+          parts_pre.push("sp_Bigint *")
+        else
+          parts_pre.push(c_type(t_pre))
+        end
+        k_pre = k_pre + 1
+      end
+      return parts_pre.join(", ")
     end
     types = "".split(",")
     k = 0
