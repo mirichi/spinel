@@ -215,25 +215,52 @@ sentinel is a real `int64_t` value, so `SP_INT_NIL + 1` is just
 `INT64_MIN + 1` — surprising but not a crash). Documented in
 existing int? work (commit f6c3b6d era).
 
-## Phase 2 Scope
+## Phase 2 Scope — REVERTED (2026-05-25, #708)
 
-Implement only the `*StrHash` variants first:
+Phase 2 attempted to change `sp_StrStrHash_get` / `sp_IntStrHash_get` /
+`sp_SymStrHash_get` to return `NULL` on missing keys. Committed as
+0ec6b1d, then **reverted via 532ba3e** after #708 surfaced a
+real-world breakage:
 
-1. `lib/sp_runtime.h`:
-   - `sp_StrStrHash_get`: `return h->default_v ? h->default_v : sp_str_empty;`
-     → `return h->default_v ? h->default_v : NULL;`
-   - `sp_IntStrHash_get`: same
-2. `spinel_codegen.rb` `emit_*_runtime` for `SymStrHash`:
-   - `sp_SymStrHash_get`: same NULL change
-3. Verify no internal caller depends on `_get` returning non-NULL
-   (the `_values`, `_dup`, etc. paths — they read `h->order[i]`
-   which are existing keys, so the return is always non-NULL from
-   `h->vals[idx]`, not the miss fallback)
-4. `make test` + bootstrap + optcarrot regression checks
+- Tep apps segfault at boot.
+- `lib/tep.rb`'s seeding chain (175-730) reads from hash slots
+  in patterns that the Phase 2 commit's "safe call paths" audit
+  missed -- the audit covered string-method dispatch
+  (`sp_str_length` / `sp_str_eq` / `sp_str_concat` are NULL-safe)
+  but didn't enumerate every downstream `const char *` use site
+  in user code or framework runtime.
+- Restoring `sp_str_empty` semantics is the conservative call
+  until a wider audit + codemod recipe is ready.
 
-Phase 3 widens analyze's `[]` return type for string-valued hashes
-(no real change since `string` is already nullable at the C level —
-mostly tightens up call-site emit where it assumed non-NULL).
+### Re-planned Phase 2 (deferred)
+
+The Ruby semantic violation is real (`if h[:missing]` evaluates as
+truthy under the `""` fallback because `sp_str_empty` is a non-NULL
+pointer). Bringing it inline with Ruby without breaking tep / real-
+blog requires one of:
+
+1. **Opt-in via build flag** (`-DSP_STRHASH_MISS_NIL`). Apps that
+   audit their hash use can flip the flag; others stay on the
+   `""` fallback. Lowest-risk for downstream users.
+2. **Lazy null-coalescing pass** in codegen: detect `h[k]` followed
+   by a method-call that requires non-NULL (`.length`, `.bytes`,
+   `.split`, ...) and insert a NULL → `sp_str_empty` coalesce.
+   The `if h[:k]` truthy site dispatches to a separate truthy
+   helper that treats `sp_str_empty` as falsy when the value came
+   from a hash miss (requires tagging the miss in the runtime).
+3. **Surgical attack** on `compile_cond_expr` only: when the
+   condition is `h[k]` on a typed-string hash, emit
+   `sp_StrStrHash_has_key(h, k)` instead of the raw value-truthy
+   check. Doesn't change the runtime miss return at all; only
+   fixes the truthy check. Tep / real-blog can keep their
+   `s = h[k]; s.length` etc. patterns working.
+
+Option 3 is the smallest and most targeted; consider for a future
+Phase 2 attempt.
+
+Until that lands, `*StrHash[missing] == sp_str_empty` (current
+spinel behavior) -- documented Ruby-semantic violation, stable
+runtime.
 
 ## Phase 4 Scope — DEFERRED (2026-05-25)
 
