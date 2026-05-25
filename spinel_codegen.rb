@@ -2841,6 +2841,33 @@ class Compiler
             end
           end
         end
+ # Int LV recv with user-class attr_reader: codegen's
+ # compile_int_class_fallback_expr picks the FIRST class in
+ # @cls_names that defines the attr_reader and emits
+ # `((sp_C *)lv)->iv_X` directly. Mirror that pick here so the
+ # boxer dispatch at the attr_writer call site (line 22838)
+ # gets the matching ivar type instead of the int fallback.
+ # Without this, `self.attr = lv.attr` where lv is mrb_int and
+ # the user class has attr_reader emits `sp_box_int(<const char *>)`
+ # -- the residual #694 / #700 shape A.
+ #
+ # Restrict to scope == "int" (matches compile_int_class_fallback_expr's
+ # gate). Poly LV recv goes through the cls_id-switch dispatch,
+ # which box-per-arm produces sp_RbVal -- infer_type stays at the
+ # cached "poly" / "int" default and the boxer at the writer
+ # call site noop's (box_value_to_poly("poly", val) = val).
+ # Filter out primitive-shared method names so a real int LV
+ # calling a shared op (`s.index(...)`) doesn't get rerouted.
+        if cmt_scope_t == "int" && primitive_method_shared_with_user_class(@nd_name[nid]) == 0
+          cmt_mname2 = @nd_name[nid]
+          ci2 = 0
+          while ci2 < @cls_names.length
+            if cls_has_attr_reader(ci2, cmt_mname2) == 1
+              return cls_ivar_type(ci2, "@" + cmt_mname2)
+            end
+            ci2 = ci2 + 1
+          end
+        end
       end
     end
  # Cache lookup. analyze.rb's annotate_all_node_types fills
