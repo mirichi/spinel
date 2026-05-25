@@ -6293,6 +6293,15 @@ class Compiler
       if at == "symbol"
         return "sp_sym_to_s(" + val + ")"
       end
+ # sp_String * (the mutable_str builder type) -> const char *: read
+ # the underlying buffer via `->data`. Surfaces whenever a function
+ # whose body builds a mutable string (`io = ""; io << "..."; io;`)
+ # gets passed to a callee with a const char * param. The function's
+ # return type was inferred too narrowly upstream, but the call site
+ # can recover at the boundary.
+      if at == "mutable_str"
+        return "(" + val + ")->data"
+      end
     end
     if is_obj_type(expected_base) == 1 && at == "poly"
       cname = expected_base[4, expected_base.length - 4]
