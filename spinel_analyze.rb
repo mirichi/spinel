@@ -6433,6 +6433,9 @@ class Compiler
     if bt == "fiber" || bt == "bigint"
       return 1
     end
+    if bt == "exception"
+      return 1
+    end
     if is_obj_type(bt) == 1
       return 1
     end
