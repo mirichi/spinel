@@ -4156,6 +4156,9 @@ class Compiler
     if mname == "join"
       return "string"
     end
+    if mname == "pack"
+      return "string"
+    end
     if mname == "uniq"
       if recv >= 0
         return infer_type(recv)
