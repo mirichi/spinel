@@ -14984,13 +14984,15 @@ class Compiler
  # outer CallNode's @nd_name and the inner ArgumentsNode's
  # @nd_args so the dispatch sees the actual method call
  # signature, then restore. Issue #555 case 12.
-    if mname == "send" && recv >= 0
+ # `public_send` is identical to `send` for spinel (visibility is
+ # not modeled). Issue #735.
+    if (mname == "send" || mname == "public_send" || mname == "__send__") && recv >= 0
       args_id_send = @nd_arguments[nid]
       if args_id_send >= 0
         aa_send = get_args(args_id_send)
         if aa_send.length >= 1 && @nd_type[aa_send[0]] == "SymbolNode"
           sym_name_send = @nd_content[aa_send[0]]
-          if sym_name_send != "" && sym_name_send != "send"
+          if sym_name_send != "" && sym_name_send != "send" && sym_name_send != "public_send" && sym_name_send != "__send__"
             saved_name_send = @nd_name[nid]
             saved_args_str = @nd_args[args_id_send]
             new_args_str = ""
