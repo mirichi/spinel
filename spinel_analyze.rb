@@ -9846,6 +9846,90 @@ class Compiler
     end
   end
 
+ # Walk `nid` recursively. For every InstanceVariableWriteNode /
+ # InstanceVariableReadNode encountered, register a `<mname>_<v>`
+ # const slot if absent. Used for module class method bodies so
+ # that `@v` lowers to `cst_<Mod>_<v>` via module_ivar_const_lhs.
+ # Issue #713.
+  def register_module_def_ivars(mname, nid)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "InstanceVariableWriteNode" || t == "InstanceVariableReadNode" ||
+       t == "InstanceVariableOperatorWriteNode" || t == "InstanceVariableAndWriteNode" ||
+       t == "InstanceVariableOrWriteNode" || t == "InstanceVariableTargetNode"
+      iname = @nd_name[nid]
+      cname = mname + "_" + iname[1, iname.length - 1]
+      if find_const_idx(cname) < 0
+        @const_names.push(cname)
+        @const_types.push("nil")
+        @const_expr_ids.push(-1)
+        @const_scope_names.push(mname)
+      end
+    end
+    if @nd_body[nid] >= 0
+      register_module_def_ivars(mname, @nd_body[nid])
+    end
+    stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts.length
+      register_module_def_ivars(mname, stmts[k])
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      register_module_def_ivars(mname, @nd_expression[nid])
+    end
+    if @nd_predicate[nid] >= 0
+      register_module_def_ivars(mname, @nd_predicate[nid])
+    end
+    if @nd_subsequent[nid] >= 0
+      register_module_def_ivars(mname, @nd_subsequent[nid])
+    end
+    if @nd_else_clause[nid] >= 0
+      register_module_def_ivars(mname, @nd_else_clause[nid])
+    end
+    if @nd_receiver[nid] >= 0
+      register_module_def_ivars(mname, @nd_receiver[nid])
+    end
+    if @nd_arguments[nid] >= 0
+      register_module_def_ivars(mname, @nd_arguments[nid])
+    end
+    args = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args.length
+      register_module_def_ivars(mname, args[k])
+      k = k + 1
+    end
+    conds = parse_id_list(@nd_conditions[nid])
+    k = 0
+    while k < conds.length
+      register_module_def_ivars(mname, conds[k])
+      k = k + 1
+    end
+    if @nd_left[nid] >= 0
+      register_module_def_ivars(mname, @nd_left[nid])
+    end
+    if @nd_right[nid] >= 0
+      register_module_def_ivars(mname, @nd_right[nid])
+    end
+    if @nd_block[nid] >= 0
+      register_module_def_ivars(mname, @nd_block[nid])
+    end
+    elems = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < elems.length
+      register_module_def_ivars(mname, elems[k])
+      k = k + 1
+    end
+    if @nd_rescue_clause[nid] >= 0
+      register_module_def_ivars(mname, @nd_rescue_clause[nid])
+    end
+    if @nd_ensure_clause[nid] >= 0
+      register_module_def_ivars(mname, @nd_ensure_clause[nid])
+    end
+  end
+
   def infer_ivar_init_type(nid)
     if nid < 0
       return "int"
@@ -10400,6 +10484,24 @@ class Compiler
             @meth_has_defaults.push(collect_defaults_str(sid))
             @meth_rest_index.push(collect_rest_index(sid))
             @meth_kwrest_index.push(collect_kwrest_index(sid))
+          end
+        end
+      end
+ # Module class method body: scan for any `@v` write or read and
+ # register the corresponding `<Mod>_<v>` const slot. Without this,
+ # `module M; def self.set(v); @v = v; end; end` (no module-body
+ # `@v = ...`) leaves no slot for the codegen to lower against and
+ # the `self->iv_v` emit chokes (`self` undeclared in a top-level
+ # function). Issue #713.
+      if @nd_type[sid] == "DefNode"
+        is_self_def_iv = 0
+        if @nd_receiver[sid] >= 0 && @nd_type[@nd_receiver[sid]] == "SelfNode"
+          is_self_def_iv = 1
+        end
+        if is_self_def_iv == 1 || (in_module_function == 1 && @nd_receiver[sid] < 0)
+          dbody = @nd_body[sid]
+          if dbody >= 0
+            register_module_def_ivars(mname, dbody)
           end
         end
       end
