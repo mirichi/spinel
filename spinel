@@ -129,7 +129,11 @@ fi
 # .rb file were given, -e wins (consistent with `ruby -e ... script.rb`
 # where the .rb file becomes ARGV — Spinel only consumes the source).
 if [ "$EVAL_USED" -eq 1 ]; then
-  EVAL_TMP="$(mktemp /tmp/spinel_eval.XXXXXX).rb"
+  # Issue #794: mktemp creates the file; appending .rb to the variable
+  # leaves the original (no-.rb) file leaked. Use -u to skip file
+  # creation, then create the .rb directly via the redirect.
+  EVAL_BASE="$(mktemp -u /tmp/spinel_eval.XXXXXX)"
+  EVAL_TMP="${EVAL_BASE}.rb"
   printf '%s\n' "$EVAL_SCRIPT" > "$EVAL_TMP"
   SOURCE="$EVAL_TMP"
 fi
