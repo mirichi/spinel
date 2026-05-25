@@ -26091,7 +26091,14 @@ class Compiler
           if pt == "poly"
             result = result + box_expr_to_poly(expr_id)
           else
-            result = result + compile_expr(expr_id)
+ # Route through compile_expr_for_expected_type so a kwarg
+ # whose expression returns sp_RbVal (poly dispatch from a
+ # `<poly_recv>.<method>` chain) gets unboxed to the ctor
+ # param's expected concrete type. Without this, the raw
+ # sp_RbVal flows into a `const char *` slot and clang
+ # errors at the call site (#685, ActionResponse.new(body:
+ # controller.body) where controller is poly-typed).
+            result = result + compile_expr_for_expected_type(expr_id, pt)
           end
           found = 1
         end
