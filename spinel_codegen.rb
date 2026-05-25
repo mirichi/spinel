@@ -1889,6 +1889,20 @@ class Compiler
         return "sp_StrPolyHash_from_sym_poly_hash(" + src_var + ")"
       end
     end
+    if dst_t == "sym_poly_hash"
+      if src_t == "sym_int_hash"
+        @needs_sym_poly_hash = 1
+        @needs_sym_int_hash = 1
+        @needs_rb_value = 1
+        return "sp_SymIntHash_to_sym_poly(" + src_var + ")"
+      end
+      if src_t == "sym_str_hash"
+        @needs_sym_poly_hash = 1
+        @needs_sym_str_hash = 1
+        @needs_rb_value = 1
+        return "sp_SymStrHash_to_sym_poly(" + src_var + ")"
+      end
+    end
     ""
   end
 
