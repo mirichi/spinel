@@ -4671,6 +4671,22 @@ class Compiler
       end
       i = i + 1
     end
+ # Issue #772: C keywords would produce illegal C function names if
+ # used as method names (e.g. `def for` -> `sp_X_for`, which is a
+ # C `for` keyword in the function-name position). Suffix `_kw` to
+ # disambiguate. Covers all C11 keywords commonly hit by
+ # define_method experiments.
+    if result == "for" || result == "while" || result == "do" || result == "return" ||
+       result == "if" || result == "else" || result == "switch" || result == "case" ||
+       result == "default" || result == "break" || result == "continue" ||
+       result == "goto" || result == "auto" || result == "register" || result == "static" ||
+       result == "extern" || result == "typedef" || result == "struct" || result == "union" ||
+       result == "enum" || result == "const" || result == "volatile" || result == "restrict" ||
+       result == "inline" || result == "void" || result == "char" || result == "short" ||
+       result == "int" || result == "long" || result == "float" || result == "double" ||
+       result == "signed" || result == "unsigned" || result == "sizeof"
+      result = result + "_kw"
+    end
     result
   end
 
