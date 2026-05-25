@@ -3519,6 +3519,15 @@ class Compiler
  # Negation of `=~`: bool. Issue #732.
       return "bool"
     end
+    if mname == "value?" || mname == "has_value?"
+ # Hash#value?(v) -- returns bool. Issue #738.
+      if recv >= 0
+        rt_hv = infer_type(recv)
+        if is_hash_type(rt_hv) == 1
+          return "bool"
+        end
+      end
+    end
     if mname == "<<"
       if recv >= 0
         if lt == "mutable_str"

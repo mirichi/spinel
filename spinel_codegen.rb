@@ -7850,6 +7850,8 @@ class Compiler
     emit_raw("static mrb_int sp_SymIntHash_get(sp_SymIntHash*h,sp_sym k){if(!h)return 0;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}")
     emit_raw("static void sp_SymIntHash_set(sp_SymIntHash*h,sp_sym k,mrb_int v){if(h->len*2>=h->cap)sp_SymIntHash_grow(h);mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}")
     emit_raw("static mrb_bool sp_SymIntHash_has_key(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}")
+ # Hash#value? -- scan stored values for v. O(n) per CRuby. Issue #738.
+    emit_raw("static mrb_bool sp_SymIntHash_has_value(sp_SymIntHash*h,mrb_int v){for(mrb_int i=0;i<h->len;i++)if(sp_SymIntHash_get(h,h->order[i])==v)return TRUE;return FALSE;}")
     emit_raw("static mrb_int sp_SymIntHash_length(sp_SymIntHash*h){return h->len;}")
     emit_raw("static void sp_SymIntHash_delete(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->keys[idx]=-1;h->vals[idx]=0;h->len--;mrb_int j=(idx+1)&h->mask;while(h->keys[j]>=0){mrb_int nj=(mrb_int)(((mrb_int)h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=-1;h->vals[j]=0;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}")
     emit_raw("static sp_IntArray*sp_SymIntHash_keys(sp_SymIntHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,(mrb_int)h->order[i]);return a;}")
@@ -7895,6 +7897,7 @@ class Compiler
     emit_raw("static void sp_SymStrHash_delete(sp_SymStrHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->keys[idx]=-1;h->vals[idx]=NULL;h->len--;mrb_int j=(idx+1)&h->mask;while(h->keys[j]>=0){mrb_int nj=(mrb_int)(((mrb_int)h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=-1;h->vals[j]=NULL;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}")
     emit_raw("static sp_IntArray*sp_SymStrHash_keys(sp_SymStrHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,(mrb_int)h->order[i]);return a;}")
     emit_raw("static sp_StrArray*sp_SymStrHash_values(sp_SymStrHash*h){sp_StrArray*a=sp_StrArray_new();for(mrb_int i=0;i<h->len;i++)sp_StrArray_push(a,sp_SymStrHash_get(h,h->order[i]));return a;}")
+    emit_raw("static mrb_bool sp_SymStrHash_has_value(sp_SymStrHash*h,const char*v){if(!h||!v)return FALSE;for(mrb_int i=0;i<h->len;i++){const char*x=sp_SymStrHash_get(h,h->order[i]);if(x&&strcmp(x,v)==0)return TRUE;}return FALSE;}")
     emit_raw("static sp_SymStrHash*sp_SymStrHash_dup(sp_SymStrHash*h){sp_SymStrHash*r=sp_SymStrHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_SymStrHash_set(r,h->order[i],sp_SymStrHash_get(h,h->order[i]));return r;}")
     emit_raw("static sp_SymStrHash*sp_SymStrHash_merge(sp_SymStrHash*a,sp_SymStrHash*b){sp_SymStrHash*r=sp_SymStrHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymStrHash_set(r,a->order[i],sp_SymStrHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymStrHash_set(r,b->order[i],sp_SymStrHash_get(b,b->order[i]));return r;}")
     emit_raw("static mrb_bool sp_SymStrHash_eq(sp_SymStrHash*a,sp_SymStrHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymStrHash_has_key(b,k))return FALSE;if(!sp_str_eq(sp_SymStrHash_get(a,k),sp_SymStrHash_get(b,k)))return FALSE;}return TRUE;}")
@@ -20890,6 +20893,9 @@ class Compiler
         end
         return "sp_SymIntHash_has_key((sp_SymIntHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
+      if mname == "value?" || mname == "has_value?"
+        return "sp_SymIntHash_has_value((sp_SymIntHash *)(" + rc + "), " + compile_arg0_as_int(nid) + ")"
+      end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
  # Don't reuse @hoisted_strlen_var for a hash receiver -- the
  # cache was computed via strlen() on a string and reading
@@ -21069,6 +21075,9 @@ class Compiler
           end
         end
         return "sp_SymStrHash_has_key((sp_SymStrHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
+      end
+      if mname == "value?" || mname == "has_value?"
+        return "sp_SymStrHash_has_value((sp_SymStrHash *)(" + rc + "), " + compile_str_arg0(nid) + ")"
       end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         return "sp_SymStrHash_length((sp_SymStrHash *)(" + rc + "))"
@@ -21430,6 +21439,9 @@ class Compiler
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         return "sp_StrIntHash_has_key(" + rc + ", " + compile_str_arg0(nid) + ")"
       end
+      if mname == "value?" || mname == "has_value?"
+        return "sp_StrIntHash_has_value(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+      end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         return "sp_StrIntHash_length(" + rc + ")"
       end
@@ -21598,6 +21610,9 @@ class Compiler
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         return "sp_IntStrHash_has_key(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
+      if mname == "value?" || mname == "has_value?"
+        return "sp_IntStrHash_has_value(" + rc + ", " + compile_str_arg0(nid) + ")"
+      end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         return "sp_IntStrHash_length(" + rc + ")"
       end
@@ -21674,6 +21689,9 @@ class Compiler
       end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         return "sp_StrStrHash_has_key(" + rc + ", " + compile_str_arg0(nid) + ")"
+      end
+      if mname == "value?" || mname == "has_value?"
+        return "sp_StrStrHash_has_value(" + rc + ", " + compile_str_arg0(nid) + ")"
       end
       if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
         return "sp_StrStrHash_length(" + rc + ")"
