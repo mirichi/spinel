@@ -4942,6 +4942,13 @@ class Compiler
                 @needs_rb_value = 1
                 return "sym_poly_hash"
               end
+ # Cross-key-shape: sym recv + str arg -> result has mixed
+ # keys. Promote to str_poly_hash; codegen-side merge dispatch
+ # routes both sides through StrPolyHash converters.
+              if arg_t_mg == "str_int_hash" || arg_t_mg == "str_str_hash" || arg_t_mg == "str_poly_hash"
+                @needs_rb_value = 1
+                return "str_poly_hash"
+              end
             end
           end
         end

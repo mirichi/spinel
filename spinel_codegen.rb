@@ -20597,6 +20597,19 @@ class Compiler
               @needs_sym_poly_hash = 1
               return "sp_SymPolyHash_merge(sp_SymIntHash_to_sym_poly(" + rc + "), " + compile_arg0(nid) + ")"
             end
+ # Cross-key-shape: recv has sym keys, arg has str keys. Convert
+ # both to str_poly_hash and merge there -- sym keys become
+ # strings via sp_sym_to_s on the recv converter. Result type
+ # is str_poly_hash (matches what callers like render_attrs
+ # expect anyway). Gate on arg being a str-keyed variant so
+ # same-key-shape (sym+sym) stays on the direct merge path.
+            if arg_t_cv == "str_int_hash" || arg_t_cv == "str_str_hash" || arg_t_cv == "str_poly_hash"
+              conv_rc_m = hash_variant_convert("sym_int_hash", "str_poly_hash", rc)
+              conv_arg_m = hash_variant_convert(arg_t_cv, "str_poly_hash", compile_arg0(nid))
+              if conv_rc_m != "" && conv_arg_m != ""
+                return "sp_StrPolyHash_merge(" + conv_rc_m + ", " + conv_arg_m + ")"
+              end
+            end
           end
         end
         return "sp_SymIntHash_merge(" + rc + ", " + compile_arg0(nid) + ")"
@@ -20700,6 +20713,17 @@ class Compiler
               @needs_sym_poly_hash = 1
               @needs_sym_int_hash = 1
               return "sp_SymPolyHash_merge(sp_SymStrHash_to_sym_poly(" + rc + "), sp_SymIntHash_to_sym_poly(" + compile_expr(a_m[0]) + "))"
+            end
+ # Cross-key-shape: recv sym keys + arg str keys -> route through
+ # str_poly_hash (sym keys converted via sp_sym_to_s on the recv
+ # converter). Gate on arg being a str-keyed variant; same-key-
+ # shape goes through the direct sp_SymStrHash_merge below.
+            if arg_t_m == "str_int_hash" || arg_t_m == "str_str_hash" || arg_t_m == "str_poly_hash"
+              conv_rc_ss = hash_variant_convert("sym_str_hash", "str_poly_hash", rc)
+              conv_arg_ss = hash_variant_convert(arg_t_m, "str_poly_hash", compile_expr(a_m[0]))
+              if conv_rc_ss != "" && conv_arg_ss != ""
+                return "sp_StrPolyHash_merge(" + conv_rc_ss + ", " + conv_arg_ss + ")"
+              end
             end
           end
         end
@@ -22020,6 +22044,7 @@ class Compiler
                 slot_pt_pos_cm = kk < owner_pt.length ? owner_pt[kk] : ""
                 at_pos_cm = infer_type(positional_cm[pos_idx_cm])
                 slot_pt_base_cm = base_type(slot_pt_pos_cm)
+                at_pos_base_cm = base_type(at_pos_cm)
                 needs_coerce_cm = 0
                 if slot_pt_pos_cm != ""
                   if slot_pt_base_cm == "bigint" || slot_pt_base_cm == "int"
@@ -22027,6 +22052,11 @@ class Compiler
                   elsif at_pos_cm == "poly" && slot_pt_base_cm != "poly" && slot_pt_base_cm != ""
                     needs_coerce_cm = 1
                   elsif at_pos_cm != "poly" && slot_pt_base_cm == "poly"
+                    needs_coerce_cm = 1
+                  elsif is_hash_type(at_pos_base_cm) == 1 && is_hash_type(slot_pt_base_cm) == 1 && at_pos_base_cm != slot_pt_base_cm
+ # Cross-variant hash arg (sym_X_hash -> str_poly_hash etc.)
+ # needs a runtime converter; compile_expr_for_expected_type's
+ # hash-to-hash arm dispatches via hash_variant_convert.
                     needs_coerce_cm = 1
                   end
                 end
