@@ -19191,12 +19191,32 @@ class Compiler
       register_tuple_type(tt)
       @needs_gc = 1
       tname = tuple_c_name(tt)
-      sep = compile_arg0(nid)
       tmp = new_temp
       emit("  " + tname + " *" + tmp + " = (" + tname + " *)sp_gc_alloc(sizeof(" + tname + "), NULL, " + tuple_scan_name(tt) + ");")
-      emit("  { const char *_p = strstr(" + rc + ", " + sep + ");")
-      emit("    if (_p) { " + tmp + "->_0 = sp_str_substr(" + rc + ", 0, _p - " + rc + "); " + tmp + "->_1 = " + sep + "; " + tmp + "->_2 = sp_str_substr(" + rc + ", _p - " + rc + " + strlen(" + sep + "), strlen(_p) - strlen(" + sep + ")); }")
-      emit("    else { " + tmp + "->_0 = " + rc + "; " + tmp + "->_1 = \"\"; " + tmp + "->_2 = \"\"; } }")
+ # Issue #854: regex arg uses re_exec to locate the match;
+ # without this the string-only path passed a regex pattern
+ # pointer to strstr and segfaulted.
+      arg0_part = -1
+      if @nd_arguments[nid] >= 0
+        a_part = get_args(@nd_arguments[nid])
+        if a_part.length > 0
+          arg0_part = a_part[0]
+        end
+      end
+      rpat_part = arg0_part >= 0 ? regex_pat_c_expr(arg0_part) : ""
+      if rpat_part != ""
+        @needs_regexp = 1
+        emit("  { int _caps[2]; if (re_exec(" + rpat_part + ", " + rc + ", strlen(" + rc + "), 0, _caps, 2) > 0) {")
+        emit("    " + tmp + "->_0 = sp_str_substr(" + rc + ", 0, _caps[0]);")
+        emit("    " + tmp + "->_1 = sp_str_substr(" + rc + ", _caps[0], _caps[1] - _caps[0]);")
+        emit("    " + tmp + "->_2 = sp_str_substr(" + rc + ", _caps[1], strlen(" + rc + ") - _caps[1]);")
+        emit("  } else { " + tmp + "->_0 = " + rc + "; " + tmp + "->_1 = sp_str_empty; " + tmp + "->_2 = sp_str_empty; } }")
+      else
+        sep = compile_arg0(nid)
+        emit("  { const char *_p = strstr(" + rc + ", " + sep + ");")
+        emit("    if (_p) { " + tmp + "->_0 = sp_str_substr(" + rc + ", 0, _p - " + rc + "); " + tmp + "->_1 = " + sep + "; " + tmp + "->_2 = sp_str_substr(" + rc + ", _p - " + rc + " + strlen(" + sep + "), strlen(_p) - strlen(" + sep + ")); }")
+        emit("    else { " + tmp + "->_0 = " + rc + "; " + tmp + "->_1 = sp_str_empty; " + tmp + "->_2 = sp_str_empty; } }")
+      end
       return tmp
     end
     if mname == "rpartition"
@@ -36246,6 +36266,29 @@ class Compiler
                   emit("  { sp_IntArray *_pa = " + val + "; for (mrb_int _pi = 0; _pi < _pa->len; _pi++) printf(\"%lld" + bsl_n + "\", (long long)_pa->data[_pa->start + _pi]); }")
                 elsif at == "float_array"
                   emit("  { sp_FloatArray *_pa = " + val + "; for (mrb_int _pi = 0; _pi < _pa->len; _pi++) { const char *_fs = sp_float_to_s(_pa->data[_pi]); fputs(_fs, stdout); putchar('" + bsl_n + "'); } }")
+                elsif is_tuple_type(at) == 1
+ # `puts tuple_val` splats Ruby Array elements one per line.
+ # Tuples emerge from partition/divmod/minmax and similar.
+ # Issue #854.
+                  arity_pt = tuple_arity(at)
+                  k_pt = 0
+                  tmp_pt_val = new_temp
+                  c_tuple_name = c_type(at)
+                  emit("  " + c_tuple_name + " " + tmp_pt_val + " = " + val + ";")
+                  while k_pt < arity_pt
+                    et_pt = tuple_elem_type_at(at, k_pt)
+                    field_pt = tmp_pt_val + "->_" + k_pt.to_s
+                    if et_pt == "string"
+                      emit("  { const char *_ps = (const char *)(" + field_pt + "); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '" + bsl_n + "') putchar('" + bsl_n + "'); } else putchar('" + bsl_n + "'); }")
+                    elsif et_pt == "int"
+                      emit("  printf(\"%lld" + bsl_n + "\", (long long)" + field_pt + ");")
+                    elsif et_pt == "float"
+                      emit("  { const char *_fs = sp_float_to_s(" + field_pt + "); fputs(_fs, stdout); putchar('" + bsl_n + "'); }")
+                    else
+                      emit("  printf(\"%lld" + bsl_n + "\", (long long)(mrb_int)" + field_pt + ");")
+                    end
+                    k_pt = k_pt + 1
+                  end
                 else
                   emit("  printf(\"%lld" + bsl_n + "\", (long long)" + val + ");")
                 end
