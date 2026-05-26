@@ -538,9 +538,18 @@ compile_atom(re_compiler *c)
         emit(c, RE_SAVE, 0, group * 2);
         if (cap_name) {
           /* register named capture */
+          /* Issue #823: cap_name points into the pattern source --
+             but when the pattern came from strip_extended, c->stripped
+             is freed at re_compile exit, leaving the name dangling.
+             Allocate a fresh copy so the named-capture table owns
+             its strings. */
+          char *name_copy = (char*)malloc(cap_name_len + 1);
+          if (!name_copy) compile_error(c, "out of memory");
+          memcpy(name_copy, cap_name, cap_name_len);
+          name_copy[cap_name_len] = '\0';
           c->named_captures = (re_named_capture*)realloc(c->named_captures,
             sizeof(re_named_capture) * (c->num_named + 1));
-          c->named_captures[c->num_named].name = cap_name;
+          c->named_captures[c->num_named].name = name_copy;
           c->named_captures[c->num_named].name_len = cap_name_len;
           c->named_captures[c->num_named].group = group;
           c->num_named++;
@@ -1058,7 +1067,16 @@ re_free(mrb_regexp_pattern *pat)
       }
       free(pat->classes);
     }
-    free(pat->named_captures);
+    /* Issue #823: per-name buffers now owned by the table; free each
+       before freeing the array itself. Names registered before the
+       fix were uninit memory pointers but the new allocator path
+       gives us our own copy. */
+    if (pat->named_captures) {
+      for (uint16_t i = 0; i < pat->num_named; i++) {
+        free((void *)pat->named_captures[i].name);
+      }
+      free(pat->named_captures);
+    }
     free(pat->prefix);
     free(pat->cached_visited);
     free(pat->cached_threads[0]);
