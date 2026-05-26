@@ -8419,6 +8419,10 @@ class Compiler
  # Parent name might be a built-in (e.g., `class Foo < Numeric`)
             ppidx = builtin_class_id_for_name(ppname)
           end
+        else
+ # No explicit parent → Object. Without this default, `A.superclass`
+ # returned the -1 nil sentinel and printed empty instead of `Object`.
+          ppidx = builtin_class_id_for_name("Object")
         end
         parents_line = parents_line + ppidx.to_s + "LL"
         pi_pl = pi_pl + 1

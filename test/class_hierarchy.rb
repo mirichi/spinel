@@ -15,8 +15,8 @@ end
 # .superclass walks @cls_parents one step.
 puts B.superclass.to_s  # => A
 puts C.superclass.to_s  # => B
-# A's superclass is the sp_Class sentinel (cls_id == -1, prints "").
-puts A.superclass.to_s.length == 0 ? "A-root-ok" : "A-root-bad"
+# A's superclass is Object per CRuby.
+puts A.superclass == Object ? "A-root-ok" : "A-root-bad"
 
 # .ancestors returns a PolyArray of boxed sp_Class. Iterate and
 # concatenate the names so the output exercises sp_box_class +
