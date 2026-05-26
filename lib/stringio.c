@@ -47,18 +47,26 @@ static int64_t sio_write(sp_StringIO *sio, const char *data, int64_t data_len) {
 }
 
 /* Constructor: StringIO.new or StringIO.new("initial") */
+/* Issue #817: check calloc returns before dereferencing. On OOM, free
+   the partially allocated state and return NULL; callers already null-
+   check sio->buf via the ternary in sp_StringIO_string. */
 sp_StringIO *sp_StringIO_new(void) {
   sp_StringIO *sio = (sp_StringIO *)calloc(1, sizeof(sp_StringIO));
+  if (!sio) return NULL;
   sio->buf = (char *)calloc(1, 64);
+  if (!sio->buf) { free(sio); return NULL; }
   sio->cap = 63;
   return sio;
 }
 
 sp_StringIO *sp_StringIO_new_s(const char *initial) {
+  if (!initial) initial = "";
   sp_StringIO *sio = (sp_StringIO *)calloc(1, sizeof(sp_StringIO));
+  if (!sio) return NULL;
   int64_t len = (int64_t)strlen(initial);
   int64_t cap = len < 63 ? 63 : len;
   sio->buf = (char *)malloc(cap + 1);
+  if (!sio->buf) { free(sio); return NULL; }
   memcpy(sio->buf, initial, len);
   sio->buf[len] = '\0';
   sio->len = len;
