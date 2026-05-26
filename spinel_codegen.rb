@@ -2030,7 +2030,12 @@ class Compiler
   def regex_pat_c_expr(nid)
     ridx = find_regexp_index(nid)
     if ridx >= 0
-      return "sp_re_pat_" + ridx.to_s
+ # Issue #846: if the pre-compile failed (the literal came from
+ # `Regexp.new("[bad")` whose pattern is invalid), raise the
+ # captured error message now — from inside the user's begin/
+ # rescue scope where setjmp is active.
+      @needs_exc_class_hierarchy = 1
+      return "(sp_re_pat_err_" + ridx.to_s + " ? (sp_raise_cls(\"RegexpError\", sp_re_pat_err_" + ridx.to_s + "), (mrb_regexp_pattern *)NULL) : sp_re_pat_" + ridx.to_s + ")"
     end
     if @nd_type[nid] == "InterpolatedRegularExpressionNode"
       @needs_regexp = 1
@@ -8670,10 +8675,18 @@ class Compiler
       pat = @regexp_patterns[i]
       flags = @regexp_flags[i]
       emit_raw("static mrb_regexp_pattern *sp_re_pat_" + i.to_s + ";")
+ # Issue #846: per-slot startup error message. If the pattern
+ # came from `Regexp.new("literal")` and failed to compile,
+ # the message is stashed here for a deferred raise from the
+ # first use site (where the user's begin/rescue is active).
+      emit_raw("static const char *sp_re_pat_err_" + i.to_s + " = NULL;")
       i = i + 1
     end
     emit_raw("")
     emit_raw("static void sp_re_init(void) {")
+ # Use the quiet startup handler so a bad pattern doesn't
+ # terminate sp_re_init (which runs before main()'s setjmp).
+    emit_raw("  sp_re_set_error_handler(sp_re_startup_error_handler);")
     i = 0
     while i < @regexp_patterns.length
       pat = @regexp_patterns[i]
@@ -8705,9 +8718,19 @@ class Compiler
  # `pat.length < pat.bytesize`. Truncating to char count cuts
  # off a multi-byte char mid-sequence and the engine reports
  # "unterminated character class". .
-      emit_raw("  sp_re_pat_" + i.to_s + " = re_compile(\"" + cpat + "\", " + pat.bytesize.to_s + ", " + flags + ");")
+      emit_raw("  sp_re_startup_err = NULL;")
+      emit_raw("  if (setjmp(sp_re_startup_jmp) == 0) {")
+      emit_raw("    sp_re_pat_" + i.to_s + " = re_compile(\"" + cpat + "\", " + pat.bytesize.to_s + ", " + flags + ");")
+      emit_raw("  } else {")
+      emit_raw("    sp_re_pat_" + i.to_s + " = NULL;")
+      emit_raw("    sp_re_pat_err_" + i.to_s + " = sp_re_startup_err;")
+      emit_raw("  }")
       i = i + 1
     end
+ # Restore the default handler now that pre-compile is done; from
+ # this point on a compile failure (per-call-site sp_re_dyn_<N>)
+ # raises a catchable RegexpError via sp_raise_cls.
+    emit_raw("  sp_re_set_error_handler(sp_re_default_error_handler);")
     emit_raw("}")
     emit_raw("")
   end
@@ -12062,11 +12085,9 @@ class Compiler
     if @needs_rand == 1
       emit_raw("  srand((unsigned)time(NULL));")
     end
- # Issue #781: install the regex compile-error handler so a bad
- # pattern raises RegexpError instead of fprintf + exit.
-    if @needs_regexp == 1
-      emit_raw("  sp_re_set_error_handler(sp_re_default_error_handler);")
-    end
+ # Issue #781 / #846: sp_re_init swaps in a quiet startup handler
+ # for the pre-compile pass and restores sp_re_default_error_handler
+ # before returning. No separate install step needed here.
     if @needs_regexp == 1
       emit_raw("  sp_re_init();")
     end

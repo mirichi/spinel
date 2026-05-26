@@ -2718,6 +2718,28 @@ static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 static void sp_re_default_error_handler(const char *msg) {
   sp_raise_cls("RegexpError", msg);
 }
+/* Issue #846: during sp_re_init (before main()'s setjmp scope is
+   active), a bad literal `Regexp.new("[invalid")` pattern would
+   route through sp_raise_cls -> "unhandled exception" + exit
+   because sp_exc_top is 0. Install a startup handler that longjmps
+   back to sp_re_init's wrapping setjmp; the codegen-emitted loop
+   then stashes the error per slot for a deferred raise from the
+   first use site (where the user's begin/rescue is active). The
+   re_compile contract requires the error callback to not return
+   (otherwise the library's fall-through fprintf+exit fires) so
+   we longjmp out. */
+static const char *sp_re_startup_err = NULL;
+static jmp_buf sp_re_startup_jmp;
+static void sp_re_startup_error_handler(const char *msg) {
+  if (msg) {
+    size_t n = strlen(msg);
+    char *buf = sp_str_alloc_raw(n + 1);
+    memcpy(buf, msg, n);
+    buf[n] = 0;
+    sp_re_startup_err = buf;
+  }
+  longjmp(sp_re_startup_jmp, 1);
+}
 extern void sp_re_set_error_handler(void (*fn)(const char *msg));
 static void sp_mark_in_flight_exceptions(void) { for (int i = 0; i < sp_exc_top; i++) sp_mark_string(sp_exc_msg[i]); }
 
