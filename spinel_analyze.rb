@@ -8221,7 +8221,11 @@ class Compiler
       end
       if @nd_type[sid] == "CallNode"
         cn = @nd_name[sid]
-        if cn != "include"
+        if cn == "define_method"
+ # Issue #718: define_method(:name) { ... } in a class body
+ # registers an instance method on the surrounding class.
+          collect_define_method_in_class(ci, sid)
+        elsif cn != "include"
           if cn != "private"
             collect_attr_call(ci, sid)
           end
@@ -10660,6 +10664,51 @@ class Compiler
     @meth_rest_index.push(collect_rest_index(nid))
     @meth_kwrest_index.push(collect_kwrest_index(nid))
     0
+  end
+
+ # Issue #718: `define_method(:name) { ... }` inside a class body
+ # registers an instance method on that class. Mirrors
+ # collect_define_method (which handles the top-level form) but
+ # routes through append_cls_meth so the method participates in
+ # per-class dispatch.
+  def collect_define_method_in_class(ci, nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return
+    end
+    arg_ids = get_args(args_id)
+    if arg_ids.length < 1
+      return
+    end
+    mname = @nd_content[arg_ids[0]]
+    if mname == ""
+      mname = @nd_name[arg_ids[0]]
+    end
+    blk = @nd_block[nid]
+    if blk < 0
+      return
+    end
+    body_id = @nd_body[blk]
+    params_str = ""
+    ptypes_str = ""
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        k = 0
+        while k < reqs.length
+          if params_str != ""
+            params_str = params_str + ","
+            ptypes_str = ptypes_str + ","
+          end
+          params_str = params_str + @nd_name[reqs[k]]
+          ptypes_str = ptypes_str + "int"
+          k = k + 1
+        end
+      end
+    end
+    append_cls_meth(ci, mname, params_str, ptypes_str, "int", body_id, "")
   end
 
   def collect_define_method(nid)
