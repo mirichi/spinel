@@ -170,8 +170,10 @@ class Compiler
  # 0..20 are reserved for Ruby primitive classes / modules per
  # docs/CLASS-OBJECT.md (minus Method which the existing
  # register_builtin_classes pushes as a user-class entry).
- # User @cls_names entries shift to cls_id 21 + internal_ci;
- # modules shift to 21 + N + module_idx. Lets sp_class_for_poly
+ # Additional built-ins (exceptions, Encoding, etc.) follow that
+ # primitive prefix. User @cls_names entries shift by
+ # @builtin_class_count; modules shift after user classes. Lets
+ # sp_class_for_poly
  # map primitive tags to the built-in cls_id so
  # `5.is_a?(Integer)` against a dynamic klass resolves via
  # the same sp_class_le path as user-class checks.
@@ -197,7 +199,8 @@ class Compiler
                                "ScriptError", "NotImplementedError", "LoadError", "SyntaxError",
                                "StopIteration", "RegexpError",
                                "EncodingError", "SystemCallError",
-                               "LocalJumpError", "FiberError"]
+                               "LocalJumpError", "FiberError",
+                               "Encoding"]
  # -1 = no parent (root). Module entries (Kernel, Comparable,
  # Enumerable) intentionally have -1 since modules don't
  # have superclasses.
@@ -218,7 +221,8 @@ class Compiler
                                 21, 36, 36, 36,
                                 26, 22,
                                 22, 22,
-                                22, 22]
+                                22, 22,
+                                1]
  # Semicolon-separated module-name includes per built-in class.
     @builtin_class_includes = ["", "Kernel", "", "", "",
                                "", "", "",
@@ -237,7 +241,8 @@ class Compiler
                                "", "", "", "",
                                "", "",
                                "", "",
-                               "", ""]
+                               "", "",
+                               ""]
     @builtin_class_count = @builtin_class_names.length
  # emit-time toggle for the per-program
  # sp_class_names[] table + sp_class_to_s helper. compile_expr's
@@ -917,7 +922,7 @@ class Compiler
     if name == "Math" || name == "File" || name == "Dir" || name == "Time" || name == "IO" || name == "Process" || name == "Kernel" || name == "Comparable" || name == "Enumerable" || name == "Complex"
       return 1
     end
-    if name == "Object" || name == "Integer" || name == "String" || name == "Float" || name == "Symbol" || name == "Array" || name == "Hash" || name == "Range" || name == "Numeric" || name == "TrueClass" || name == "FalseClass" || name == "NilClass" || name == "Proc" || name == "Lambda" || name == "Regexp" || name == "MatchData" || name == "StringIO" || name == "Fiber"
+    if name == "Object" || name == "Integer" || name == "String" || name == "Float" || name == "Symbol" || name == "Array" || name == "Hash" || name == "Range" || name == "Numeric" || name == "TrueClass" || name == "FalseClass" || name == "NilClass" || name == "Proc" || name == "Lambda" || name == "Regexp" || name == "MatchData" || name == "StringIO" || name == "Fiber" || name == "Encoding"
       return 1
     end
  # Common exception classes referenced by raise / rescue. We
@@ -1604,6 +1609,12 @@ class Compiler
       end
       return is_a_static_negative(eb)
     end
+    if cname == "Encoding"
+      if eb == "encoding"
+        return "TRUE"
+      end
+      return is_a_static_negative(eb)
+    end
  # User-defined class
     if find_class_idx(cname) >= 0
       if is_obj_type(eb) == 1
@@ -1663,6 +1674,9 @@ class Compiler
     end
     if cname == "Range"
       return "range"
+    end
+    if cname == "Encoding"
+      return "encoding"
     end
     if find_class_idx(cname) >= 0
       return "obj_" + cname
@@ -2956,8 +2970,11 @@ class Compiler
     if t == "FloatNode"
       return "float"
     end
-    if t == "StringNode" || t == "SourceFileNode" || t == "SourceEncodingNode" || t == "NumberedReferenceReadNode" || t == "InterpolatedStringNode" || t == "InterpolatedSymbolNode" || t == "BackReferenceReadNode" || t == "XStringNode" || t == "InterpolatedXStringNode"
+    if t == "StringNode" || t == "SourceFileNode" || t == "NumberedReferenceReadNode" || t == "InterpolatedStringNode" || t == "InterpolatedSymbolNode" || t == "BackReferenceReadNode" || t == "XStringNode" || t == "InterpolatedXStringNode"
       return "string"
+    end
+    if t == "SourceEncodingNode"
+      return "encoding"
     end
     if t == "SymbolNode"
       return "symbol"
@@ -4561,6 +4578,9 @@ class Compiler
       @needs_class_table = 1
       return "sp_Class"
     end
+    if t == "encoding"
+      return "sp_Encoding"
+    end
     if t == "proc"
       return "sp_Proc *"
     end
@@ -4655,6 +4675,9 @@ class Compiler
  # returns "" for it. Locals declared `sp_Class lv_x = ((sp_Class){-1})`
  # are equivalent to nil for to_s purposes.
       return "((sp_Class){-1LL})"
+    end
+    if t == "encoding"
+      return "((sp_Encoding){NULL})"
     end
     if t == "stringio"
       return "NULL"
@@ -7514,6 +7537,8 @@ class Compiler
           if is_nullable_type(t) == 1
             result = t
           end
+        elsif (result == "encoding" && t == "int") || (result == "int" && t == "encoding")
+          return "poly"
         elsif result == "int"
  # int is default/unresolved — real type takes priority
           result = t
@@ -8235,8 +8260,9 @@ class Compiler
  # maps to Array / Hash / Range / Time / Proc. SP_TAG_CLASS
  # returns itself; SP_TAG_OBJ with non-negative cls_id is a
  # user-class instance.
+      enc_cls_id = builtin_class_id_for_name("Encoding")
       emit_raw("static sp_Class sp_class_for_poly(sp_RbVal v) __attribute__((unused));")
-      emit_raw("static sp_Class sp_class_for_poly(sp_RbVal v){switch(v.tag){case SP_TAG_NIL:return (sp_Class){5};case SP_TAG_BOOL:return (sp_Class){v.v.b?6:7};case SP_TAG_INT:return (sp_Class){9};case SP_TAG_FLT:return (sp_Class){10};case SP_TAG_STR:return (sp_Class){11};case SP_TAG_SYM:return (sp_Class){12};case SP_TAG_CLASS:return (sp_Class){(mrb_int)v.cls_id};case SP_TAG_OBJ:if(v.cls_id>=0)return (sp_Class){(mrb_int)v.cls_id};switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:case SP_BUILTIN_STR_ARRAY:case SP_BUILTIN_FLT_ARRAY:case SP_BUILTIN_SYM_ARRAY:case SP_BUILTIN_PTR_ARRAY:case SP_BUILTIN_POLY_ARRAY:return (sp_Class){13};case SP_BUILTIN_STR_INT_HASH:case SP_BUILTIN_STR_STR_HASH:case SP_BUILTIN_INT_STR_HASH:case SP_BUILTIN_SYM_INT_HASH:case SP_BUILTIN_SYM_STR_HASH:case SP_BUILTIN_STR_POLY_HASH:case SP_BUILTIN_SYM_POLY_HASH:case SP_BUILTIN_POLY_POLY_HASH:return (sp_Class){14};case SP_BUILTIN_RANGE:return (sp_Class){15};case SP_BUILTIN_TIME:return (sp_Class){16};case SP_BUILTIN_PROC:return (sp_Class){20};default:return (sp_Class){-1};}}return (sp_Class){-1};}")
+      emit_raw("static sp_Class sp_class_for_poly(sp_RbVal v){switch(v.tag){case SP_TAG_NIL:return (sp_Class){5};case SP_TAG_BOOL:return (sp_Class){v.v.b?6:7};case SP_TAG_INT:return (sp_Class){9};case SP_TAG_FLT:return (sp_Class){10};case SP_TAG_STR:return (sp_Class){11};case SP_TAG_SYM:return (sp_Class){12};case SP_TAG_CLASS:return (sp_Class){(mrb_int)v.cls_id};case SP_TAG_ENCODING:return (sp_Class){" + enc_cls_id.to_s + "};case SP_TAG_OBJ:if(v.cls_id>=0)return (sp_Class){(mrb_int)v.cls_id};switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:case SP_BUILTIN_STR_ARRAY:case SP_BUILTIN_FLT_ARRAY:case SP_BUILTIN_SYM_ARRAY:case SP_BUILTIN_PTR_ARRAY:case SP_BUILTIN_POLY_ARRAY:return (sp_Class){13};case SP_BUILTIN_STR_INT_HASH:case SP_BUILTIN_STR_STR_HASH:case SP_BUILTIN_INT_STR_HASH:case SP_BUILTIN_SYM_INT_HASH:case SP_BUILTIN_SYM_STR_HASH:case SP_BUILTIN_STR_POLY_HASH:case SP_BUILTIN_SYM_POLY_HASH:case SP_BUILTIN_POLY_POLY_HASH:return (sp_Class){14};case SP_BUILTIN_RANGE:return (sp_Class){15};case SP_BUILTIN_TIME:return (sp_Class){16};case SP_BUILTIN_PROC:return (sp_Class){20};default:return (sp_Class){-1};}}return (sp_Class){-1};}")
     end
     emit_raw("")
   end
@@ -8602,6 +8628,9 @@ class Compiler
     t = infer_type(nid)
     if t == "symbol"
       return "sp_sym_to_s(" + s + ")"
+    end
+    if t == "encoding"
+      return "sp_encoding_name(" + s + ")"
     end
  # Issue #651: a poly-typed value (commonly an ivar inferred as
  # poly because a `kwarg: nil`-defaulted param writes it) flowing
@@ -13615,9 +13644,9 @@ class Compiler
       return c_string_literal(@nd_content[nid])
     end
     if t == "SourceEncodingNode"
- # __ENCODING__ — Spinel has no Encoding runtime; we return
- # the canonical "UTF-8" string. Documented in test/source_encoding.rb.
-      return c_string_literal("UTF-8")
+ # __ENCODING__ — Spinel sources are UTF-8, represented as a
+ # small Encoding value so `.class` and `.name` match Ruby.
+      return "sp_encoding_utf8()"
     end
     if t == "ArgumentsNode"
       arg_ids = parse_id_list(@nd_args[nid])
@@ -14225,6 +14254,9 @@ class Compiler
                         @needs_class_table = 1
                         fmt = fmt + "%s"
                         arg_exprs.push("sp_class_to_s(" + compile_expr(inner) + ")")
+                      elsif it == "encoding"
+                        fmt = fmt + "%s"
+                        arg_exprs.push("sp_encoding_name(" + compile_expr(inner) + ")")
                       elsif it == "symbol"
  # Symbol values carry the sp_sym int id;
  # interpolation must render the registered
@@ -19143,11 +19175,8 @@ class Compiler
     if mname == "encode" || mname == "force_encoding" || mname == "b"
       return rc
     end
- # `.encoding` -- spinel doesn't model Encoding objects; return a
- # plain string label so `puts s.encoding` prints "UTF-8". Issue
- # #723.
     if mname == "encoding"
-      return "((const char*)\"UTF-8\")"
+      return "sp_encoding_utf8()"
     end
     if mname == "strip"
       return "sp_str_strip(" + rc + ")"
@@ -23357,6 +23386,20 @@ class Compiler
  # is_a? / kind_of? — kind_of? is an exact alias of is_a? in MRI.
  # Both walk the class hierarchy: cname is or inherits from arg0 → TRUE.
     if mname == "is_a?" || mname == "kind_of?"
+      if base_type(recv_type) == "encoding"
+        arg0_enc_isa = ""
+        args_id_enc_isa = @nd_arguments[nid]
+        if args_id_enc_isa >= 0
+          a_enc_isa = get_args(args_id_enc_isa)
+          if a_enc_isa.length > 0
+            arg0_enc_isa = resolve_introspection_arg_name(a_enc_isa[0])
+          end
+        end
+        if arg0_enc_isa == "Encoding" || arg0_enc_isa == "Object" || arg0_enc_isa == "Kernel" || arg0_enc_isa == "BasicObject"
+          return "TRUE"
+        end
+        return "FALSE"
+      end
       if is_obj_type(recv_type) == 1
         cname = recv_type[4, recv_type.length - 4]
         arg0 = ""
@@ -23435,6 +23478,12 @@ class Compiler
       end
       if arg0 == "Hash" && is_hash_type(recv_type) == 1
         return "TRUE"
+      end
+      if base_type(recv_type) == "encoding"
+        if arg0 == "Encoding"
+          return "TRUE"
+        end
+        return "FALSE"
       end
       if is_obj_type(recv_type) == 1
         cname = recv_type[4, recv_type.length - 4]
@@ -23574,6 +23623,52 @@ class Compiler
       if recv_n >= 0 && @nd_type[recv_n] == "SelfNode"
         @needs_class_table = 1
         return "sp_class_to_s(((sp_Class){" + cls_id_for_user_internal(@current_class_idx).to_s + "LL}))"
+      end
+    end
+    if recv_type == "encoding"
+      if mname == "name" || mname == "to_s"
+        return "sp_encoding_name(" + rc + ")"
+      end
+      if mname == "inspect"
+        return "sp_encoding_inspect(" + rc + ")"
+      end
+      if mname == "==" || mname == "eql?"
+        arg0_enc_eq = -1
+        if @nd_arguments[nid] >= 0
+          args_enc_eq = get_args(@nd_arguments[nid])
+          if args_enc_eq.length > 0
+            arg0_enc_eq = args_enc_eq[0]
+          end
+        end
+        if arg0_enc_eq >= 0 && infer_type(arg0_enc_eq) == "encoding"
+          rhs_enc_eq = compile_expr(arg0_enc_eq)
+          return "sp_encoding_eq(" + rc + ", " + rhs_enc_eq + ")"
+        end
+        return "FALSE"
+      end
+      if mname == "!="
+        arg0_enc_ne = -1
+        if @nd_arguments[nid] >= 0
+          args_enc_ne = get_args(@nd_arguments[nid])
+          if args_enc_ne.length > 0
+            arg0_enc_ne = args_enc_ne[0]
+          end
+        end
+        if arg0_enc_ne >= 0 && infer_type(arg0_enc_ne) == "encoding"
+          rhs_enc_ne = compile_expr(arg0_enc_ne)
+          return "(!sp_encoding_eq(" + rc + ", " + rhs_enc_ne + "))"
+        end
+        return "TRUE"
+      end
+      if mname == "class"
+        bid_enc = builtin_class_id_for_name("Encoding")
+        if bid_enc >= 0
+          @needs_class_table = 1
+          return "((sp_Class){" + bid_enc.to_s + "LL})"
+        end
+      end
+      if mname == "nil?"
+        return "FALSE"
       end
     end
  # methods on a sp_Class value.
@@ -23864,6 +23959,8 @@ class Compiler
         prim_class_name_pc = "Range"
       elsif bt_pc == "time"
         prim_class_name_pc = "Time"
+      elsif bt_pc == "encoding"
+        prim_class_name_pc = "Encoding"
       elsif is_array_type(bt_pc) == 1
         prim_class_name_pc = "Array"
       elsif is_hash_type(bt_pc) == 1
@@ -24429,6 +24526,9 @@ class Compiler
     end
     if klass == "Symbol"
       return "(" + recv_tmp + ".tag == SP_TAG_SYM)"
+    end
+    if klass == "Encoding"
+      return "(" + recv_tmp + ".tag == SP_TAG_ENCODING)"
     end
     if klass == "NilClass"
       return "(" + recv_tmp + ".tag == SP_TAG_NIL)"
@@ -25802,6 +25902,18 @@ class Compiler
       end
       return "(!sp_class_eq(" + lc_cls + ", " + rc_cls + "))"
     end
+ # Encoding is a value-type struct, so plain C `==` is invalid.
+ # Encoding only compares equal to another Encoding value.
+    if lt == "encoding" && at == "encoding"
+      lc_enc = compile_expr(recv)
+      rc_enc = arg_id >= 0 ? compile_expr(arg_id) : "sp_encoding_utf8()"
+      if op == "=="
+        return "sp_encoding_eq(" + lc_enc + ", " + rc_enc + ")"
+      end
+      return "(!sp_encoding_eq(" + lc_enc + ", " + rc_enc + "))"
+    elsif (lt == "encoding" || at == "encoding") && lt != "poly" && at != "poly"
+      return op == "==" ? "FALSE" : "TRUE"
+    end
  # Time == Time / != — equal instant (tv_sec and tv_nsec). Plain
  # `==` on the struct isn't valid C. Same-instant times compare
  # equal regardless of the is_utc presentation flag.
@@ -26104,6 +26216,9 @@ class Compiler
     if base == "symbol"
       return "(sp_sym)(" + val + ").v.i"
     end
+    if base == "encoding"
+      return "((sp_Encoding){(" + val + ").v.s})"
+    end
     if base == "int_array"
       return "(sp_IntArray *)(" + val + ").v.p"
     end
@@ -26234,6 +26349,9 @@ class Compiler
     end
     if at == "symbol"
       return "sp_box_sym(" + val + ")"
+    end
+    if at == "encoding"
+      return "sp_box_encoding(" + val + ")"
     end
     if at == "int_array"
       return "sp_box_int_array(" + val + ")"
@@ -35977,6 +36095,10 @@ class Compiler
       emit("  { const char *_rs = sp_rational_inspect(" + val + "); fputs(_rs, stdout); putchar('" + bsl_n + "'); }")
       return
     end
+    if at == "encoding"
+      emit("  puts(sp_encoding_name(" + val + "));")
+      return
+    end
     if at == "time"
       emit("  { const char *_ts = sp_time_inspect_v(" + val + "); fputs(_ts, stdout); putchar('" + bsl_n + "'); }")
       return
@@ -36088,6 +36210,11 @@ class Compiler
         k = k + 1
         next
       end
+      if at == "encoding"
+        emit("  puts(sp_encoding_name(" + val + "));")
+        k = k + 1
+        next
+      end
  # `puts <exc>` -- print the message (CRuby calls to_s).
       if at == "exception"
         emit("  { const char *_ps = sp_exc_message(" + val + "); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '" + bsl_n + "') putchar('" + bsl_n + "'); } else putchar('" + bsl_n + "'); }")
@@ -36162,6 +36289,8 @@ class Compiler
       val = compile_expr(arg_ids[k])
       if at == "string"
         emit("  fprintf(stderr, \"%s" + bsl_n + "\", " + val + ");")
+      elsif at == "encoding"
+        emit("  fprintf(stderr, \"%s" + bsl_n + "\", sp_encoding_name(" + val + "));")
       else
         emit("  fprintf(stderr, \"%lld" + bsl_n + "\", (long long)" + val + ");")
       end
@@ -36266,6 +36395,11 @@ class Compiler
       end
       if at == "symbol"
         emit("  fputs(sp_sym_to_s(" + val + "), stdout);")
+        k = k + 1
+        next
+      end
+      if at == "encoding"
+        emit("  fputs(sp_encoding_name(" + val + "), stdout);")
         k = k + 1
         next
       end

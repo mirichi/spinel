@@ -1225,6 +1225,9 @@ class Compiler
     if cname == "Range"
       return "range"
     end
+    if cname == "Encoding"
+      return "encoding"
+    end
  # User-defined class: narrow to obj_<C> when the class is
  # registered. Otherwise return "" — narrow is a no-op.
     if find_class_idx(cname) >= 0
@@ -2000,7 +2003,7 @@ class Compiler
       return "string"
     end
     if t == "SourceEncodingNode"
-      return "string"
+      return "encoding"
     end
     if t == "SymbolNode"
       return "symbol"
@@ -3946,6 +3949,9 @@ class Compiler
  # a string. Aliases `.to_s` at the runtime helper level
  # (sp_class_to_s), so the return type is the same.
     if mname == "name"
+      if recv >= 0 && infer_type(recv) == "encoding"
+        return "string"
+      end
       if recv >= 0 && infer_type(recv) == "class"
         return "string"
       end
@@ -4056,12 +4062,13 @@ class Compiler
           return "class"
         end
  # Primitive .class -- Integer / Float / String / Symbol /
- # NilClass / TrueClass / FalseClass / Range / Time / Array /
- # Hash / Proc -- all return a `class` value. Issue #715.
+ # NilClass / TrueClass / FalseClass / Range / Time / Encoding /
+ # Array / Hash / Proc -- all return a `class` value. Issue #715.
         bt_pc = base_type(rt)
         if bt_pc == "int" || bt_pc == "bigint" || bt_pc == "float" ||
            bt_pc == "string" || bt_pc == "mutable_str" || bt_pc == "symbol" ||
            bt_pc == "bool" || bt_pc == "nil" || bt_pc == "range" || bt_pc == "time" ||
+           bt_pc == "encoding" ||
            is_array_type(bt_pc) == 1 || is_hash_type(bt_pc) == 1 ||
            bt_pc == "proc" || bt_pc == "lambda"
           return "class"
@@ -4217,12 +4224,10 @@ class Compiler
  # the shortest collision target; struct field accessors etc.
  # commonly take that single-letter shape).
     if mname == "encoding"
- # spinel doesn't model Encoding objects; treat the return as a
- # plain string label (`"UTF-8"`). Issue #723.
       if recv >= 0
         rt_enc = infer_type(recv)
         if rt_enc == "string" || rt_enc == "mutable_str"
-          return "string"
+          return "encoding"
         end
       end
     end
@@ -7849,7 +7854,7 @@ class Compiler
   end
 
  # built-in class / module names that
- # get a reserved cls_id (0..20). Kept in sync with
+ # get a reserved cls_id. Kept in sync with
  # spinel_codegen.rb's @builtin_class_names array.
   def is_builtin_class_const_name(name)
     if name == "BasicObject" || name == "Object" || name == "Kernel" || name == "Comparable" || name == "Enumerable"
@@ -7892,6 +7897,9 @@ class Compiler
       return 1
     end
     if name == "LocalJumpError" || name == "FiberError"
+      return 1
+    end
+    if name == "Encoding"
       return 1
     end
     0
@@ -19794,6 +19802,8 @@ class Compiler
           if is_nullable_type(t) == 1
             result = t
           end
+        elsif (result == "encoding" && t == "int") || (result == "int" && t == "encoding")
+          return "poly"
         elsif result == "int"
  # int is default/unresolved — real type takes priority
           result = t

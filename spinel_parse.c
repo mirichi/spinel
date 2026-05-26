@@ -940,9 +940,8 @@ static int flatten(pm_node_t *node) {
     break;
   }
   case PM_SOURCE_ENCODING_NODE: {
-    /* `__ENCODING__`. CRuby returns an Encoding object; Spinel has
-       no Encoding runtime, so we return the canonical name as a
-       frozen string. All Spinel sources are UTF-8. */
+    /* `__ENCODING__`. Spinel sources are UTF-8; codegen returns a
+       small Encoding value for Ruby-compatible `.class` / `.name`. */
     N("SourceEncodingNode");
     break;
   }

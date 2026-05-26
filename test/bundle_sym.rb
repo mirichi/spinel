@@ -292,11 +292,9 @@ t_symbol_upcase_downcase
 def t_source_encoding
   # SourceEncodingNode — the `__ENCODING__` keyword.
   #
-  # CRuby returns an Encoding object; Spinel has no Encoding runtime,
-  # so __ENCODING__ returns the canonical name as a string. All Spinel
-  # sources are assumed to be UTF-8. We compare against to_s for parity.
+  # Spinel sources are assumed to be UTF-8; __ENCODING__ is a small
+  # Encoding value whose to_s returns the canonical name.
   
   puts __ENCODING__.to_s
 end
 t_source_encoding
-

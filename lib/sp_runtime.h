@@ -508,6 +508,18 @@ static inline mrb_int sp_process_ppid(void) {
 }
 
 static void sp_oom_die(void);
+
+/* ---- Encoding runtime ----
+   Spinel currently assumes UTF-8 source and string data. Keep Encoding
+   as a tiny value type so `__ENCODING__` and `String#encoding` can
+   answer Ruby's Encoding-shaped protocol without carrying full
+   transcoding state. */
+typedef struct{const char *name;}sp_Encoding;
+static inline sp_Encoding sp_encoding_utf8(void){return(sp_Encoding){"UTF-8"};}
+static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp_str_empty;}
+static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
+static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}
+
 static char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
   sp_str_hdr *h = (sp_str_hdr *)malloc(total);
@@ -1925,6 +1937,9 @@ typedef uint64_t sp_RbValue;
    the boxed sp_Class's cls_id directly so unboxing is just a
    field read. */
 #define SP_TAG_CLASS 7
+/* Encoding values boxed into a poly slot. v.s carries the canonical
+   encoding name (`"UTF-8"` in Spinel's current runtime model). */
+#define SP_TAG_ENCODING 8
 /* Negative cls_id values let SP_TAG_OBJ also carry built-in pointer
    types (IntArray, FloatArray, ...) — avoids minting a new SP_TAG_*
    per type. Non-negative cls_id stays an index into the user-class
@@ -1960,6 +1975,7 @@ static sp_RbVal sp_box_obj(void *p, int cls_id) { sp_RbVal r; r.tag = SP_TAG_OBJ
 static sp_RbVal sp_box_sym(sp_sym v) { sp_RbVal r; r.tag = SP_TAG_SYM; r.cls_id = 0; r.v.i = (mrb_int)v; return r; }
 /* box a sp_Class into a poly slot. */
 static sp_RbVal sp_box_class(sp_Class c) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
+static sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r.cls_id = 0; r.v.s = sp_encoding_name(e); return r; }
 
 /* every non-value-type sp_<C> starts
    with `mrb_int cls_id`. Read it back from a void* when
@@ -2130,6 +2146,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
     case SP_TAG_BOOL: puts(v.v.b ? "true" : "false"); break;
     case SP_TAG_NIL: putchar('\n'); break;
     case SP_TAG_SYM: { const char *_ss = sp_sym_to_s((sp_sym)v.v.i); fputs(_ss, stdout); putchar('\n'); break; }
+    case SP_TAG_ENCODING: { const char *_es = v.v.s ? v.v.s : sp_str_empty; fputs(_es, stdout); putchar('\n'); break; }
     case SP_TAG_OBJ: {
       /* MRI's `puts arr` iterates an Array, printing one element per
          line (using to_s on each); a non-Array OBJ falls back to
@@ -2191,6 +2208,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
     case SP_TAG_NIL: return sp_str_empty;
     case SP_TAG_SYM: return sp_sym_to_s((sp_sym)v.v.i);
     case SP_TAG_CLASS: { sp_Class c = {v.v.i}; return sp_class_to_s(c); }
+    case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_OBJ:
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: return sp_IntArray_inspect((sp_IntArray *)v.v.p);
@@ -2211,7 +2229,7 @@ static sp_RbVal sp_poly_mul(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_INT &&
 static mrb_int sp_poly_to_i(sp_RbVal v) { if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return v.v.i; if (v.tag == SP_TAG_STR) return (mrb_int)strtoll(v.v.s ? v.v.s : sp_str_empty, NULL, 10); if (v.tag == SP_TAG_FLT) return (mrb_int)v.v.f; if (v.tag == SP_TAG_BOOL) return v.v.b ? 1 : 0; return 0; }
 static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.f; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return (mrb_float)v.v.i; if (v.tag == SP_TAG_BOOL) return v.v.b ? 1.0 : 0.0; return 0.0; }
 static mrb_bool sp_poly_numeric_p(sp_RbVal v) { return v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT; }
-static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_OBJ: return a.cls_id == b.cls_id && a.v.p == b.v.p; default: return FALSE; } }
+static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: return a.cls_id == b.cls_id && a.v.p == b.v.p; default: return FALSE; } }
 static mrb_int sp_poly_cmp(sp_RbVal a, sp_RbVal b, mrb_bool *comparable) { if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) { mrb_float af = sp_poly_to_f(a), bf = sp_poly_to_f(b); *comparable = TRUE; return (af > bf) - (af < bf); } if (a.tag == SP_TAG_STR && b.tag == SP_TAG_STR) { if (a.v.s == NULL || b.v.s == NULL) { *comparable = (a.v.s == b.v.s); return 0; } *comparable = TRUE; return strcmp(a.v.s, b.v.s); } if (a.tag == SP_TAG_SYM && b.tag == SP_TAG_SYM) { *comparable = TRUE; return (a.v.i > b.v.i) - (a.v.i < b.v.i); } *comparable = FALSE; return 0; }
 static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp < 0) : FALSE; }
 static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp <= 0) : FALSE; }
@@ -2332,6 +2350,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
     case SP_TAG_NIL:  return SPL("nil");
     case SP_TAG_SYM:  return sp_str_concat(SPL(":"), sp_sym_to_s((sp_sym)v.v.i));
+    case SP_TAG_ENCODING: return sp_sprintf("#<Encoding:%s>", v.v.s ? v.v.s : "");
     case SP_TAG_OBJ:
  /* Built-in container / value-type tags get their typed inspect
     helper. Matches the dispatch shape in sp_poly_to_s above and the
@@ -2459,6 +2478,8 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
       return (mrb_int)v.v.i;
     case SP_TAG_STR:
       return v.v.s ? (mrb_int)sp_str_hash(v.v.s) : 0;
+    case SP_TAG_ENCODING:
+      return v.v.s ? (mrb_int)sp_str_hash(v.v.s) : 0;
     case SP_TAG_FLT: { uint64_t b; memcpy(&b, &v.v.f, sizeof(b)); return (mrb_int)b; }
     case SP_TAG_OBJ:
       if (sp_obj_hash_hook) return sp_obj_hash_hook(v.cls_id, v.v.p);
@@ -2472,6 +2493,10 @@ static mrb_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
     case SP_TAG_INT: case SP_TAG_BOOL: case SP_TAG_NIL: case SP_TAG_SYM:
       return a.v.i == b.v.i;
     case SP_TAG_STR:
+      if (a.v.s == b.v.s) return TRUE;
+      if (!a.v.s || !b.v.s) return FALSE;
+      return strcmp(a.v.s, b.v.s) == 0;
+    case SP_TAG_ENCODING:
       if (a.v.s == b.v.s) return TRUE;
       if (!a.v.s || !b.v.s) return FALSE;
       return strcmp(a.v.s, b.v.s) == 0;
