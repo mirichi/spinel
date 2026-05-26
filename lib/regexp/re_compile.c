@@ -680,7 +680,18 @@ compile_quantified(re_compiler *c)
 {
   uint32_t start = c->code_len;
   compile_atom(c);
-  if (c->code_len == start) return;  /* no atom emitted */
+  if (c->code_len == start) {
+    /* Issue #825: when compile_atom emitted nothing AND the next
+       char is a bare quantifier (star, plus, question), the
+       surrounding seq loop has nothing to advance with and spins
+       forever. Raise instead. CRuby: RegexpError "target of
+       repeat operator is not specified". */
+    int qch = peek(c);
+    if (qch == '*' || qch == '+' || qch == '?') {
+      compile_error(c, "target of repeat operator is not specified");
+    }
+    return;  /* no atom emitted, no quantifier -- caller handles */
+  }
 
   int ch = peek(c);
   if (ch == '*' || ch == '+' || ch == '?') {
