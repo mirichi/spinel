@@ -20383,6 +20383,9 @@ class Compiler
     if (mname == "find" || mname == "detect") && @nd_block[nid] >= 0
       return compile_array_find_block(nid, rc, recv_type)
     end
+    if mname == "find_index" && @nd_block[nid] >= 0
+      return compile_array_find_index_block(nid, rc, recv_type)
+    end
     if mname == "filter_map" && @nd_block[nid] >= 0
       return compile_array_filter_map(nid, rc, recv_type)
     end
@@ -37377,6 +37380,42 @@ class Compiler
       end
     end
     emit("    if (" + bexpr + ") { " + tmp_res + " = lv_" + bp1 + "; break; }")
+    pop_scope
+    emit("  }")
+    tmp_res
+  end
+
+ # Array#find_index { block } -- returns the FIRST index where
+ # the block is truthy, nil otherwise. Mirrors compile_array_find_block
+ # but captures the index instead of the element. Result is int?
+ # (SP_INT_NIL sentinel for nil). Issue #864.
+  def compile_array_find_index_block(nid, rc, recv_type)
+    bp1 = get_block_param(nid, 0)
+    if bp1 == ""
+      bp1 = "_x"
+    end
+    elem_type = iter_elem_type(recv_type)
+    tmp_res = new_temp
+    tmp_i = new_temp
+    emit("  mrb_int " + tmp_res + " = SP_INT_NIL;")
+    emit_iter_open(rc, recv_type, "lv_" + bp1, tmp_i)
+    push_scope
+    declare_var(bp1, elem_type)
+    blk = @nd_block[nid]
+    bbody = @nd_body[blk]
+    bexpr = "0"
+    if bbody >= 0
+      bs = get_stmts(bbody)
+      if bs.length > 0
+        k = 0
+        while k < bs.length - 1
+          compile_stmt(bs[k])
+          k = k + 1
+        end
+        bexpr = compile_expr(bs.last)
+      end
+    end
+    emit("    if (" + bexpr + ") { " + tmp_res + " = " + tmp_i + "; break; }")
     pop_scope
     emit("  }")
     tmp_res
