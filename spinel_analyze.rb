@@ -110,6 +110,11 @@ class Compiler
  # type each bound LV with the enclosing CaseMatchNode's scrutinee
  # element type. Issue #669.
     @scan_case_match_pred_elem = ""
+ # Sibling channel for CapturePatternNode (`pat => var`) and
+ # bare LocalVariableTargetNode in InNode (`case x in n`). Holds
+ # the scrutinee's full type so the target LV gets the right slot.
+ # Issues #884 #905.
+    @scan_case_match_pred_type = ""
  # Sibling side-channel for HashPatternNode: the hash's value type.
  # Issue #805.
     @scan_case_match_pred_val_t = ""
@@ -26313,9 +26318,15 @@ class Compiler
     if @nd_type[nid] == "CaseMatchNode"
       saved_pred_elem = @scan_case_match_pred_elem
       saved_pred_val_t = @scan_case_match_pred_val_t
+      saved_pred_type_full = @scan_case_match_pred_type
       pred_nid = @nd_predicate[nid]
       if pred_nid >= 0
         cmt = infer_type(pred_nid)
+ # Issues #884 #905: stash the scrutinee's full type so a bare
+ # `LocalVariableTargetNode` pattern (`case x in n`) or a
+ # `CapturePatternNode` (`case x in [...] => arr`) can bind
+ # its LV with the right slot type.
+        @scan_case_match_pred_type = cmt
         if cmt == "int_array" || cmt == "sym_array"
           @scan_case_match_pred_elem = "int"
         elsif cmt == "str_array"
@@ -26344,7 +26355,54 @@ class Compiler
       scan_locals_children(nid, names, types, params)
       @scan_case_match_pred_elem = saved_pred_elem
       @scan_case_match_pred_val_t = saved_pred_val_t
+      @scan_case_match_pred_type = saved_pred_type_full
       return
+    end
+ # `case x in pat => var` (CapturePatternNode) -- register the
+ # target LV with the scrutinee's type. Issue #884.
+    if @nd_type[nid] == "CapturePatternNode"
+      cp_target = @nd_target[nid]
+      if cp_target >= 0 && @nd_type[cp_target] == "LocalVariableTargetNode"
+        cp_lname = @nd_name[cp_target]
+        if not_in(cp_lname, names) == 1 && not_in(cp_lname, params) == 1
+          names.push(cp_lname)
+          types.push(@scan_case_match_pred_type != "" ? @scan_case_match_pred_type : "int")
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      end
+      scan_locals_children(nid, names, types, params)
+      return
+    end
+ # `case x in n` (bare LocalVariableTargetNode pattern at the
+ # InNode root) -- register n with the scrutinee's type. Also
+ # `in n if guard` (IfNode wrapping a LocalVariableTargetNode
+ # in its statements). Issues #905 #884.
+    if @nd_type[nid] == "InNode"
+      pat_in = @nd_pattern[nid]
+      in_target_pat = pat_in
+ # Unwrap IfNode (guard clause) to find the underlying pattern.
+ # "statements" parser field maps onto @nd_body.
+      if in_target_pat >= 0 && @nd_type[in_target_pat] == "IfNode"
+        in_if_stmts = @nd_body[in_target_pat]
+        if in_if_stmts >= 0
+          in_if_body = get_stmts(in_if_stmts)
+          if in_if_body.length > 0
+            in_target_pat = in_if_body[0]
+          end
+        end
+      end
+      if in_target_pat >= 0 && @nd_type[in_target_pat] == "LocalVariableTargetNode"
+        in_lname = @nd_name[in_target_pat]
+        if not_in(in_lname, names) == 1 && not_in(in_lname, params) == 1
+          names.push(in_lname)
+          types.push(@scan_case_match_pred_type != "" ? @scan_case_match_pred_type : "int")
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      end
     end
     if @nd_type[nid] == "MultiWriteNode"
       targets = parse_id_list(@nd_targets[nid])

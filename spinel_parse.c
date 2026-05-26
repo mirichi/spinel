@@ -1117,6 +1117,15 @@ static int flatten(pm_node_t *node) {
     R("right", n->right);
     break;
   }
+  case PM_CAPTURE_PATTERN_NODE: {
+    /* `case x in pat => var` -- match `pat`, bind matched value to
+       `var` (LocalVariableTargetNode). Issue #884. */
+    pm_capture_pattern_node_t *n = (pm_capture_pattern_node_t *)node;
+    N("CapturePatternNode");
+    R("value", (pm_node_t *)n->value);
+    R("target", (pm_node_t *)n->target);
+    break;
+  }
   case PM_PINNED_EXPRESSION_NODE: {
     /* `case x in ^(expr)`. The pinned expression is evaluated at
        match time and compared by `==` against the scrutinee. */

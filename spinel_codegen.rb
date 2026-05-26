@@ -31332,17 +31332,32 @@ class Compiler
           kw = "} else if"
         end
         pat = @nd_pattern[inid]
+ # `pat => var` (CapturePatternNode): peel off the capture so the
+ # array/hash arm runs as usual, then inject a binding at the
+ # top of the matched body. Issue #884.
+ # Parser "value" → @nd_expression, "target" → @nd_target.
+        capture_var_name = ""
+        if @nd_type[pat] == "CapturePatternNode"
+          cp_tgt_arm = @nd_target[pat]
+          if cp_tgt_arm >= 0 && @nd_type[cp_tgt_arm] == "LocalVariableTargetNode"
+            capture_var_name = @nd_name[cp_tgt_arm]
+          end
+          pat = @nd_expression[pat]
+        end
  # Array pattern `[a, b, c]`: declare the bound LVs at the
  # case-match level before any per-arm cond, bind them inline,
  # and gate match on length + per-elem sub-pattern check. Issue #669.
         if @nd_type[pat] == "ArrayPatternNode"
-          compile_array_pattern_arm(pat, tmp, pred_type, kw, inid, declared_arr_pat_lvs)
+          compile_array_pattern_arm(pat, tmp, pred_type, kw, inid, declared_arr_pat_lvs, capture_var_name)
         elsif @nd_type[pat] == "HashPatternNode"
-          compile_hash_pattern_arm(pat, tmp, pred_type, kw, inid)
+          compile_hash_pattern_arm(pat, tmp, pred_type, kw, inid, capture_var_name)
         else
           cond_str = compile_in_pattern(pat, tmp, pred_type)
           emit("  " + kw + " (" + cond_str + ") {")
           @indent = @indent + 1
+          if capture_var_name != ""
+            emit("lv_" + capture_var_name + " = " + tmp + ";")
+          end
           compile_stmts_body(@nd_body[inid])
           @indent = @indent - 1
         end
@@ -31367,7 +31382,7 @@ class Compiler
  # LocalVariableTargetNode case (capture) is supported as a leaf;
  # other patterns (literals, pinned, nested) fall back to "0" so the
  # arm doesn't silently match.
-  def compile_array_pattern_arm(pat_id, tmp, pred_type, kw, inid, declared_lvs = "".split(",", -1))
+  def compile_array_pattern_arm(pat_id, tmp, pred_type, kw, inid, declared_lvs = "".split(",", -1), capture_var = "")
     requireds = parse_id_list(@nd_requireds[pat_id])
  # Pick a get expression and elem c_type based on the scrutinee's
  # static array kind. Fall back to mrb_int for unknown shapes.
@@ -31455,6 +31470,11 @@ class Compiler
         end
       end
     end
+ # `[1, *] => arr` capture binding: bind the matched scrutinee to
+ # the as-LV at body entry. Issue #884.
+    if capture_var != ""
+      emit("lv_" + capture_var + " = " + tmp + ";")
+    end
     compile_stmts_body(@nd_body[inid])
     @indent = @indent - 1
   end
@@ -31465,7 +31485,7 @@ class Compiler
  # `b: 2`). The arm matches when every required key is present and,
  # for non-binding entries, the stored value satisfies the sub-
  # pattern. Issue #805.
-  def compile_hash_pattern_arm(pat_id, tmp, pred_type, kw, inid)
+  def compile_hash_pattern_arm(pat_id, tmp, pred_type, kw, inid, capture_var = "")
     elems = parse_id_list(@nd_elements[pat_id])
     has_key_fn = ""
     get_fn = ""
@@ -31544,6 +31564,9 @@ class Compiler
       emit(binds[bi])
       bi = bi + 1
     end
+    if capture_var != ""
+      emit("lv_" + capture_var + " = " + tmp + ";")
+    end
     compile_stmts_body(@nd_body[inid])
     @indent = @indent - 1
   end
@@ -31553,6 +31576,46 @@ class Compiler
       return "1"
     end
     pt = @nd_type[pat_id]
+ # Bare local-variable target (`case x in n`): always match, bind
+ # lv_n to the scrutinee in the condition itself so the body sees
+ # the value. scan_locals already declared the slot. Issue #905.
+    if pt == "LocalVariableTargetNode"
+      lvname_lt = @nd_name[pat_id]
+      return "((lv_" + lvname_lt + " = " + tmp + "), 1)"
+    end
+ # `pat if guard` -- prism represents this as IfNode wrapping the
+ # actual pattern in `statements`. Run the inner pattern's match
+ # (which also runs any LV binds via comma-expr), then AND-fold
+ # the guard expression. Issue #905. Note: "statements" field
+ # is mapped onto @nd_body by compiler_helpers' set_ref_field.
+    if pt == "IfNode"
+      stmts_if = @nd_body[pat_id]
+      inner_pat = -1
+      if stmts_if >= 0
+        inner_stmts = get_stmts(stmts_if)
+        if inner_stmts.length > 0
+          inner_pat = inner_stmts[0]
+        end
+      end
+      inner_cond = compile_in_pattern(inner_pat, tmp, pred_type)
+      guard_pred = @nd_predicate[pat_id]
+      if guard_pred >= 0
+        return "((" + inner_cond + ") && (" + compile_expr(guard_pred) + "))"
+      end
+      return inner_cond
+    end
+ # `pat => var` capture: recurse for the inner pattern's match,
+ # AND-fold the binding side-effect via comma-expr. Issue #884.
+ # Parser "value" → @nd_expression, "target" → @nd_target.
+    if pt == "CapturePatternNode"
+      inner_cp = compile_in_pattern(@nd_expression[pat_id], tmp, pred_type)
+      tgt_cp = @nd_target[pat_id]
+      if tgt_cp >= 0 && @nd_type[tgt_cp] == "LocalVariableTargetNode"
+        lvname_cp = @nd_name[tgt_cp]
+        return "((" + inner_cp + ") && ((lv_" + lvname_cp + " = " + tmp + "), 1))"
+      end
+      return inner_cp
+    end
     if pt == "ConstantReadNode"
       cname = @nd_name[pat_id]
       if pred_type == "poly"
