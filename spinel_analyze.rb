@@ -3893,6 +3893,30 @@ class Compiler
     if mname == "inspect"
       return "string"
     end
+ # NilClass coercion methods. Issue #871. to_c / to_r / to_h
+ # skipped: Complex / Rational unsupported, Hash needs typed
+ # element judgement.
+    if recv >= 0
+      recv_t_nil = infer_type(recv)
+      if recv_t_nil == "nil"
+        if mname == "to_i"
+          return "int"
+        end
+        if mname == "to_f"
+          return "float"
+        end
+        if mname == "to_a"
+          @needs_int_array = 1
+          return "int_array"
+        end
+        if mname == "&"
+          return "bool"
+        end
+        if mname == "|" || mname == "^"
+          return "bool"
+        end
+      end
+    end
  # Class#name -- the class's source name as
  # a string. Aliases `.to_s` at the runtime helper level
  # (sp_class_to_s), so the return type is the same.

@@ -16147,6 +16147,41 @@ class Compiler
       if mname == "to_s"
         return "\"\""
       end
+ # NilClass#to_i / to_f - constant zero coercions. Issue #871.
+      if mname == "to_i"
+        return "((mrb_int)0)"
+      end
+      if mname == "to_f"
+        return "((mrb_float)0.0)"
+      end
+ # NilClass#to_a returns an empty array. v1 uses int_array since
+ # that's the cheapest concrete type; downstream consumers should
+ # treat it as empty regardless of element type.
+      if mname == "to_a"
+        @needs_int_array = 1
+        @needs_gc = 1
+        return "sp_IntArray_new()"
+      end
+ # NilClass#& / NilClass#| / NilClass#^ — Ruby booleanizes the rhs.
+      if mname == "&"
+        return "FALSE"
+      end
+      if mname == "|" || mname == "^"
+ # arg truthy iff not nil/false in Ruby. compile_expr's int
+ # result is non-zero when truthy; surface the boolean.
+        if @nd_arguments[nid] >= 0
+          aa_or = get_args(@nd_arguments[nid])
+          if aa_or.length > 0
+            arg_e_or = compile_expr(aa_or[0])
+            arg_t_or = infer_type(aa_or[0])
+            if arg_t_or == "nil"
+              return "FALSE"
+            end
+            return "((" + arg_e_or + ") ? TRUE : FALSE)"
+          end
+        end
+        return "FALSE"
+      end
     end
 
  # Tuple methods
