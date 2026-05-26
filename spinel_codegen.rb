@@ -20217,6 +20217,18 @@ class Compiler
         end
         return tmp_va
       end
+ # `arr.combination(k)` -- ordered k-element combinations as a
+ # PtrArray of IntArrays. Issue #742.
+      if mname == "combination"
+        @needs_int_array = 1
+        @needs_gc = 1
+        return "sp_IntArray_combination(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+      end
+      if mname == "permutation"
+        @needs_int_array = 1
+        @needs_gc = 1
+        return "sp_IntArray_permutation(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+      end
       if mname == "[]"
  # a[range] and a[start, len] return slices; bare a[i] stays a get.
  # Mirrors compile_string_method_expr's slicing dispatch.
@@ -20668,6 +20680,10 @@ class Compiler
       ct = c_type(elem_type)
       if mname == "length" || mname == "size"
         return "sp_PtrArray_length(" + rc + ")"
+      end
+      if mname == "to_a"
+ # Identity -- the receiver IS the array. Issue #742.
+        return rc
       end
       if mname == "[]"
         return "((" + ct + ")sp_PtrArray_get(" + rc + ", " + compile_arg0_as_int(nid) + "))"

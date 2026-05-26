@@ -3538,6 +3538,16 @@ class Compiler
         end
       end
     end
+    if mname == "combination" || mname == "permutation"
+ # `int_array.combination(k)` returns a PtrArray of IntArrays.
+ # Issue #742.
+      if recv >= 0
+        rt_cb = infer_type(recv)
+        if rt_cb == "int_array" || rt_cb == "sym_array"
+          return "int_array_ptr_array"
+        end
+      end
+    end
     if mname == "<<"
       if recv >= 0
         if lt == "mutable_str"
@@ -5909,6 +5919,14 @@ class Compiler
         end
         if rt == "poly_array"
           return "poly_array"
+        end
+ # Issue #742: combination/permutation result is
+ # int_array_ptr_array; .to_a is identity.
+        if is_ptr_array_type(rt) == 1
+          return rt
+        end
+        if rt == "str_array" || rt == "sym_array" || rt == "float_array"
+          return rt
         end
       end
       return "int_array"
