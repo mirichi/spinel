@@ -5167,6 +5167,20 @@ class Compiler
     ""
   end
 
+ # Per-variant info for the shared Hash#fetch(k) { block } arm.
+ # Returns a 4-tuple [value_type, value_c_type, has_key_fn,
+ # get_fn] or nil for unsupported variants. The block-form
+ # arm uses these to emit the runtime check + dispatch.
+  def hash_fetch_block_info(t)
+    if t == "sym_int_hash";  return ["int", "mrb_int", "sp_SymIntHash_has_key", "sp_SymIntHash_get"]; end
+    if t == "sym_str_hash";  return ["string", "const char *", "sp_SymStrHash_has_key", "sp_SymStrHash_get"]; end
+    if t == "sym_poly_hash"; return ["poly", "sp_RbVal", "sp_SymPolyHash_has_key", "sp_SymPolyHash_get"]; end
+    if t == "str_int_hash";  return ["int", "mrb_int", "sp_StrIntHash_has_key", "sp_StrIntHash_get"]; end
+    if t == "str_str_hash";  return ["string", "const char *", "sp_StrStrHash_has_key", "sp_StrStrHash_get"]; end
+    if t == "str_poly_hash"; return ["poly", "sp_RbVal", "sp_StrPolyHash_has_key", "sp_StrPolyHash_get"]; end
+    nil
+  end
+
  # CRuby returns nil for static mismatches (e.g. `{a: 1}.dig("a")`)
  # since no key compares equal — Hash#dig short-circuits to nil here.
   def hash_key_matches_recv(recv_type, key_type)
@@ -22108,6 +22122,36 @@ class Compiler
       ins_h = compile_inspect_for(recv_type, rc)
       if ins_h != ""
         return ins_h
+      end
+    end
+ # Hash#fetch(k) { |k| default } — block form. `compile_body_into`
+ # walks the block body emitting all statements; the final
+ # expression assigns into a temp that we return. The non-block
+ # 2-arg fetch (default value) stays in the per-variant arms
+ # below; this arm is for the block-default form which they
+ # didn't cover.
+    if mname == "fetch" && @nd_block[nid] >= 0
+      fi = hash_fetch_block_info(recv_type)
+      if fi != nil
+        args_id_fb = @nd_arguments[nid]
+        if args_id_fb >= 0
+          aargs_fb = get_args(args_id_fb)
+          if aargs_fb.length >= 1
+            key_fb = compile_expr(aargs_fb[0])
+            tmp_fb = new_temp
+            emit("  " + fi[1] + " " + tmp_fb + ";")
+            emit("  if (" + fi[2] + "(" + rc + ", " + key_fb + ")) {")
+            emit("    " + tmp_fb + " = " + fi[3] + "(" + rc + ", " + key_fb + ");")
+            emit("  } else {")
+            @indent = @indent + 1
+            push_scope
+            compile_body_into(@nd_body[@nd_block[nid]], tmp_fb, fi[0])
+            pop_scope
+            @indent = @indent - 1
+            emit("  }")
+            return tmp_fb
+          end
+        end
       end
     end
     if recv_type == "sym_int_hash"
@@ -42366,6 +42410,8 @@ class Compiler
     elsif base_type(return_type) == "int" && last_t_cbi == "bigint"
       @needs_bigint = 1
       expr = "sp_bigint_to_int((sp_Bigint *)" + expr + ")"
+    elsif base_type(return_type) == "poly" && last_t_cbi != "poly" && last_t_cbi != ""
+      expr = box_value_to_poly(last_t_cbi, expr)
     end
     emit("  " + ret_tmp + " = " + expr + ";")
   end
