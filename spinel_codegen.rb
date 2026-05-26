@@ -32095,7 +32095,9 @@ class Compiler
               at = infer_type(argl[0])
               val = compile_expr(argl[0])
               if at == "int"
-                emit("  sp_String_append(" + rc + ", sp_int_to_s(" + val + "));")
+ # Issue #882: `s << int` appends the UTF-8 character at that
+ # codepoint, not the decimal digits. Per MRI String#<<.
+                emit("  sp_String_append(" + rc + ", sp_int_codepoint_to_str(" + val + "));")
               elsif at == "bigint"
                 @needs_bigint = 1
                 emit("  sp_String_append(" + rc + ", sp_bigint_to_s((sp_Bigint *)" + val + "));")
