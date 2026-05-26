@@ -21051,6 +21051,15 @@ class Compiler
       if mname == "any?" && @nd_block[nid] < 0
         return "(sp_SymIntHash_length(" + rc + ") > 0)"
       end
+ # Issue #802: block-form filters across all 8 hash variants. The
+ # select/reject path returns the same variant; count/any?/all?
+ # return mrb_int / mrb_bool.
+      if (mname == "select" || mname == "filter" || mname == "reject") && @nd_block[nid] >= 0
+        return compile_hash_select_reject(nid, "sym_int_hash", rc, mname == "filter" ? "select" : mname)
+      end
+      if (mname == "count" || mname == "any?" || mname == "all?") && @nd_block[nid] >= 0
+        return compile_hash_block_predicate(nid, "sym_int_hash", rc, mname)
+      end
       if mname == "fetch"
         args_id = @nd_arguments[nid]
         if args_id >= 0
@@ -21245,6 +21254,12 @@ class Compiler
       if mname == "empty?"
         return "(sp_SymStrHash_length(" + rc + ") == 0)"
       end
+      if (mname == "select" || mname == "filter" || mname == "reject") && @nd_block[nid] >= 0
+        return compile_hash_select_reject(nid, "sym_str_hash", rc, mname == "filter" ? "select" : mname)
+      end
+      if (mname == "count" || mname == "any?" || mname == "all?") && @nd_block[nid] >= 0
+        return compile_hash_block_predicate(nid, "sym_str_hash", rc, mname)
+      end
       if mname == "any?" && @nd_block[nid] < 0
         return "(sp_SymStrHash_length(" + rc + ") > 0)"
       end
@@ -21336,6 +21351,12 @@ class Compiler
       end
       if mname == "any?" && @nd_block[nid] < 0
         return "(sp_SymPolyHash_length(" + rc + ") > 0)"
+      end
+      if (mname == "select" || mname == "filter" || mname == "reject") && @nd_block[nid] >= 0
+        return compile_hash_select_reject(nid, "sym_poly_hash", rc, mname == "filter" ? "select" : mname)
+      end
+      if (mname == "count" || mname == "any?" || mname == "all?") && @nd_block[nid] >= 0
+        return compile_hash_block_predicate(nid, "sym_poly_hash", rc, mname)
       end
       if mname == "keys"
         @needs_int_array = 1
@@ -21460,6 +21481,12 @@ class Compiler
       if mname == "any?" && @nd_block[nid] < 0
         return "(sp_StrPolyHash_length(" + rc + ") > 0)"
       end
+      if (mname == "select" || mname == "filter" || mname == "reject") && @nd_block[nid] >= 0
+        return compile_hash_select_reject(nid, "str_poly_hash", rc, mname == "filter" ? "select" : mname)
+      end
+      if (mname == "count" || mname == "any?" || mname == "all?" || mname == "find" || mname == "detect") && @nd_block[nid] >= 0
+        return compile_hash_block_predicate(nid, "str_poly_hash", rc, mname)
+      end
       if mname == "keys"
         return "sp_StrPolyHash_keys(" + rc + ")"
       end
@@ -21563,6 +21590,12 @@ class Compiler
       end
       if mname == "any?" && @nd_block[nid] < 0
         return "(sp_PolyPolyHash_length(" + rc + ") > 0)"
+      end
+      if (mname == "select" || mname == "filter" || mname == "reject") && @nd_block[nid] >= 0
+        return compile_hash_select_reject(nid, "poly_poly_hash", rc, mname == "filter" ? "select" : mname)
+      end
+      if (mname == "count" || mname == "any?" || mname == "all?") && @nd_block[nid] >= 0
+        return compile_hash_block_predicate(nid, "poly_poly_hash", rc, mname)
       end
       if mname == "keys"
         @needs_poly_array = 1
@@ -21801,6 +21834,12 @@ class Compiler
       end
       if mname == "any?" && @nd_block[nid] < 0
         return "(sp_IntStrHash_length(" + rc + ") > 0)"
+      end
+      if (mname == "select" || mname == "filter" || mname == "reject") && @nd_block[nid] >= 0
+        return compile_hash_select_reject(nid, "int_str_hash", rc, mname == "filter" ? "select" : mname)
+      end
+      if (mname == "count" || mname == "any?" || mname == "all?") && @nd_block[nid] >= 0
+        return compile_hash_block_predicate(nid, "int_str_hash", rc, mname)
       end
       if mname == "keys"
         @needs_int_array = 1
@@ -36887,8 +36926,67 @@ class Compiler
     tmp_res
   end
 
+ # Per-variant lookup: returns a dispatch struct describing how to
+ # iterate a hash, read keys/values, declare block-param locals, and
+ # build a same-type result. Index [0]=ctor, [1]=getter, [2]=setter,
+ # [3]=key_type_label, [4]=val_type_label, [5]=key_iter_expr_fmt
+ # (where %RC% is the receiver and %I% the index var).
+ # Issue #802.
+  def hash_variant_info(ht)
+    if ht == "str_int_hash"
+      @needs_str_int_hash = 1
+      return ["sp_StrIntHash_new", "sp_StrIntHash_get", "sp_StrIntHash_set", "string", "int", "%RC%->order[%I%]"]
+    end
+    if ht == "str_str_hash"
+      @needs_str_str_hash = 1
+      return ["sp_StrStrHash_new", "sp_StrStrHash_get", "sp_StrStrHash_set", "string", "string", "%RC%->order[%I%]"]
+    end
+    if ht == "sym_int_hash"
+      @needs_sym_int_hash = 1
+      return ["sp_SymIntHash_new", "sp_SymIntHash_get", "sp_SymIntHash_set", "symbol", "int", "%RC%->order[%I%]"]
+    end
+    if ht == "sym_str_hash"
+      @needs_sym_str_hash = 1
+      return ["sp_SymStrHash_new", "sp_SymStrHash_get", "sp_SymStrHash_set", "symbol", "string", "%RC%->order[%I%]"]
+    end
+    if ht == "int_str_hash"
+      @needs_int_str_hash = 1
+      return ["sp_IntStrHash_new", "sp_IntStrHash_get", "sp_IntStrHash_set", "int", "string", "%RC%->order[%I%]"]
+    end
+    if ht == "str_poly_hash"
+      @needs_str_poly_hash = 1
+      @needs_rb_value = 1
+      return ["sp_StrPolyHash_new", "sp_StrPolyHash_get", "sp_StrPolyHash_set", "string", "poly", "%RC%->order[%I%]"]
+    end
+    if ht == "sym_poly_hash"
+      @needs_rb_value = 1
+      return ["sp_SymPolyHash_new", "sp_SymPolyHash_get", "sp_SymPolyHash_set", "symbol", "poly", "%RC%->order[%I%]"]
+    end
+    if ht == "poly_poly_hash"
+      @needs_poly_poly_hash = 1
+      @needs_rb_value = 1
+      return ["sp_PolyPolyHash_new", "sp_PolyPolyHash_get", "sp_PolyPolyHash_set", "poly", "poly", "%RC%->keys[%RC%->order[%I%]]"]
+    end
+    nil
+  end
+
+  def hash_key_iter_expr(info, rc, itmp)
+    fmt = info[5]
+    fmt = fmt.gsub("%RC%", rc)
+    fmt = fmt.gsub("%I%", itmp)
+    fmt
+  end
+
   def compile_hash_select_reject(nid, hash_type, rc, mname)
- # Build a new hash by filtering entries using the block
+ # Build a new hash by filtering entries using the block. Block
+ # params (lv_<k>, lv_<v>) are re-declared scope-locally inside
+ # the for body so the C type matches this variant's key/value
+ # ABI even when the same Ruby block-param name was used earlier
+ # at a different variant (the function-level decl picks one).
+    info = hash_variant_info(hash_type)
+    if info.nil?
+      return "0"
+    end
     bp1 = get_block_param(nid, 0)
     bp2 = get_block_param(nid, 1)
     if bp1 == ""
@@ -36897,32 +36995,21 @@ class Compiler
     if bp2 == ""
       bp2 = "_v"
     end
-    ctor = ""
-    getter = ""
-    setter = ""
-    val_type = ""
-    if hash_type == "str_int_hash"
-      ctor = "sp_StrIntHash_new"
-      getter = "sp_StrIntHash_get"
-      setter = "sp_StrIntHash_set"
-      val_type = "int"
-      @needs_str_int_hash = 1
-    else
-      ctor = "sp_StrStrHash_new"
-      getter = "sp_StrStrHash_get"
-      setter = "sp_StrStrHash_set"
-      val_type = "string"
-      @needs_str_str_hash = 1
-    end
+    ctor = info[0]
+    getter = info[1]
+    setter = info[2]
+    key_type = info[3]
+    val_type = info[4]
     @needs_gc = 1
     tmp = new_temp
     itmp = new_temp
     emit("  " + c_type(hash_type) + tmp + " = " + ctor + "();")
     emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + rc + "->len; " + itmp + "++) {")
-    emit("    lv_" + bp1 + " = " + rc + "->order[" + itmp + "];")
-    emit("    lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
+    key_expr = hash_key_iter_expr(info, rc, itmp)
+    emit("    " + c_type(key_type) + " lv_" + bp1 + " = " + key_expr + ";")
+    emit("    " + c_type(val_type) + " lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
     push_scope
-    declare_var(bp1, "string")
+    declare_var(bp1, key_type)
     declare_var(bp2, val_type)
     blk = @nd_block[nid]
     bbody = @nd_body[blk]
@@ -36930,7 +37017,6 @@ class Compiler
     if bbody >= 0
       bs = get_stmts(bbody)
       if bs.length > 0
- # Emit all but last as stmts
         k = 0
         while k < bs.length - 1
           compile_stmt(bs[k])
@@ -36950,6 +37036,10 @@ class Compiler
   end
 
   def compile_hash_block_predicate(nid, hash_type, rc, mname)
+    info = hash_variant_info(hash_type)
+    if info.nil?
+      return "0"
+    end
     bp1 = get_block_param(nid, 0)
     bp2 = get_block_param(nid, 1)
     if bp1 == ""
@@ -36958,38 +37048,23 @@ class Compiler
     if bp2 == ""
       bp2 = "_v"
     end
-    val_type = "int"
-    getter = "sp_StrIntHash_get"
-    if hash_type == "str_str_hash"
-      val_type = "string"
-      getter = "sp_StrStrHash_get"
-    end
+    getter = info[1]
+    key_type = info[3]
+    val_type = info[4]
     push_scope
-    declare_var(bp1, "string")
+    declare_var(bp1, key_type)
     declare_var(bp2, val_type)
     itmp = new_temp
- # Compile block expression
+    key_expr = hash_key_iter_expr(info, rc, itmp)
     blk = @nd_block[nid]
     bbody = @nd_body[blk]
     bexpr = "0"
-    blk_stmts = "".split(",", -1)
-    if bbody >= 0
-      bs = get_stmts(bbody)
-      if bs.length > 0
-        k = 0
-        while k < bs.length - 1
-          blk_stmts.push(bs[k].to_s)
-          k = k + 1
-        end
-        bexpr = "PLACEHOLDER"
-      end
-    end
     if mname == "count"
       tmp_c = new_temp
       emit("  mrb_int " + tmp_c + " = 0;")
       emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + rc + "->len; " + itmp + "++) {")
-      emit("    lv_" + bp1 + " = " + rc + "->order[" + itmp + "];")
-      emit("    lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
+      emit("    " + c_type(key_type) + " lv_" + bp1 + " = " + key_expr + ";")
+      emit("    " + c_type(val_type) + " lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
       if bbody >= 0
         bs = get_stmts(bbody)
         k = 0
@@ -37010,8 +37085,8 @@ class Compiler
       tmp_r = new_temp
       emit("  mrb_bool " + tmp_r + " = FALSE;")
       emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + rc + "->len; " + itmp + "++) {")
-      emit("    lv_" + bp1 + " = " + rc + "->order[" + itmp + "];")
-      emit("    lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
+      emit("    " + c_type(key_type) + " lv_" + bp1 + " = " + key_expr + ";")
+      emit("    " + c_type(val_type) + " lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
       if bbody >= 0
         bs = get_stmts(bbody)
         k = 0
@@ -37032,8 +37107,8 @@ class Compiler
       tmp_r = new_temp
       emit("  mrb_bool " + tmp_r + " = TRUE;")
       emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + rc + "->len; " + itmp + "++) {")
-      emit("    lv_" + bp1 + " = " + rc + "->order[" + itmp + "];")
-      emit("    lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
+      emit("    " + c_type(key_type) + " lv_" + bp1 + " = " + key_expr + ";")
+      emit("    " + c_type(val_type) + " lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
       if bbody >= 0
         bs = get_stmts(bbody)
         k = 0
@@ -37050,13 +37125,21 @@ class Compiler
       pop_scope
       return tmp_r
     end
- # find / detect — return key of first match
+ # find / detect -- key-only result (CRuby returns [k,v] array;
+ # spinel emits the key for the str variants today, keep that
+ # shape for consistency. Restricted to string-keyed variants
+ # because the return type is currently committed to const char *
+ # by the analyzer.
     if mname == "find" || mname == "detect"
+      if key_type != "string"
+        pop_scope
+        return "0"
+      end
       tmp_r = new_temp
       emit("  const char *" + tmp_r + " = \"\";")
       emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + rc + "->len; " + itmp + "++) {")
-      emit("    lv_" + bp1 + " = " + rc + "->order[" + itmp + "];")
-      emit("    lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
+      emit("    " + c_type(key_type) + " lv_" + bp1 + " = " + key_expr + ";")
+      emit("    " + c_type(val_type) + " lv_" + bp2 + " = " + getter + "(" + rc + ", lv_" + bp1 + ");")
       if bbody >= 0
         bs = get_stmts(bbody)
         k = 0
