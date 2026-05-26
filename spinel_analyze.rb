@@ -4685,6 +4685,10 @@ class Compiler
     if mname == "bytes"
       return "int_array"
     end
+ # Issue #903: String#codepoints returns an int_array of codepoints.
+    if mname == "codepoints"
+      return "int_array"
+    end
     if mname == "hex"
       return "int"
     end

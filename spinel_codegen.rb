@@ -19528,6 +19528,12 @@ class Compiler
       @needs_gc = 1
       return "sp_str_split(" + rc + ", \"\")"
     end
+ # Issue #903: String#codepoints returns int_array of codepoints.
+    if mname == "codepoints"
+      @needs_int_array = 1
+      @needs_gc = 1
+      return "sp_str_codepoints(" + rc + ")"
+    end
     if mname == "bytes"
       @needs_int_array = 1
       @needs_gc = 1
