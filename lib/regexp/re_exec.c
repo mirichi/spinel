@@ -545,6 +545,12 @@ bt_match(const mrb_regexp_pattern *pat, const char *str, const char *str_end,
     case RE_BACKREF:
       {
         int group = inst.a;
+        /* Issue #753: bounds-check the group index against the
+           captures array. A backref to a non-existent group (e.g.
+           `/(\\1)/`) would read past captures[] and use garbage as
+           the start/end. CRuby returns nil (no match) -- match the
+           same by returning FALSE without dereferencing. */
+        if (group * 2 + 1 >= ncap) return FALSE;
         int gs = captures[group * 2];
         int ge = captures[group * 2 + 1];
         if (gs < 0 || ge < 0) return FALSE;
