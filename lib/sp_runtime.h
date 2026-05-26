@@ -1353,8 +1353,11 @@ static sp_StrArray*sp_str_lines(const char*s){sp_StrArray*a=sp_StrArray_new();if
    into a sp_str_alloc'd buffer that has the GC marker byte. */
 static const char*sp_str_gsub(const char*s,const char*pat,const char*rep){if(!s)return sp_str_empty;if(!pat||!rep)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);if(pl==0)return s;size_t cap=sl*2+1;char*out=(char*)malloc(cap);size_t ol=0;const char*p=s;while(*p){const char*f=strstr(p,pat);if(!f){size_t n=strlen(p);if(ol+n>=cap){cap=(ol+n)*2+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;break;}size_t n=f-p;if(ol+n+rl>=cap){cap=(ol+n+rl)*2+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;memcpy(out+ol,rep,rl);ol+=rl;p=f+pl;}out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol+1);free(out);return r;}
 /* Returns a *character* offset (codepoint index), not a byte offset. */
-/* Issue #759: NULL sub to strstr is UB. */
-static mrb_int sp_str_index(const char*s,const char*sub){if(!s||!sub)return -1;const char*f=strstr(s,sub);if(!f)return -1;mrb_int n=0;const char*p=s;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+/* Issue #759: NULL sub to strstr is UB. Issue #847: nil sub raises
+   TypeError per MRI rather than silently returning -1 (would conflate
+   "nil arg" with "not found"). Self NULL stays -1 -- shouldn't happen
+   but keep defensive. */
+static mrb_int sp_str_index(const char*s,const char*sub){if(!s)return -1;if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*f=strstr(s,sub);if(!f)return -1;mrb_int n=0;const char*p=s;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
 /* `s.index(sub, start)` -- search starts at codepoint index `start`.
    Negative start counts back from the end of the string. Returns the
    absolute codepoint offset of the match (not relative to start), or
