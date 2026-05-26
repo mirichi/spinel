@@ -4721,6 +4721,15 @@ class Compiler
         if rt == "string"
           return "string"
         end
+        if rt == "sym_int_hash" || rt == "str_int_hash"
+          return "int"
+        end
+        if rt == "sym_str_hash" || rt == "str_str_hash" || rt == "int_str_hash"
+          return "string"
+        end
+        if rt == "sym_poly_hash" || rt == "str_poly_hash" || rt == "poly_poly_hash"
+          return "poly"
+        end
       end
     end
     if mname == "squeeze"

@@ -22304,7 +22304,10 @@ class Compiler
         return "(" + rc + "->default_v = (mrb_int)(" + compile_arg0(nid) + "))"
       end
       if mname == "delete"
-        return "(sp_SymIntHash_delete(" + rc + ", " + compile_arg0(nid) + "), 0)"
+ # Return the deleted value (or 0 / default_v when absent) — CRuby
+ # returns the prior value. Pre-eval the key once so has_key /
+ # get / delete all see the same sp_sym.
+        return "({ sp_sym _k = " + compile_arg0(nid) + "; mrb_int _v = sp_SymIntHash_has_key(" + rc + ", _k) ? sp_SymIntHash_get(" + rc + ", _k) : 0; sp_SymIntHash_delete(" + rc + ", _k); _v; })"
       end
     end
     if recv_type == "sym_str_hash"
@@ -22434,7 +22437,7 @@ class Compiler
         return "(" + rc + "->default_v = " + compile_expr_as_string(get_args(@nd_arguments[nid])[0]) + ")"
       end
       if mname == "delete"
-        return "(sp_SymStrHash_delete(" + rc + ", " + compile_arg0(nid) + "), 0)"
+        return "({ sp_sym _k = " + compile_arg0(nid) + "; const char *_v = sp_SymStrHash_has_key(" + rc + ", _k) ? sp_SymStrHash_get(" + rc + ", _k) : NULL; sp_SymStrHash_delete(" + rc + ", _k); _v; })"
       end
     end
     if recv_type == "sym_poly_hash"
@@ -22567,7 +22570,7 @@ class Compiler
         return "(" + rc + "->default_v = " + box_expr_to_poly(get_args(@nd_arguments[nid])[0]) + ")"
       end
       if mname == "delete"
-        return "(sp_SymPolyHash_delete(" + rc + ", " + compile_arg0(nid) + "), sp_box_nil())"
+        return "({ sp_sym _k = " + compile_arg0(nid) + "; sp_RbVal _v = sp_SymPolyHash_has_key(" + rc + ", _k) ? sp_SymPolyHash_get(" + rc + ", _k) : sp_box_nil(); sp_SymPolyHash_delete(" + rc + ", _k); _v; })"
       end
     end
     if recv_type == "str_poly_hash"
