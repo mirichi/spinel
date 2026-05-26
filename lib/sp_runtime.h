@@ -1391,7 +1391,46 @@ static sp_StrArray*sp_str_lines(const char*s){sp_StrArray*a=sp_StrArray_new();if
    sp_mark_string writes byte[-1] = 0xfc, which on a raw malloc buffer
    clobbers malloc metadata. Build into a scratch buffer, then copy
    into a sp_str_alloc'd buffer that has the GC marker byte. */
-static const char*sp_str_gsub(const char*s,const char*pat,const char*rep){if(!s)return sp_str_empty;if(!pat||!rep)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);if(pl==0)return s;size_t cap=sl*2+1;char*out=(char*)malloc(cap);size_t ol=0;const char*p=s;while(*p){const char*f=strstr(p,pat);if(!f){size_t n=strlen(p);if(ol+n>=cap){cap=(ol+n)*2+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;break;}size_t n=f-p;if(ol+n+rl>=cap){cap=(ol+n+rl)*2+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;memcpy(out+ol,rep,rl);ol+=rl;p=f+pl;}out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol+1);free(out);return r;}
+/* Issue #850: empty pattern inserts the replacement between every
+   character (and at the start). CRuby walks codepoint-by-codepoint;
+   spinel's gsub is byte-oriented so we mirror that with UTF-8 stride
+   to keep multi-byte characters intact. */
+static const char*sp_str_gsub(const char*s,const char*pat,const char*rep){
+  if(!s)return sp_str_empty;
+  if(!pat||!rep)return s;
+  size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);
+  if(pl==0){
+    /* Empty pattern: insert rep between every codepoint + at start/end.
+       Result size: (chars+1) * rl + sl. */
+    size_t cap=sl+rl*(sl+1)+1;
+    char*out=(char*)malloc(cap);
+    size_t ol=0;
+    memcpy(out+ol,rep,rl); ol+=rl;
+    const char*p=s;
+    while(*p){
+      int n=sp_utf8_advance(p);
+      memcpy(out+ol,p,n); ol+=n;
+      memcpy(out+ol,rep,rl); ol+=rl;
+      p+=n;
+    }
+    out[ol]=0;
+    char*r=sp_str_alloc(ol); memcpy(r,out,ol+1); free(out); return r;
+  }
+  size_t cap=sl*2+1;
+  char*out=(char*)malloc(cap);
+  size_t ol=0;
+  const char*p=s;
+  while(*p){
+    const char*f=strstr(p,pat);
+    if(!f){size_t n=strlen(p);if(ol+n>=cap){cap=(ol+n)*2+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;break;}
+    size_t n=f-p;
+    if(ol+n+rl>=cap){cap=(ol+n+rl)*2+1;out=(char*)realloc(out,cap);}
+    memcpy(out+ol,p,n);ol+=n;
+    memcpy(out+ol,rep,rl);ol+=rl;
+    p=f+pl;
+  }
+  out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol+1);free(out);return r;
+}
 /* Returns a *character* offset (codepoint index), not a byte offset. */
 /* Issue #759: NULL sub to strstr is UB. Issue #847: nil sub raises
    TypeError per MRI rather than silently returning -1 (would conflate
