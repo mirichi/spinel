@@ -22,9 +22,15 @@ typedef struct {
     int64_t matched_len;
 } sp_StringScanner;
 
-/* Constructor */
+/* Constructor.
+   Issue #811: NULL str used to segfault at strlen(NULL); treat as
+   the empty string. CRuby raises TypeError -- spinel can't easily
+   raise from a typed-string constructor here, so the safer fallback
+   is empty-string behaviour. */
 sp_StringScanner *sp_StringScanner_new(const char *str) {
+    if (!str) str = "";
     sp_StringScanner *sc = (sp_StringScanner *)calloc(1, sizeof(sp_StringScanner));
+    if (!sc) return NULL;
     sc->source = str;
     sc->source_len = (int64_t)strlen(str);
     sc->pos = 0;
