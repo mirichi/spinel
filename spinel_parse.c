@@ -1750,9 +1750,12 @@ int main(int argc, char **argv) {
     for (diag = (pm_diagnostic_t *)parser.error_list.head; diag; diag = (pm_diagnostic_t *)diag->node.next) {
       fprintf(stderr, "  %s\n", diag->message);
     }
+    /* Issue #764: free the registered include paths on the parse-
+       error exit path too. */
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
     free(source);
+    sp_includes_free();
     return 1;
   }
 
@@ -1774,6 +1777,18 @@ int main(int argc, char **argv) {
     out = fopen(argv[2], "wb");
     if (!out) {
       fprintf(stderr, "spinel_parse: cannot write '%s'\n", argv[2]);
+      /* Issue #764: clean up before bailing on the output-open
+         failure. We've allocated source, g_source_file_escaped,
+         lines[], plus parser/root, and registered sp_included_paths
+         entries -- free all to avoid leaking on the way out. */
+      for (int i = 0; i < line_count; i++) free(lines[i]);
+      free(lines);
+      pm_node_destroy(&parser, root);
+      pm_parser_free(&parser);
+      free(source);
+      free(g_source_file_escaped);
+      g_source_file_escaped = NULL;
+      sp_includes_free();
       return 1;
     }
   }
