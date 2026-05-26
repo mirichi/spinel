@@ -4395,6 +4395,9 @@ class Compiler
     if t == "complex"
       return "sp_Complex"
     end
+    if t == "rational"
+      return "sp_Rational"
+    end
     if t == "int"
       return "mrb_int"
     end
@@ -12528,19 +12531,11 @@ class Compiler
     end
     if t == "UnsupportedNode"
  # The parser emitted this sentinel because it hit a Prism node
- # type it doesn't know how to serialize. RationalNode /
- # ComplexNode appear in literal positions where a hard exit
- # would prevent the rest of the file from compiling at all; warn
- # and emit 0 so the program runs (with wrong arithmetic for that
- # literal). Everything else still hard-errors. Issue #728.
+ # type it doesn't know how to serialize. ImaginaryNode and
+ # RationalNode are now supported as proper nodes (#840 #841),
+ # so anything that hits this arm is a genuine unsupported Ruby
+ # construct; hard-error so the user gets a precise location.
       kind_us = @nd_content[nid]
-      if kind_us == "RationalNode" || kind_us == "ComplexNode" || kind_us == "ImaginaryNode"
- # Emit `1` (not `0`) so the common `N / Mr` shape doesn't turn
- # into a runtime divide-by-zero. The result is still wrong, but
- # the program continues. Issue #728.
-        $stderr.puts "warning: spinel does not support " + kind_us + " at line " + @nd_value[nid].to_s + " (emitting 1)"
-        return "1"
-      end
       $stderr.puts "Spinel: cannot compile " + kind_us + " at line " + @nd_value[nid].to_s + " (unsupported Ruby syntax)"
       exit(1)
     end
@@ -12558,6 +12553,27 @@ class Compiler
     end
     if t == "FloatNode"
       return @nd_content[nid]
+    end
+ # Issue #840: ImaginaryNode `Ni` -- sp_Complex literal (re=0, im=N).
+ # The wrapped numeric is the imaginary coefficient.
+    if t == "ImaginaryNode"
+      inner_im = @nd_expression[nid]
+      if inner_im < 0
+ # `numeric` parser field maps onto @nd_expression via the same
+ # set_ref_field used for AssocNode/CapturePattern. If unset,
+ # default to 1i.
+        return "((sp_Complex){0.0, 1.0})"
+      end
+      inner_t = @nd_type[inner_im]
+      if inner_t == "FloatNode"
+        return "((sp_Complex){0.0, " + @nd_content[inner_im] + "})"
+      end
+ # IntegerNode coefficient -- cast to mrb_float for the im slot.
+      return "((sp_Complex){0.0, (mrb_float)" + @nd_value[inner_im].to_s + "LL})"
+    end
+ # Issue #841: RationalNode `N/Mr` -- sp_Rational literal.
+    if t == "RationalNode"
+      return "((sp_Rational){" + @nd_rat_num[nid] + "LL, " + @nd_rat_den[nid] + "LL})"
     end
     if t == "StringNode"
       return c_string_literal(@nd_content[nid])
@@ -15963,6 +15979,21 @@ class Compiler
       end
       if mname == "conjugate" || mname == "conj"
         return "sp_complex_conjugate(" + rc + ")"
+      end
+      if mname == "inspect" || mname == "to_s"
+        return "sp_complex_inspect(" + rc + ")"
+      end
+    end
+ # Rational #840 #841: numerator / denominator / inspect.
+    if recv_type == "rational"
+      if mname == "numerator"
+        return "(" + rc + ").num"
+      end
+      if mname == "denominator"
+        return "(" + rc + ").den"
+      end
+      if mname == "inspect" || mname == "to_s"
+        return "sp_rational_inspect(" + rc + ")"
       end
     end
 
@@ -19882,6 +19913,10 @@ class Compiler
     end
     if mname == "lcm"
       return "sp_lcm(" + rc + ", " + compile_arg0(nid) + ")"
+    end
+ # Integer#quo: returns a Rational. Issue #872.
+    if mname == "quo"
+      return "sp_rational_new(" + rc + ", " + compile_arg0(nid) + ")"
     end
  # Integer#gcdlcm: [gcd, lcm]. Emitted as a tuple value via the
  # same registered-tuple path divmod uses. Issue #894.
@@ -28822,14 +28857,9 @@ class Compiler
     end
     t = @nd_type[nid]
     if t == "UnsupportedNode"
- # Same softer path as compile_expr's UnsupportedNode arm: warn
- # + no-op for Rational/Complex/Imaginary literals so the rest of
- # the file still compiles. Issue #728.
+ # Imaginary / Rational now have proper nodes (#840 #841). Any
+ # remaining UnsupportedNode is a genuine syntax gap; hard-error.
       kind_us2 = @nd_content[nid]
-      if kind_us2 == "RationalNode" || kind_us2 == "ComplexNode" || kind_us2 == "ImaginaryNode"
-        $stderr.puts "warning: spinel does not support " + kind_us2 + " at line " + @nd_value[nid].to_s + " (no-op)"
-        return
-      end
       $stderr.puts "Spinel: cannot compile " + kind_us2 + " at line " + @nd_value[nid].to_s + " (unsupported Ruby syntax)"
       exit(1)
     end
@@ -35760,6 +35790,13 @@ class Compiler
     if at == "time"
       return "sp_time_inspect_v(" + val + ")"
     end
+ # Issues #840 #841: Complex / Rational value types.
+    if at == "complex"
+      return "sp_complex_inspect(" + val + ")"
+    end
+    if at == "rational"
+      return "sp_rational_inspect(" + val + ")"
+    end
     ""
   end
 
@@ -35861,6 +35898,14 @@ class Compiler
     if at == "class"
       @needs_class_table = 1
       emit("  puts(sp_class_to_s(" + val + "));")
+      return
+    end
+    if at == "complex"
+      emit("  { const char *_cs = sp_complex_inspect(" + val + "); fputs(_cs, stdout); putchar('" + bsl_n + "'); }")
+      return
+    end
+    if at == "rational"
+      emit("  { const char *_rs = sp_rational_inspect(" + val + "); fputs(_rs, stdout); putchar('" + bsl_n + "'); }")
       return
     end
     if at == "time"

@@ -566,6 +566,29 @@ static int flatten(pm_node_t *node) {
     F("value", n->value);
     break;
   }
+  case PM_IMAGINARY_NODE: {
+    /* `2i` -- imaginary numeric. Issue #840. Wraps an inner
+       IntegerNode or FloatNode in `numeric`. Codegen surfaces this
+       as a sp_Complex literal {re=0, im=numeric}. */
+    pm_imaginary_node_t *n = (pm_imaginary_node_t *)node;
+    N("ImaginaryNode");
+    R("numeric", n->numeric);
+    break;
+  }
+  case PM_RATIONAL_NODE: {
+    /* `1/2r` or `1.5r` -- rational literal. Issue #841. Emits
+       numerator + denominator as decimal-text fields (loader pins
+       them in @nd_rat_num / @nd_rat_den). Prism stores both as
+       reduced pm_integer_t. */
+    pm_rational_node_t *n = (pm_rational_node_t *)node;
+    N("RationalNode");
+    char nbuf[32];
+    snprintf(nbuf, sizeof(nbuf), "%lld", (long long)pm_int_value(&n->numerator));
+    emit_str(id, "rat_num", nbuf);
+    snprintf(nbuf, sizeof(nbuf), "%lld", (long long)pm_int_value(&n->denominator));
+    emit_str(id, "rat_den", nbuf);
+    break;
+  }
   case PM_STRING_NODE: {
     pm_string_node_t *n = (pm_string_node_t *)node;
     N("StringNode");

@@ -134,6 +134,9 @@ class Compiler
  # case (block-iteration bodies, ad-hoc temp scopes, etc.).
     @nd_scope_names = "".split(",", -1)
     @nd_scope_types = "".split(",", -1)
+ # Issue #841: RationalNode literal slots.
+    @nd_rat_num = "".split(",", -1)
+    @nd_rat_den = "".split(",", -1)
 
     @nd_count = 0
     @root_id = 0
@@ -2265,6 +2268,12 @@ class Compiler
  # is a string.
       return infer_type(@nd_expression[nid])
     end
+    if t == "ImaginaryNode"
+      return "complex"
+    end
+    if t == "RationalNode"
+      return "rational"
+    end
     if t == "ConstantReadNode"
       if @nd_name[nid] == "ARGV"
         return "argv"
@@ -3788,6 +3797,9 @@ class Compiler
     if mname == "nonzero?"
       return 1
     end
+    if mname == "quo"
+      return 1
+    end
     if mname == "itself" || mname == "then" || mname == "yield_self"
       return 1
     end
@@ -4453,6 +4465,13 @@ class Compiler
         end
       end
       return "int"
+    end
+ # Integer#quo returns Rational. Issue #872.
+    if mname == "quo" && recv >= 0
+      rt_quo = infer_type(recv)
+      if rt_quo == "int"
+        return "rational"
+      end
     end
  # Integer#size: bytes used to represent the int. Spinel
  # mrb_int is always 64-bit, so it's a constant 8. Issue #860.

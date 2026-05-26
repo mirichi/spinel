@@ -494,6 +494,8 @@ class Compiler
     @nd_inferred_type.push("")
     @nd_scope_names.push("")
     @nd_scope_types.push("")
+    @nd_rat_num.push("")
+    @nd_rat_den.push("")
     @nd_count = @nd_count + 1
     nid
   end
@@ -554,6 +556,9 @@ class Compiler
     @nd_inferred_type = Array.new(n, "")
     @nd_scope_names = Array.new(n, "")
     @nd_scope_types = Array.new(n, "")
+ # Issue #841: RationalNode literal slots.
+    @nd_rat_num = Array.new(n, "")
+    @nd_rat_den = Array.new(n, "")
     @nd_count = n
   end
 
@@ -602,6 +607,15 @@ class Compiler
  # UnsupportedNode carries the Prism node-type name here so
  # codegen can surface a precise compile error.
       @nd_content[nid] = val
+    end
+ # Issue #841: RationalNode carries numerator and denominator
+ # as decimal-text strings (loaded into separate slots so
+ # codegen can synthesize sp_rational_new(num, den) literals).
+    if field == "rat_num"
+      @nd_rat_num[nid] = val
+    end
+    if field == "rat_den"
+      @nd_rat_den[nid] = val
     end
   end
 
@@ -678,6 +692,12 @@ class Compiler
       @nd_ensure_clause[nid] = ref_id
     end
     if field == "expression"
+      @nd_expression[nid] = ref_id
+    end
+ # Issue #840: ImaginaryNode "numeric" field carries the imaginary
+ # coefficient (IntegerNode or FloatNode); reuse the @nd_expression
+ # slot so codegen reads it the same way.
+    if field == "numeric"
       @nd_expression[nid] = ref_id
     end
     if field == "target"

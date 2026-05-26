@@ -365,6 +365,61 @@ static inline sp_Complex sp_complex_polar(mrb_float m,mrb_float a){sp_Complex c;
 static inline sp_Complex sp_complex_add(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re+b.re;c.im=a.im+b.im;return c;}
 static inline sp_Complex sp_complex_mul(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re*b.re-a.im*b.im;c.im=a.re*b.im+a.im*b.re;return c;}
 static inline sp_Complex sp_complex_conjugate(sp_Complex a){sp_Complex c;c.re=a.re;c.im=-a.im;return c;}
+/* Inspect renders Complex per Ruby: `(re+imi)` or `(re-imi)` for
+   negative imaginary. Integer-valued components render without
+   decimals; fractional render via %g. Issue #840. */
+static const char *sp_complex_inspect(sp_Complex c) {
+  char buf[128];
+  int n = 0;
+  /* Real part: keep integer-looking values short. */
+  if (c.re == (mrb_int)c.re) n += snprintf(buf + n, sizeof(buf) - n, "(%lld", (long long)c.re);
+  else n += snprintf(buf + n, sizeof(buf) - n, "(%g", c.re);
+  /* Imaginary sign + value. */
+  if (c.im < 0) {
+    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "-%lldi)", -(long long)c.im);
+    else n += snprintf(buf + n, sizeof(buf) - n, "%gi)", c.im);
+  } else {
+    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi)", (long long)c.im);
+    else n += snprintf(buf + n, sizeof(buf) - n, "+%gi)", c.im);
+  }
+  if (n < 0) n = 0;
+  char *r = sp_str_alloc_raw(n + 1);
+  memcpy(r, buf, n);
+  r[n] = 0;
+  return r;
+}
+
+/* ---- Rational runtime ---- */
+/* Value-type Rational: 16 bytes (two mrb_ints), passed by value.
+   Stored in reduced form -- the parser hands us the already-reduced
+   numerator/denominator from the literal; Integer#quo / arithmetic
+   normalizes via sp_rational_reduce. Issue #841. */
+typedef struct{mrb_int num;mrb_int den;}sp_Rational;
+static inline mrb_int sp_rational_gcd_i(mrb_int a, mrb_int b) {
+  if (a < 0) a = -a;
+  if (b < 0) b = -b;
+  while (b) { mrb_int t = b; b = a % b; a = t; }
+  return a;
+}
+static inline sp_Rational sp_rational_new(mrb_int n, mrb_int d) {
+  sp_Rational r;
+  if (d == 0) { r.num = n; r.den = 0; return r; }
+  if (d < 0) { n = -n; d = -d; }
+  mrb_int g = sp_rational_gcd_i(n, d);
+  if (g <= 0) g = 1;
+  r.num = n / g;
+  r.den = d / g;
+  return r;
+}
+static const char *sp_rational_inspect(sp_Rational r) {
+  char buf[64];
+  int n = snprintf(buf, sizeof(buf), "(%lld/%lld)", (long long)r.num, (long long)r.den);
+  if (n < 0) n = 0;
+  char *o = sp_str_alloc_raw(n + 1);
+  memcpy(o, buf, n);
+  o[n] = 0;
+  return o;
+}
 
 /* ---- Time runtime ---- */
 /* sp_Time keeps Time.now / Time.at as value-typed structs. d78149b's
