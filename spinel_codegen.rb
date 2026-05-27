@@ -21057,6 +21057,43 @@ class Compiler
       end
       return rc
     end
+ # Integer#step without a block materialises an IntArray (or
+ # FloatArray when any operand is float). Block form is handled
+ # in compile_block_iteration_stmt.
+    if mname == "step" && @nd_block[nid] < 0
+      args_id_is = @nd_arguments[nid]
+      step_is_float = 0
+      if args_id_is >= 0
+        aargs_is = get_args(args_id_is)
+        ai_is = 0
+        while ai_is < aargs_is.length
+          if infer_type(aargs_is[ai_is]) == "float"
+            step_is_float = 1
+          end
+          ai_is = ai_is + 1
+        end
+        if step_is_float == 1
+          @needs_float_array = 1
+          @needs_gc = 1
+          limit_is = compile_arg0_as_float(nid)
+          step_is = "1.0"
+          if aargs_is.length > 1
+            step_is = "(mrb_float)(" + compile_expr(aargs_is[1]) + ")"
+          end
+          return "sp_FloatArray_from_step((mrb_float)(" + rc + "), " + limit_is + ", " + step_is + ")"
+        end
+        if aargs_is.length > 0
+          @needs_int_array = 1
+          @needs_gc = 1
+          limit_ii = compile_arg0_as_int(nid)
+          step_ii = "1"
+          if aargs_is.length > 1
+            step_ii = compile_expr(aargs_is[1])
+          end
+          return "sp_IntArray_from_range_step(" + rc + ", " + limit_ii + ", " + step_ii + ")"
+        end
+      end
+    end
     ""
   end
 
@@ -21179,6 +21216,27 @@ class Compiler
       emit("  " + tmp + "->_0 = (mrb_int)floor(" + recv_tmp + " / " + arg_tmp + ");")
       emit("  " + tmp + "->_1 = " + recv_tmp + " - " + tmp + "->_0 * " + arg_tmp + ";")
       return tmp
+    end
+ # Float#step without a block materialises a FloatArray of
+ # s, s+k, ..., bounded by the limit. Block form is handled in
+ # compile_block_iteration_stmt; this expression form was the
+ # SEGV path for `1.0.step(3.0, 0.5).to_a`.
+    if mname == "step" && @nd_block[nid] < 0
+      @needs_float_array = 1
+      @needs_gc = 1
+      args_id_fs = @nd_arguments[nid]
+      limit_fs = "0.0"
+      step_fs = "1.0"
+      if args_id_fs >= 0
+        aargs_fs = get_args(args_id_fs)
+        if aargs_fs.length > 0
+          limit_fs = compile_arg0_as_float(nid)
+        end
+        if aargs_fs.length > 1
+          step_fs = "(mrb_float)(" + compile_expr(aargs_fs[1]) + ")"
+        end
+      end
+      return "sp_FloatArray_from_step((mrb_float)(" + rc + "), " + limit_fs + ", " + step_fs + ")"
     end
     ""
   end
@@ -22307,6 +22365,11 @@ class Compiler
         tmp = new_temp
         emit("  sp_FloatArray *" + tmp + " = sp_FloatArray_new(); sp_FloatArray_replace(" + tmp + ", " + rc + "); sp_FloatArray_sort_bang(" + tmp + ");")
         return tmp
+      end
+      if mname == "to_a"
+        tmp_ta = new_temp
+        emit("  sp_FloatArray *" + tmp_ta + " = sp_FloatArray_new(); sp_FloatArray_replace(" + tmp_ta + ", " + rc + ");")
+        return tmp_ta
       end
     end
     if is_ptr_array_type(recv_type) == 1

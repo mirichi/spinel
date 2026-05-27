@@ -6265,6 +6265,26 @@ class Compiler
         if rt_step == "range"
           return "int_array"
         end
+ # `n.step(...)` / `f.step(...)` without a block materialises into
+ # a typed array. Float promotes when any operand is float.
+        if rt_step == "int" || rt_step == "float"
+          step_is_float = (rt_step == "float") ? 1 : 0
+          args_id_step = @nd_arguments[nid]
+          if args_id_step >= 0
+            aa_step = get_args(args_id_step)
+            ai_step = 0
+            while ai_step < aa_step.length
+              if infer_type(aa_step[ai_step]) == "float"
+                step_is_float = 1
+              end
+              ai_step = ai_step + 1
+            end
+          end
+          if step_is_float == 1
+            return "float_array"
+          end
+          return "int_array"
+        end
       end
     end
     ""
