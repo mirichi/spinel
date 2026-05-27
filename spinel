@@ -73,6 +73,28 @@ while [ $# -gt 0 ]; do
     --rbs)      shift; RBS_DIR="$1"; shift ;;
     --int-overflow=*) INT_OVERFLOW="${1#--int-overflow=}"; shift ;;
     --int-overflow)   shift; INT_OVERFLOW="$1"; shift ;;
+    --)         # `--` ends spinel-flag parsing (issue #835).
+                # In -E (run) mode the remaining args become ARGV
+                # for the compiled binary; in compile mode the next
+                # token is treated as the source path (matching ruby).
+                shift
+                if [ "$RUN_MODE" -eq 1 ]; then
+                  if [ -z "$SOURCE" ] && [ $# -gt 0 ]; then
+                    SOURCE="$1"
+                    shift
+                  fi
+                  break
+                fi
+                if [ -z "$SOURCE" ] && [ $# -gt 0 ]; then
+                  SOURCE="$1"
+                  shift
+                fi
+                # Anything left after the source is ignored in
+                # compile-only mode (matches ruby's behaviour where
+                # trailing args become ARGV — but spinel doesn't run
+                # the program here).
+                break
+                ;;
     -o)         shift; OUTPUT="$1"; shift ;;
     -O)         shift; OPT_LEVEL="$1"; shift ;;
     -e)         shift
