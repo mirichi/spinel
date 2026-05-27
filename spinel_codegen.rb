@@ -20830,6 +20830,14 @@ class Compiler
   end
 
   def compile_int_method_expr(nid, mname, rc)
+ # Integer#ceil / floor / round / truncate without precision arg
+ # return self. With precision the CRuby semantics differ; defer
+ # those to a follow-up.
+    if mname == "ceil" || mname == "floor" || mname == "round" || mname == "truncate"
+      if @nd_arguments[nid] < 0 || get_args(@nd_arguments[nid]).length == 0
+        return rc
+      end
+    end
  # is_a? / kind_of? on a primitive int: resolve at compile time. The
  # arg is a class constant (Integer / Numeric / Comparable / etc.);
  # answer based on Ruby's class hierarchy. Anything not in the int
