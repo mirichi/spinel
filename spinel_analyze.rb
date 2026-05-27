@@ -5004,8 +5004,10 @@ class Compiler
       return "int"
     end
     if mname == "tally"
-      if recv >= 0 && infer_type(recv) == "sym_array"
-        return "sym_int_hash"
+      if recv >= 0
+        rt_ta = infer_type(recv)
+        return "sym_int_hash" if rt_ta == "sym_array"
+        return "int_int_hash" if rt_ta == "int_array"
       end
       return "str_int_hash"
     end

@@ -4183,6 +4183,9 @@ class Compiler
     if t == "int_str_hash"
       return 1
     end
+    if t == "int_int_hash"
+      return 1
+    end
     if t == "sym_int_hash"
       return 1
     end
@@ -4555,6 +4558,9 @@ class Compiler
     end
     if t == "int_str_hash"
       return "sp_IntStrHash *"
+    end
+    if t == "int_int_hash"
+      return "sp_IntIntHash *"
     end
     if t == "sym_int_hash"
       return "sp_SymIntHash *"
@@ -5161,7 +5167,7 @@ class Compiler
     if is_nullable_type(t) == 1
       t = base_type(t)
     end
-    if t == "str_int_hash" || t == "str_str_hash" || t == "int_str_hash"
+    if t == "str_int_hash" || t == "str_str_hash" || t == "int_str_hash" || t == "int_int_hash"
       return 1
     end
     if t == "sym_int_hash" || t == "sym_str_hash"
@@ -7231,7 +7237,7 @@ class Compiler
     if t == "sym_int_hash" || t == "sym_str_hash" || t == "sym_poly_hash"
       return "sym"
     end
-    if t == "int_str_hash"
+    if t == "int_str_hash" || t == "int_int_hash"
       return "int"
     end
     if t == "poly_poly_hash"
@@ -7241,7 +7247,7 @@ class Compiler
   end
 
   def hash_value_part(t)
-    if t == "str_int_hash" || t == "sym_int_hash"
+    if t == "str_int_hash" || t == "sym_int_hash" || t == "int_int_hash"
       return "int"
     end
     if t == "str_str_hash" || t == "sym_str_hash" || t == "int_str_hash"
@@ -21832,11 +21838,13 @@ class Compiler
         pop_scope
         return tmp
       end
- # tally: sym_array only — int_array would need an int_int_hash
- # variant which doesn't exist yet. Result is sym_int_hash.
+ # Array#tally — sym keys → sym_int_hash, int keys → int_int_hash.
       if mname == "tally" && recv_type == "sym_array"
         @needs_sym_int_hash = 1
         return "sp_SymArray_tally(" + rc + ")"
+      end
+      if mname == "tally" && recv_type == "int_array"
+        return "sp_IntArray_tally_int(" + rc + ")"
       end
       if mname == "first"
         return "sp_IntArray_get(" + rc + ", 0)"
@@ -23390,6 +23398,26 @@ class Compiler
           emit("  }")
           return tmp
         end
+      end
+    end
+    if recv_type == "int_int_hash"
+      if mname == "[]"
+        return "sp_IntIntHash_get(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+      end
+      if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
+        return "sp_IntIntHash_has_key(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+      end
+      if mname == "length" || mname == "size" || (mname == "count" && @nd_block[nid] < 0 && @nd_arguments[nid] < 0)
+        return "sp_IntIntHash_length(" + rc + ")"
+      end
+      if mname == "empty?"
+        return "(sp_IntIntHash_length(" + rc + ") == 0)"
+      end
+      if mname == "any?" && @nd_block[nid] < 0
+        return "(sp_IntIntHash_length(" + rc + ") > 0)"
+      end
+      if mname == "dup" || mname == "clone"
+        return "sp_IntIntHash_dup(" + rc + ")"
       end
     end
     if recv_type == "int_str_hash"
@@ -37399,6 +37427,9 @@ class Compiler
     end
     if at == "int_str_hash"
       return "sp_IntStrHash_inspect(" + val + ")"
+    end
+    if at == "int_int_hash"
+      return "sp_IntIntHash_inspect(" + val + ")"
     end
     if at == "str_poly_hash"
       @needs_rb_value = 1
