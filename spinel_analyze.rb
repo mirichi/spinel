@@ -3638,6 +3638,20 @@ class Compiler
  # Negation of `=~`: bool. Issue #732.
       return "bool"
     end
+    if mname == "key"
+ # Hash#key(value) — returns the first key whose value == value.
+ # For sym-keyed hashes the result is a symbol; missing-key
+ # returns the empty-sym sentinel.
+      if recv >= 0
+        rt_hk = infer_type(recv)
+        if rt_hk == "sym_int_hash" || rt_hk == "sym_str_hash" || rt_hk == "sym_poly_hash"
+          return "symbol"
+        end
+        if rt_hk == "str_int_hash" || rt_hk == "str_str_hash" || rt_hk == "str_poly_hash"
+          return "string"
+        end
+      end
+    end
     if mname == "value?" || mname == "has_value?"
  # Hash#value?(v) -- returns bool. Issue #738.
       if recv >= 0

@@ -23430,6 +23430,14 @@ class Compiler
         emit("  { sp_SymIntHash *_d = " + rc + "; sp_SymIntHash *_s = " + ra_arg + "; for (mrb_int _ci = 0; _ci < _d->cap; _ci++) _d->keys[_ci] = -1; _d->len = 0; for (mrb_int _ri = 0; _ri < _s->len; _ri++) sp_SymIntHash_set(_d, _s->order[_ri], sp_SymIntHash_get(_s, _s->order[_ri])); }")
         return rc
       end
+ # Hash#key(value) — first key whose value equals `value`, or
+ # the empty-sym sentinel (-1) when not found (CRuby returns nil).
+      if mname == "key"
+        return "({ sp_SymIntHash *_h = " + rc + "; mrb_int _v = " + compile_arg0_as_int(nid) + "; sp_sym _r = -1; for (mrb_int _ki = 0; _ki < _h->len; _ki++) if (sp_SymIntHash_get(_h, _h->order[_ki]) == _v) { _r = _h->order[_ki]; break; } _r; })"
+      end
+      if mname == "value?" || mname == "has_value?"
+        return "({ sp_SymIntHash *_h = " + rc + "; mrb_int _v = " + compile_arg0_as_int(nid) + "; mrb_bool _r = FALSE; for (mrb_int _ki = 0; _ki < _h->len; _ki++) if (sp_SymIntHash_get(_h, _h->order[_ki]) == _v) { _r = TRUE; break; } _r; })"
+      end
     end
     if recv_type == "sym_str_hash"
       if mname == "[]"
@@ -23563,6 +23571,12 @@ class Compiler
       if mname == "replace"
         emit("  { sp_SymStrHash *_d = " + rc + "; sp_SymStrHash *_s = " + compile_arg0(nid) + "; for (mrb_int _ci = 0; _ci < _d->cap; _ci++) _d->keys[_ci] = -1; _d->len = 0; for (mrb_int _ri = 0; _ri < _s->len; _ri++) sp_SymStrHash_set(_d, _s->order[_ri], sp_SymStrHash_get(_s, _s->order[_ri])); }")
         return rc
+      end
+      if mname == "key"
+        return "({ sp_SymStrHash *_h = " + rc + "; const char *_v = " + compile_str_arg0(nid) + "; sp_sym _r = -1; for (mrb_int _ki = 0; _ki < _h->len; _ki++) { const char *_vv = sp_SymStrHash_get(_h, _h->order[_ki]); if (_vv && _v && strcmp(_vv, _v) == 0) { _r = _h->order[_ki]; break; } } _r; })"
+      end
+      if mname == "value?" || mname == "has_value?"
+        return "({ sp_SymStrHash *_h = " + rc + "; const char *_v = " + compile_str_arg0(nid) + "; mrb_bool _r = FALSE; for (mrb_int _ki = 0; _ki < _h->len; _ki++) { const char *_vv = sp_SymStrHash_get(_h, _h->order[_ki]); if (_vv && _v && strcmp(_vv, _v) == 0) { _r = TRUE; break; } } _r; })"
       end
     end
     if recv_type == "sym_poly_hash"
@@ -24049,6 +24063,12 @@ class Compiler
         emit("  { sp_StrIntHash *_d = " + rc + "; sp_StrIntHash *_s = " + compile_arg0(nid) + "; for (mrb_int _ci = 0; _ci < _d->cap; _ci++) _d->keys[_ci] = NULL; _d->len = 0; for (mrb_int _ri = 0; _ri < _s->len; _ri++) sp_StrIntHash_set(_d, _s->order[_ri], sp_StrIntHash_get(_s, _s->order[_ri])); }")
         return rc
       end
+      if mname == "key"
+        return "({ sp_StrIntHash *_h = " + rc + "; mrb_int _v = " + compile_arg0_as_int(nid) + "; const char *_r = NULL; for (mrb_int _ki = 0; _ki < _h->len; _ki++) if (sp_StrIntHash_get(_h, _h->order[_ki]) == _v) { _r = _h->order[_ki]; break; } _r; })"
+      end
+      if mname == "value?" || mname == "has_value?"
+        return "({ sp_StrIntHash *_h = " + rc + "; mrb_int _v = " + compile_arg0_as_int(nid) + "; mrb_bool _r = FALSE; for (mrb_int _ki = 0; _ki < _h->len; _ki++) if (sp_StrIntHash_get(_h, _h->order[_ki]) == _v) { _r = TRUE; break; } _r; })"
+      end
     end
     if recv_type == "int_int_hash"
       if mname == "[]"
@@ -24249,6 +24269,12 @@ class Compiler
       if mname == "replace"
         emit("  { sp_StrStrHash *_d = " + rc + "; sp_StrStrHash *_s = " + compile_arg0(nid) + "; for (mrb_int _ci = 0; _ci < _d->cap; _ci++) _d->keys[_ci] = NULL; _d->len = 0; for (mrb_int _ri = 0; _ri < _s->len; _ri++) sp_StrStrHash_set(_d, _s->order[_ri], sp_StrStrHash_get(_s, _s->order[_ri])); }")
         return rc
+      end
+      if mname == "key"
+        return "({ sp_StrStrHash *_h = " + rc + "; const char *_v = " + compile_str_arg0(nid) + "; const char *_r = NULL; for (mrb_int _ki = 0; _ki < _h->len; _ki++) { const char *_vv = sp_StrStrHash_get(_h, _h->order[_ki]); if (_vv && _v && strcmp(_vv, _v) == 0) { _r = _h->order[_ki]; break; } } _r; })"
+      end
+      if mname == "value?" || mname == "has_value?"
+        return "({ sp_StrStrHash *_h = " + rc + "; const char *_v = " + compile_str_arg0(nid) + "; mrb_bool _r = FALSE; for (mrb_int _ki = 0; _ki < _h->len; _ki++) { const char *_vv = sp_StrStrHash_get(_h, _h->order[_ki]); if (_vv && _v && strcmp(_vv, _v) == 0) { _r = TRUE; break; } } _r; })"
       end
     end
     ""
