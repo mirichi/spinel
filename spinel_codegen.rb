@@ -23442,6 +23442,62 @@ class Compiler
       if mname == "value?" || mname == "has_value?"
         return "({ sp_SymIntHash *_h = " + rc + "; mrb_int _v = " + compile_arg0_as_int(nid) + "; mrb_bool _r = FALSE; for (mrb_int _ki = 0; _ki < _h->len; _ki++) if (sp_SymIntHash_get(_h, _h->order[_ki]) == _v) { _r = TRUE; break; } _r; })"
       end
+      if mname == "transform_keys" && @nd_block[nid] >= 0
+ # Block return type drives the result variant: sym → sym_int_hash
+ # (same shape), string → str_int_hash (key-type swap).
+        bp_tk = get_block_param(nid, 0)
+        bp_tk = "_k" if bp_tk == ""
+        blk_tk = @nd_block[nid]
+        bbody_tk = @nd_body[blk_tk]
+        bs_tk = bbody_tk >= 0 ? get_stmts(bbody_tk) : []
+        push_scope
+        declare_var(bp_tk, "symbol")
+        bret_tk = bs_tk.length > 0 ? infer_type(bs_tk.last) : "symbol"
+        pop_scope
+        out_tk = new_temp
+        i_tk = new_temp
+        if bret_tk == "string"
+          emit("  sp_StrIntHash *" + out_tk + " = sp_StrIntHash_new();")
+          emit("  SP_GC_ROOT(" + out_tk + ");")
+          emit("  for (mrb_int " + i_tk + " = 0; " + i_tk + " < " + rc + "->len; " + i_tk + "++) {")
+          emit("    sp_sym lv_" + bp_tk + " = " + rc + "->order[" + i_tk + "];")
+          push_scope
+          declare_var(bp_tk, "symbol")
+          bexpr_tk = "NULL"
+          if bs_tk.length > 0
+            k_tk = 0
+            while k_tk < bs_tk.length - 1
+              compile_stmt(bs_tk[k_tk])
+              k_tk = k_tk + 1
+            end
+            bexpr_tk = compile_expr(bs_tk.last)
+          end
+          emit("    sp_StrIntHash_set(" + out_tk + ", " + bexpr_tk + ", sp_SymIntHash_get(" + rc + ", lv_" + bp_tk + "));")
+          pop_scope
+          emit("  }")
+          return out_tk
+        end
+ # Default (sym → sym): same variant, run block on each key.
+        emit("  sp_SymIntHash *" + out_tk + " = sp_SymIntHash_new();")
+        emit("  SP_GC_ROOT(" + out_tk + ");")
+        emit("  for (mrb_int " + i_tk + " = 0; " + i_tk + " < " + rc + "->len; " + i_tk + "++) {")
+        emit("    sp_sym lv_" + bp_tk + " = " + rc + "->order[" + i_tk + "];")
+        push_scope
+        declare_var(bp_tk, "symbol")
+        bexpr_tk = "lv_" + bp_tk
+        if bs_tk.length > 0
+          k_tk = 0
+          while k_tk < bs_tk.length - 1
+            compile_stmt(bs_tk[k_tk])
+            k_tk = k_tk + 1
+          end
+          bexpr_tk = compile_expr(bs_tk.last)
+        end
+        emit("    sp_SymIntHash_set(" + out_tk + ", " + bexpr_tk + ", sp_SymIntHash_get(" + rc + ", lv_" + bp_tk + "));")
+        pop_scope
+        emit("  }")
+        return out_tk
+      end
     end
     if recv_type == "sym_str_hash"
       if mname == "[]"

@@ -5458,7 +5458,31 @@ class Compiler
     end
     if mname == "transform_keys"
       if recv >= 0
-        return infer_type(recv)
+        rt_tk = infer_type(recv)
+ # Probe block return to detect key-type swap. sym → string swaps
+ # sym_*_hash to str_*_hash; same key type keeps the receiver shape.
+        blk_tk_a = @nd_block[nid]
+        if blk_tk_a >= 0
+          bbody_tk_a = @nd_body[blk_tk_a]
+          if bbody_tk_a >= 0
+            bs_tk_a = get_stmts(bbody_tk_a)
+            if bs_tk_a.length > 0
+              bp_tk_a = get_block_param(nid, 0)
+              push_scope
+              if bp_tk_a != ""
+                declare_var(bp_tk_a, hash_key_part(rt_tk) == "sym" ? "symbol" : "string")
+              end
+              bret_tk_a = infer_type(bs_tk_a.last)
+              pop_scope
+              if bret_tk_a == "string"
+                return "str_int_hash" if rt_tk == "sym_int_hash" || rt_tk == "str_int_hash"
+                return "str_str_hash" if rt_tk == "sym_str_hash" || rt_tk == "str_str_hash"
+                return "str_poly_hash" if rt_tk == "sym_poly_hash" || rt_tk == "str_poly_hash"
+              end
+            end
+          end
+        end
+        return rt_tk
       end
       return "str_int_hash"
     end
