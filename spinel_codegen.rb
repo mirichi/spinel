@@ -22360,6 +22360,60 @@ class Compiler
  # merge / dup / delete -- sibling of #510 (which fixed
  # sym_str_hash / sym_poly_hash) but for sym_int_hash. Issue
  # #546.
+      if mname == "merge" && @nd_block[nid] >= 0
+ # `h1.merge(h2) { |k, v1, v2| ... }` — conflict-resolution
+ # block form. Only support sym_int_hash + sym_int_hash with
+ # an int-returning block (most common shape); other variant
+ # combinations fall through to the block-less path below.
+        args_id_mb = @nd_arguments[nid]
+        if args_id_mb >= 0
+          a_mb = get_args(args_id_mb)
+          if a_mb.length >= 1 && infer_type(a_mb[0]) == "sym_int_hash"
+            arg_mb = compile_expr_gc_rooted(a_mb[0])
+            result_mb = new_temp
+            iter_mb = new_temp
+            bp_k_mb = get_block_param(nid, 0)
+            bp_k_mb = "_mk" if bp_k_mb == ""
+            bp_v1_mb = get_block_param(nid, 1)
+            bp_v1_mb = "_mv1" if bp_v1_mb == ""
+            bp_v2_mb = get_block_param(nid, 2)
+            bp_v2_mb = "_mv2" if bp_v2_mb == ""
+            emit("  sp_SymIntHash *" + result_mb + " = sp_SymIntHash_dup(" + rc + ");")
+            emit("  SP_GC_ROOT(" + result_mb + ");")
+            emit("  for (mrb_int " + iter_mb + " = 0; " + iter_mb + " < " + arg_mb + "->len; " + iter_mb + "++) {")
+            emit("    sp_sym lv_" + bp_k_mb + " = " + arg_mb + "->order[" + iter_mb + "];")
+            emit("    mrb_int lv_" + bp_v2_mb + " = sp_SymIntHash_get(" + arg_mb + ", lv_" + bp_k_mb + ");")
+            emit("    if (sp_SymIntHash_has_key(" + result_mb + ", lv_" + bp_k_mb + ")) {")
+            emit("      mrb_int lv_" + bp_v1_mb + " = sp_SymIntHash_get(" + result_mb + ", lv_" + bp_k_mb + ");")
+            @indent = @indent + 2
+            push_scope
+            declare_var(bp_k_mb, "symbol")
+            declare_var(bp_v1_mb, "int")
+            declare_var(bp_v2_mb, "int")
+            bbody_mb = @nd_body[@nd_block[nid]]
+            bexpr_mb = "0"
+            if bbody_mb >= 0
+              bs_mb = get_stmts(bbody_mb)
+              k_mb = 0
+              while k_mb < bs_mb.length - 1
+                compile_stmt(bs_mb[k_mb])
+                k_mb = k_mb + 1
+              end
+              if bs_mb.length > 0
+                bexpr_mb = compile_expr(bs_mb.last)
+              end
+            end
+            emit("    sp_SymIntHash_set(" + result_mb + ", lv_" + bp_k_mb + ", " + bexpr_mb + ");")
+            pop_scope
+            @indent = @indent - 2
+            emit("    } else {")
+            emit("      sp_SymIntHash_set(" + result_mb + ", lv_" + bp_k_mb + ", lv_" + bp_v2_mb + ");")
+            emit("    }")
+            emit("  }")
+            return result_mb
+          end
+        end
+      end
       if mname == "merge"
         args_id_m546 = @nd_arguments[nid]
         if args_id_m546 >= 0
