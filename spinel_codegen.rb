@@ -21440,6 +21440,124 @@ class Compiler
         @needs_gc = 1
         return "sp_IntArray_permutation(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
+ # `arr.slice_when { |a, b| pred }` materialises an array of
+ # contiguous chunks split where the block predicate is true.
+ # `.to_a` on the result is a no-op (int_array_ptr_array).
+      if mname == "slice_when" && @nd_block[nid] >= 0
+        @needs_int_array = 1
+        @needs_gc = 1
+        out_sw = new_temp
+        cur_sw = new_temp
+        ii_sw = new_temp
+        prev_sw = new_temp
+        has_prev_sw = new_temp
+        cur_val_sw = new_temp
+        emit("  sp_PtrArray *" + out_sw + " = sp_PtrArray_new();")
+        emit("  SP_GC_ROOT(" + out_sw + ");")
+        emit("  sp_IntArray *" + cur_sw + " = sp_IntArray_new();")
+        emit("  SP_GC_ROOT(" + cur_sw + ");")
+        emit("  mrb_int " + prev_sw + " = 0;")
+        emit("  int " + has_prev_sw + " = 0;")
+        emit("  for (mrb_int " + ii_sw + " = 0; " + ii_sw + " < sp_IntArray_length(" + rc + "); " + ii_sw + "++) {")
+        emit("    mrb_int " + cur_val_sw + " = sp_IntArray_get(" + rc + ", " + ii_sw + ");")
+        bp_a_sw = get_block_param(nid, 0)
+        bp_a_sw = "_a" if bp_a_sw == ""
+        bp_b_sw = get_block_param(nid, 1)
+        bp_b_sw = "_b" if bp_b_sw == ""
+        emit("    if (" + has_prev_sw + ") {")
+        emit("      mrb_int lv_" + bp_a_sw + " = " + prev_sw + ";")
+        emit("      mrb_int lv_" + bp_b_sw + " = " + cur_val_sw + ";")
+        @indent = @indent + 1
+        push_scope
+        declare_var(bp_a_sw, "int")
+        declare_var(bp_b_sw, "int")
+        bbody_sw = @nd_body[@nd_block[nid]]
+        bexpr_sw = "FALSE"
+        if bbody_sw >= 0
+          bs_sw = get_stmts(bbody_sw)
+          ks_sw = 0
+          while ks_sw < bs_sw.length - 1
+            compile_stmt(bs_sw[ks_sw])
+            ks_sw = ks_sw + 1
+          end
+          if bs_sw.length > 0
+            bexpr_sw = compile_expr(bs_sw.last)
+          end
+        end
+        emit("      if (" + bexpr_sw + ") { sp_PtrArray_push(" + out_sw + ", " + cur_sw + "); " + cur_sw + " = sp_IntArray_new(); }")
+        pop_scope
+        @indent = @indent - 1
+        emit("    }")
+        emit("    sp_IntArray_push(" + cur_sw + ", " + cur_val_sw + ");")
+        emit("    " + prev_sw + " = " + cur_val_sw + ";")
+        emit("    " + has_prev_sw + " = 1;")
+        emit("  }")
+        emit("  if (" + cur_sw + "->len > 0) sp_PtrArray_push(" + out_sw + ", " + cur_sw + ");")
+        return out_sw
+      end
+ # `arr.chunk { |x| key }` materialises an array of [key,
+ # sub_array] pairs where consecutive elements with the same
+ # block-returned key are grouped.
+      if mname == "chunk" && @nd_block[nid] >= 0
+        @needs_int_array = 1
+        @needs_rb_value = 1
+        @needs_gc = 1
+        out_ck = new_temp
+        cur_ck = new_temp
+        cur_key_ck = new_temp
+        ii_ck = new_temp
+        has_prev_ck = new_temp
+        elem_ck = new_temp
+        key_ck = new_temp
+        emit("  sp_PolyArray *" + out_ck + " = sp_PolyArray_new();")
+        emit("  SP_GC_ROOT(" + out_ck + ");")
+        emit("  sp_IntArray *" + cur_ck + " = sp_IntArray_new();")
+        emit("  SP_GC_ROOT(" + cur_ck + ");")
+        emit("  mrb_int " + cur_key_ck + " = 0;")
+        emit("  int " + has_prev_ck + " = 0;")
+        emit("  for (mrb_int " + ii_ck + " = 0; " + ii_ck + " < sp_IntArray_length(" + rc + "); " + ii_ck + "++) {")
+        emit("    mrb_int " + elem_ck + " = sp_IntArray_get(" + rc + ", " + ii_ck + ");")
+        bp_x_ck = get_block_param(nid, 0)
+        bp_x_ck = "_x" if bp_x_ck == ""
+        emit("    mrb_int lv_" + bp_x_ck + " = " + elem_ck + ";")
+        @indent = @indent + 1
+        push_scope
+        declare_var(bp_x_ck, "int")
+        bbody_ck = @nd_body[@nd_block[nid]]
+        bexpr_ck = "0"
+        if bbody_ck >= 0
+          bs_ck = get_stmts(bbody_ck)
+          kk_ck = 0
+          while kk_ck < bs_ck.length - 1
+            compile_stmt(bs_ck[kk_ck])
+            kk_ck = kk_ck + 1
+          end
+          if bs_ck.length > 0
+            bexpr_ck = compile_expr(bs_ck.last)
+          end
+        end
+        emit("    mrb_int " + key_ck + " = " + bexpr_ck + ";")
+        pop_scope
+        @indent = @indent - 1
+        emit("    if (" + has_prev_ck + " && " + key_ck + " != " + cur_key_ck + ") {")
+        emit("      sp_PolyArray *_pair = sp_PolyArray_new();")
+        emit("      sp_PolyArray_push(_pair, sp_box_int(" + cur_key_ck + "));")
+        emit("      sp_PolyArray_push(_pair, sp_box_poly_array((sp_PolyArray *)sp_IntArray_to_poly(" + cur_ck + ")));")
+        emit("      sp_PolyArray_push(" + out_ck + ", sp_box_poly_array(_pair));")
+        emit("      " + cur_ck + " = sp_IntArray_new();")
+        emit("    }")
+        emit("    sp_IntArray_push(" + cur_ck + ", " + elem_ck + ");")
+        emit("    " + cur_key_ck + " = " + key_ck + ";")
+        emit("    " + has_prev_ck + " = 1;")
+        emit("  }")
+        emit("  if (" + cur_ck + "->len > 0) {")
+        emit("    sp_PolyArray *_pair2 = sp_PolyArray_new();")
+        emit("    sp_PolyArray_push(_pair2, sp_box_int(" + cur_key_ck + "));")
+        emit("    sp_PolyArray_push(_pair2, sp_box_poly_array((sp_PolyArray *)sp_IntArray_to_poly(" + cur_ck + ")));")
+        emit("    sp_PolyArray_push(" + out_ck + ", sp_box_poly_array(_pair2));")
+        emit("  }")
+        return out_ck
+      end
       if mname == "[]"
  # a[range] and a[start, len] return slices; bare a[i] stays a get.
  # Mirrors compile_string_method_expr's slicing dispatch.
@@ -22186,6 +22304,9 @@ class Compiler
     if recv_type == "poly_array"
       if mname == "length" || mname == "size"
         return "sp_PolyArray_length(" + rc + ")"
+      end
+      if mname == "to_a"
+        return rc
       end
       if mname == "include?"
         args_id_pinc = @nd_arguments[nid]
