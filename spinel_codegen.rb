@@ -22336,6 +22336,47 @@ class Compiler
         end
       end
       if mname == "sort"
+ # Block-form sort: bubble-sort using the block's <=> return as
+ # the comparator. Block params get the array element type
+ # declared so `b <=> a` inside infers correctly.
+        if @nd_block[nid] >= 0
+          blk_so = @nd_block[nid]
+          bp_a = get_block_param(nid, 0)
+          bp_a = "_a" if bp_a == ""
+          bp_b = get_block_param(nid, 1)
+          bp_b = "_b" if bp_b == ""
+          tmp_so = new_temp
+          emit("  sp_IntArray *" + tmp_so + " = sp_IntArray_dup(" + rc + ");")
+          emit("  { mrb_int _n = " + tmp_so + "->len;")
+          emit("  for (mrb_int _i = 0; _i < _n - 1; _i++)")
+          emit("    for (mrb_int _j = 0; _j < _n - 1 - _i; _j++) {")
+          emit("      mrb_int lv_" + bp_a + " = " + tmp_so + "->data[" + tmp_so + "->start + _j];")
+          emit("      mrb_int lv_" + bp_b + " = " + tmp_so + "->data[" + tmp_so + "->start + _j + 1];")
+          @indent = @indent + 1
+          push_scope
+          declare_var(bp_a, "int")
+          declare_var(bp_b, "int")
+          bbody_so = @nd_body[blk_so]
+          bexpr_so = "0"
+          if bbody_so >= 0
+            bs_so = get_stmts(bbody_so)
+            if bs_so.length > 0
+              k_so = 0
+              while k_so < bs_so.length - 1
+                compile_stmt(bs_so[k_so])
+                k_so = k_so + 1
+              end
+              bexpr_so = compile_expr(bs_so.last)
+            end
+          end
+          pop_scope
+          @indent = @indent - 1
+          emit("      mrb_int _cmp = " + bexpr_so + ";")
+          emit("      if (_cmp > 0) { mrb_int _t = " + tmp_so + "->data[" + tmp_so + "->start + _j]; " + tmp_so + "->data[" + tmp_so + "->start + _j] = " + tmp_so + "->data[" + tmp_so + "->start + _j + 1]; " + tmp_so + "->data[" + tmp_so + "->start + _j + 1] = _t; }")
+          emit("    }")
+          emit("  }")
+          return tmp_so
+        end
         if recv_type == "sym_array"
           tmp = new_temp
           emit("  sp_IntArray *" + tmp + " = sp_IntArray_dup(" + rc + "); sp_sym_array_sort(" + tmp + ");")
@@ -23089,6 +23130,55 @@ class Compiler
         emit("    }")
         emit("  }")
         return tmp_sb_s
+      end
+ # str_array.sort with block — comparator returns -1/0/1.
+      if mname == "sort" && @nd_block[nid] >= 0
+        @needs_str_array = 1
+        @needs_gc = 1
+        blk_ss = @nd_block[nid]
+        bp_a_ss = get_block_param(nid, 0)
+        bp_a_ss = "_a" if bp_a_ss == ""
+        bp_b_ss = get_block_param(nid, 1)
+        bp_b_ss = "_b" if bp_b_ss == ""
+        tmp_ss = new_temp
+        emit("  sp_StrArray *" + tmp_ss + " = sp_StrArray_new(); sp_StrArray_replace(" + tmp_ss + ", " + rc + ");")
+        emit("  { mrb_int _n = " + tmp_ss + "->len;")
+        emit("  for (mrb_int _i = 0; _i < _n - 1; _i++)")
+        emit("    for (mrb_int _j = 0; _j < _n - 1 - _i; _j++) {")
+        emit("      const char *lv_" + bp_a_ss + " = " + tmp_ss + "->data[_j];")
+        emit("      const char *lv_" + bp_b_ss + " = " + tmp_ss + "->data[_j + 1];")
+        @indent = @indent + 1
+        push_scope
+        declare_var(bp_a_ss, "string")
+        declare_var(bp_b_ss, "string")
+        bbody_ss = @nd_body[blk_ss]
+        bexpr_ss = "0"
+        if bbody_ss >= 0
+          bs_ss = get_stmts(bbody_ss)
+          if bs_ss.length > 0
+            k_ss = 0
+            while k_ss < bs_ss.length - 1
+              compile_stmt(bs_ss[k_ss])
+              k_ss = k_ss + 1
+            end
+            bexpr_ss = compile_expr(bs_ss.last)
+          end
+        end
+        pop_scope
+        @indent = @indent - 1
+        emit("      mrb_int _cmp = " + bexpr_ss + ";")
+        emit("      if (_cmp > 0) { const char *_tt = " + tmp_ss + "->data[_j]; " + tmp_ss + "->data[_j] = " + tmp_ss + "->data[_j + 1]; " + tmp_ss + "->data[_j + 1] = _tt; }")
+        emit("    }")
+        emit("  }")
+        return tmp_ss
+      end
+ # str_array.sort without block — lex sort via runtime helper.
+      if mname == "sort"
+        @needs_str_array = 1
+        @needs_gc = 1
+        tmp_sn = new_temp
+        emit("  sp_StrArray *" + tmp_sn + " = sp_StrArray_new(); sp_StrArray_replace(" + tmp_sn + ", " + rc + "); sp_StrArray_sort_bang(" + tmp_sn + ");")
+        return tmp_sn
       end
     end
 
@@ -40416,9 +40506,8 @@ class Compiler
 
   def compile_array_min_max_block(nid, rc, recv_type, mname)
     bp1 = get_block_param(nid, 0)
-    if bp1 == ""
-      bp1 = "_x"
-    end
+    bp1 = "_a" if bp1 == ""
+    bp2 = get_block_param(nid, 1)
     elem_type = "int"
     if recv_type == "str_array"
       elem_type = "string"
@@ -40426,8 +40515,45 @@ class Compiler
       elem_type = "float"
     end
     tmp_res = new_temp
-    tmp_key = new_temp
     tmp_i = new_temp
+ # 2-param block is a comparator (CRuby's min/max-with-block).
+ # The block returns -1/0/1; we keep `tmp_res` as the running
+ # best and update when the comparator says the new element wins.
+ # 1-param block is the legacy min_by-style scoring function.
+    if bp2 != ""
+      emit("  " + c_type(elem_type) + " " + tmp_res + " = " + c_default_val(elem_type) + ";")
+      emit_iter_open(rc, recv_type, "lv_" + bp1, tmp_i)
+      push_scope
+      declare_var(bp1, elem_type)
+      declare_var(bp2, elem_type)
+      emit("    if (" + tmp_i + " == 0) { " + tmp_res + " = lv_" + bp1 + "; } else {")
+      emit("      " + c_type(elem_type) + " lv_" + bp2 + " = " + tmp_res + ";")
+      blk_mm = @nd_block[nid]
+      bexpr_mm = "0"
+      if @nd_body[blk_mm] >= 0
+        bs_mm = get_stmts(@nd_body[blk_mm])
+        if bs_mm.length > 0
+          k_mm = 0
+          while k_mm < bs_mm.length - 1
+            compile_stmt(bs_mm[k_mm])
+            k_mm = k_mm + 1
+          end
+          bexpr_mm = compile_expr(bs_mm.last)
+        end
+      end
+ # `a <=> b` returning < 0 means a comes first. For min we want
+ # the element that comes first; for max the element that comes
+ # last. CRuby: min returns the elem whose cmp(elem, best) < 0
+ # picks it; max picks when cmp(elem, best) > 0.
+      pick_cmp_mm = mname == "min" ? "< 0" : "> 0"
+      emit("      mrb_int _cmp = " + bexpr_mm + ";")
+      emit("      if (_cmp " + pick_cmp_mm + ") " + tmp_res + " = lv_" + bp1 + ";")
+      emit("    }")
+      pop_scope
+      emit("  }")
+      return tmp_res
+    end
+    tmp_key = new_temp
     bp_tmp = new_temp
     emit("  " + c_type(elem_type) + " " + tmp_res + " = " + c_default_val(elem_type) + ";")
     emit("  mrb_int " + tmp_key + " = 0;")
