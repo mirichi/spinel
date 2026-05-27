@@ -23144,6 +23144,9 @@ class Compiler
       if mname == "[]"
         return "sp_StrPolyHash_get(" + rc + ", " + compile_str_arg0(nid) + ")"
       end
+      if mname == "inspect" || mname == "to_s"
+        return "sp_StrPolyHash_inspect((sp_StrPolyHash *)(" + rc + "))"
+      end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         return "sp_StrPolyHash_has_key(" + rc + ", " + compile_str_arg0(nid) + ")"
       end
