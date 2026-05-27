@@ -4334,7 +4334,7 @@ class Compiler
         end
       end
     end
-    if mname == "include?"
+    if mname == "include?" || mname == "member?"
       return "bool"
     end
     if mname == "cover?"

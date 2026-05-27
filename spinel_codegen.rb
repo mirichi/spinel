@@ -22011,7 +22011,7 @@ class Compiler
       if mname == "empty?"
         return "sp_IntArray_empty(" + rc + ")"
       end
-      if mname == "include?"
+      if mname == "include?" || mname == "member?"
  # Issue #911: cross-type include? returns false (CRuby). Sym_array
  # shares the int_array dispatch (sym ids stored as ints), so allow
  # "symbol" args too when receiver is sym_array.
@@ -22642,7 +22642,7 @@ class Compiler
       if mname == "empty?"
         return "sp_StrArray_empty(" + rc + ")"
       end
-      if mname == "include?"
+      if mname == "include?" || mname == "member?"
  # Issue #911.
         args_id_inc_s = @nd_arguments[nid]
         if args_id_inc_s >= 0
