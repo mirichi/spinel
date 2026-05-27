@@ -32348,6 +32348,26 @@ class Compiler
  # `sp_IntArray *_t = sp_N_two_mats(...); sp_IntArray_get(_t, i)`,
  # mismatching the actual sp_PtrArray * return.
       val_t_local = infer_type(val_id)
+ # Scalar int RHS: `a, b = 1`. CRuby semantics — first target gets
+ # the scalar, the rest get nil. Spinel's int slot can't carry nil
+ # so the rest land as 0 (acceptable subset behaviour). Other
+ # scalar types need slot-type coordination with analyze (which
+ # currently doesn't model multi-write scalar inference) and are
+ # deferred.
+      if val_t_local == "int"
+        scalar_v = compile_expr(val_id)
+        k = 0
+        while k < targets.length
+          tid = targets[k]
+          if k == 0
+            emit_multi_write_target(tid, scalar_v, "int")
+          else
+            emit_multi_write_target(tid, "0", "nil")
+          end
+          k = k + 1
+        end
+        return
+      end
       @needs_gc = 1
       tmp = new_temp
       if val_t_local == "poly_array"
