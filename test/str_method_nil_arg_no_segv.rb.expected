@@ -1,4 +1,4 @@
-0
+count: no implicit conversion of nil into String
 "foo"
 nil
 6

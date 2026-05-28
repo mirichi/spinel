@@ -1458,9 +1458,9 @@ static const char *sp_str_chomp_sep(const char *s, const char *sep) {
   return r;
 }
 static const char*sp_str_chop(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);if(l>0){if(l>=2&&s[l-2]=='\r'&&s[l-1]=='\n')l-=2;else l--;}char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
-static mrb_bool sp_str_include(const char*s,const char*sub){if(!s||!sub)return FALSE;return strstr(s,sub)!=NULL;}
-static mrb_bool sp_str_start_with(const char*s,const char*p){if(!s||!p)return FALSE;return strncmp(s,p,strlen(p))==0;}
-static mrb_bool sp_str_end_with(const char*s,const char*suf){if(!s||!suf)return FALSE;size_t ls=strlen(s),lsuf=strlen(suf);if(lsuf>ls)return FALSE;return strcmp(s+ls-lsuf,suf)==0;}
+static mrb_bool sp_str_include(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;return strstr(s,sub)!=NULL;}
+static mrb_bool sp_str_start_with(const char*s,const char*p){if(!p)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;return strncmp(s,p,strlen(p))==0;}
+static mrb_bool sp_str_end_with(const char*s,const char*suf){if(!suf)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;size_t ls=strlen(s),lsuf=strlen(suf);if(lsuf>ls)return FALSE;return strcmp(s+ls-lsuf,suf)==0;}
 static sp_StrArray*sp_str_split(const char*s,const char*sep){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;size_t sl=strlen(sep);if(sl==0){const char*p=s;while(*p){int cn=sp_utf8_advance(p);char*c=sp_str_alloc_raw(cn+1);memcpy(c,p,cn);c[cn]=0;sp_StrArray_push(a,c);p+=cn;}return a;}const char*p=s;while(1){const char*f=strstr(p,sep);if(!f){char*r=sp_str_alloc_raw(strlen(p)+1);strcpy(r,p);sp_StrArray_push(a,r);break;}size_t n=f-p;char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);p=f+sl;}return a;}
 /* `s.split(sep, n)` with explicit limit. Positive n caps the result
    at n elements: the last element holds the unsplit remainder.
@@ -1538,7 +1538,7 @@ static mrb_int sp_str_index(const char*s,const char*sub){if(!s)return -1;if(!sub
    begins at `start` and walks from `s + boff`, so the "walk all
    matches" loop is O(N) total rather than O(N^2). */
 static mrb_int sp_str_index_from(const char*s,const char*sub,mrb_int start){mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>cl)return -1;size_t boff=sp_utf8_byte_offset(s,start);const char*f=strstr(s+boff,sub);if(!f)return -1;mrb_int n=start;const char*p=s+boff;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
-static mrb_int sp_str_rindex(const char*s,const char*sub){if(!sub)return -1;size_t sl=strlen(sub);if(sl==0)return sp_str_length(s);const char*last=NULL;const char*p=s;while((p=strstr(p,sub))){last=p;p++;}if(!last)return -1;mrb_int n=0;const char*q=s;while(q<last){q+=sp_utf8_advance(q);n++;}return n;}
+static mrb_int sp_str_rindex(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=strlen(sub);if(sl==0)return sp_str_length(s);const char*last=NULL;const char*p=s;while((p=strstr(p,sub))){last=p;p++;}if(!last)return -1;mrb_int n=0;const char*q=s;while(q<last){q+=sp_utf8_advance(q);n++;}return n;}
 static char sp_char_cache[256][3];
 static int sp_char_cache_init = 0;
 /* start/len are codepoint indices/counts. */
@@ -1565,7 +1565,7 @@ static const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){size_t cap=
 static const char*sp_str_reverse(const char*s){if(!s)return sp_str_empty;size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;const char*p=s;while(*p){int cn=sp_utf8_advance(p);end-=cn;memcpy(r+end,p,cn);p+=cn;}r[bl]=0;return r;}
 static const char*sp_str_sub(const char*s,const char*pat,const char*rep){if(!s)return sp_str_empty;if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);return r;}
 static const char*sp_str_capitalize(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=tolower((unsigned char)s[i]);if(l>0)r[0]=toupper((unsigned char)r[0]);return r;}
-static mrb_int sp_str_count(const char*s,const char*chars){if(!chars)return 0;size_t setn;uint32_t*set=sp_utf8_decode_charset(chars,&setn);mrb_int c=0;const char*p=s;while(*p){uint32_t cp;p+=sp_utf8_decode(p,&cp);if(sp_utf8_set_has(set,setn,cp))c++;}free(set);return c;}
+static mrb_int sp_str_count(const char*s,const char*chars){if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t setn;uint32_t*set=sp_utf8_decode_charset(chars,&setn);mrb_int c=0;const char*p=s;while(*p){uint32_t cp;p+=sp_utf8_decode(p,&cp);if(sp_utf8_set_has(set,setn,cp))c++;}free(set);return c;}
 /* Issue #800: clamp l*n so a malicious input can't allocate a tiny
    buffer through size_t overflow. */
 /* Issue #836: bound the multiplier so a wildly oversized request

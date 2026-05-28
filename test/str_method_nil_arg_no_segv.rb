@@ -12,7 +12,15 @@
 # string-substring path; `<<` on a string return-types as
 # `string` instead of falling through to the catch-all `int`.
 
-p "foo".count    # CRuby: ArgumentError. spinel: 0 (was: SEGV)
+# count / rindex / include? / start_with? / end_with? with no arg
+# (NULL at C level): spinel now raises TypeError, matching CRuby's
+# nil-arg path more closely than the old silent sentinel return.
+begin
+  "foo".count
+  puts "BUG count: no raise"
+rescue TypeError => e
+  puts "count: #{e.message}"
+end
 p "foo".delete   # CRuby: ArgumentError. spinel: "foo" unchanged (was: SEGV)
 p "foo".rindex(/missing/)  # CRuby + spinel post-#532: nil. (was: -1)
 p "abcdabcd".rindex(/c/)   # CRuby & spinel: 6 (new sp_re_rindex helper)
