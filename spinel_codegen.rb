@@ -15138,6 +15138,14 @@ class Compiler
                       elsif it == "sym_array_ptr_array"
                         fmt = fmt + "%s"
                         arg_exprs.push("sp_SymArrayPtrArray_inspect(" + compile_expr(inner) + ")")
+                      elsif it == "mutable_str"
+ # `"#{s}"` on an sp_String * (the mutable variant
+ # backing `String.new` + `<<`) reads the chars via
+ # sp_String_cstr; without this arm the default int
+ # fallback printed the pointer cast to long long.
+ # Issue #1027.
+                        fmt = fmt + "%s"
+                        arg_exprs.push("sp_String_cstr(" + compile_expr(inner) + ")")
                       else
                         fmt = fmt + "%lld"
                         arg_exprs.push("(long long)" + compile_expr(inner))
