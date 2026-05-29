@@ -212,6 +212,10 @@ static mrb_int sp_int_round(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-n
 static mrb_int sp_int_ceil(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f;if(r!=0&&v>0&&q<INT64_MAX/f)return(q+1)*f;return q*f;}
 static mrb_int sp_int_floor(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f;if(r!=0&&v<0&&q>INT64_MIN/f)return(q-1)*f;return q*f;}
 static mrb_int sp_int_truncate(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);return(v/f)*f;}
+/* String#oct: parse with prefix auto-detection (0x=hex, 0b=bin,
+   0o=oct, 0=oct, otherwise decimal), then fall back to base-8
+   if no prefix. Matches CRuby behavior. */
+static mrb_int sp_str_oct(const char*s){if(!s)return 0;const char*p=s;while(*p==' '||*p=='\t')p++;if(p[0]=='0'){if(p[1]=='x'||p[1]=='X')return(mrb_int)strtoll(p,NULL,16);if(p[1]=='b'||p[1]=='B')return(mrb_int)strtoll(p+2,NULL,2);if(p[1]=='o'||p[1]=='O')return(mrb_int)strtoll(p+2,NULL,8);return(mrb_int)strtoll(p,NULL,8);}return(mrb_int)strtoll(p,NULL,8);}
 
 /* Forward decls for helpers used across this header (and by the
    string->number parsers that now live in libspinel_rt.a). */

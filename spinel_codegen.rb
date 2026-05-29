@@ -21475,7 +21475,7 @@ class Compiler
       return "((mrb_int)strtoll(" + rc + ", NULL, 16))"
     end
     if mname == "oct"
-      return "((mrb_int)strtoll(" + rc + ", NULL, 8))"
+      return "sp_str_oct(" + rc + ")"
     end
     if mname == "tr" || mname == "tr_s"
       args_id = @nd_arguments[nid]
