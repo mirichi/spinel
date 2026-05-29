@@ -15924,6 +15924,8 @@ class Compiler
 
  # Build capture struct typedef if needed
     cap_typedef = ""
+    cap_scan_name = "NULL"
+    cap_scan_func = ""
     if free_vars.length > 0
       cap_typedef = "typedef struct {"
       k = 0
@@ -15932,6 +15934,25 @@ class Compiler
         k = k + 1
       end
       cap_typedef = cap_typedef + " } " + cap_name + ";" + 10.chr
+ # Capture-struct GC scan. sp_Fiber_scan marks user_data (this
+ # struct) but without a scan hook the captured cells -- and the
+ # objects they hold -- are never traced, so an object reachable
+ # only from a parked fiber is collected (use-after-free under
+ # concurrent fiber load). Mark each field's cell and its contents.
+      cap_scan_name = cap_name + "_scan"
+      cap_scan_func = "static void " + cap_scan_name + "(void *_p) { " + cap_name + " *_c = (" + cap_name + " *)_p;"
+      k = 0
+      while k < free_vars.length
+        fld = "_c->" + free_vars[k]
+        cap_scan_func = cap_scan_func + " if (" + fld + ") { sp_gc_mark((void *)" + fld + ");"
+        content_mark = gc_mark_stmt_for_expr("(*" + fld + ")", free_var_types[k])
+        if content_mark != ""
+          cap_scan_func = cap_scan_func + " " + content_mark
+        end
+        cap_scan_func = cap_scan_func + " }"
+        k = k + 1
+      end
+      cap_scan_func = cap_scan_func + " }" + 10.chr
     end
 
  # Compile fiber body function
@@ -16007,6 +16028,9 @@ class Compiler
     fbody = fbody + @out_lines.join(10.chr) + 10.chr
     fbody = fbody + "}" + 10.chr
     @fiber_funcs << cap_typedef
+    if cap_scan_func != ""
+      @fiber_funcs << cap_scan_func
+    end
     @fiber_funcs << fbody
 
     @out_lines = saved_out
@@ -16082,7 +16106,7 @@ class Compiler
  # Heap-allocate capture struct
     tmp_fb = "_tmpfb_" + fid.to_s
     cap_ptr = "_cap_ptr_" + fid.to_s
-    emit("  " + cap_name + " *" + cap_ptr + " = (" + cap_name + "*)sp_gc_alloc(sizeof(" + cap_name + "), NULL, NULL);")
+    emit("  " + cap_name + " *" + cap_ptr + " = (" + cap_name + "*)sp_gc_alloc(sizeof(" + cap_name + "), NULL, " + cap_scan_name + ");")
     k = 0
     while k < free_vars.length
       vn = free_vars[k]
