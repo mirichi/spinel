@@ -266,6 +266,13 @@ class Compiler
     @cls_meth_returns = "".split(",", -1)
     @cls_meth_bodies = "".split(",", -1)
     @cls_meth_defaults = "".split(",", -1)
+ # Splat-param ("def f(*a)") rest-slot tracking for instance methods.
+ # Sparse, name-keyed (NOT position-aligned with the per-method
+ # arrays) so it adds no desync surface: @cls_rest_keys holds
+ # "<cname>#<mname>" and @cls_rest_idxs the rest param's position.
+ # Only methods with a splat get an entry; lookup returns -1 otherwise.
+    @cls_rest_keys = "".split(",", -1)
+    @cls_rest_idxs = []
  # Mirror of @meth_param_empty for class methods. Pipe-separated by
  # method, comma-separated by param. .
     @cls_meth_ptypes_empty = "".split(",", -1)
@@ -1962,6 +1969,36 @@ class Compiler
       cj = cj + 1
     end
     ""
+  end
+
+ # Record / look up the splat ("*a") rest-param position for an
+ # instance method, keyed by "<cname>#<mname>". Last write wins
+ # (mirrors append_cls_meth's last-def-wins). Returns -1 when the
+ # method has no splat param.
+  def record_cls_meth_rest(cname, mname, idx)
+    key = cname + "#" + mname
+    k = 0
+    while k < @cls_rest_keys.length
+      if @cls_rest_keys[k] == key
+        @cls_rest_idxs[k] = idx
+        return
+      end
+      k = k + 1
+    end
+    @cls_rest_keys.push(key)
+    @cls_rest_idxs.push(idx)
+  end
+
+  def cls_meth_rest_idx(cname, mname)
+    key = cname + "#" + mname
+    k = 0
+    while k < @cls_rest_keys.length
+      if @cls_rest_keys[k] == key
+        return @cls_rest_idxs[k]
+      end
+      k = k + 1
+    end
+    -1
   end
 
   def cls_method_return(ci, mname)
@@ -9976,6 +10013,12 @@ class Compiler
     defaults_str = collect_defaults_str(nid)
     has_y = body_has_yield(body_id)
     append_cls_meth(ci, mname, params_str, ptypes_str, "int", body_id, defaults_str)
+ # Record a splat param's position so call-site arg packing and the
+ # widen-protection can find it by (class, method) name.
+    rest_i_cm = collect_rest_index(nid)
+    if rest_i_cm >= 0
+      record_cls_meth_rest(@cls_names[ci], mname, rest_i_cm)
+    end
  # Track yield info
     if @cls_meth_has_yield[ci] != ""
       @cls_meth_has_yield[ci] = @cls_meth_has_yield[ci] + ";" + has_y.to_s
@@ -13706,7 +13749,46 @@ class Compiler
  # unify a `KeywordHashNode` into `ptypes[0]` (the AST presents
  # kwargs as a single trailing hash arg), leaving the callee's
  # actual kwarg slots un-widened.
-  def widen_ptypes_from_args(arg_ids, pnames, ptypes)
+ # Element type of a typed array, for splat rest-slot widening.
+  def rest_slot_elem_type(t)
+    if t == "int_array"
+      return "int"
+    end
+    if t == "str_array"
+      return "string"
+    end
+    if t == "float_array"
+      return "float"
+    end
+    if t == "sym_array"
+      return "symbol"
+    end
+    if t == "poly_array"
+      return "poly"
+    end
+    "int"
+  end
+
+ # Array type that collects elements of type `elem` (for a splat
+ # rest slot). Heterogeneous / object elements -> poly_array.
+  def rest_slot_array_type(elem)
+    if elem == "int"
+      return "int_array"
+    end
+    if elem == "string" || elem == "mutable_str"
+      return "str_array"
+    end
+    if elem == "float"
+      return "float_array"
+    end
+    if elem == "symbol"
+      return "sym_array"
+    end
+    @needs_rb_value = 1
+    "poly_array"
+  end
+
+  def widen_ptypes_from_args(arg_ids, pnames, ptypes, rest_idx = -1)
     pos_idx = 0
     ai = 0
     while ai < arg_ids.length
@@ -13767,6 +13849,28 @@ class Compiler
           end
           pos_idx = pos_idx + 1
         end
+      elsif rest_idx >= 0 && pos_idx == rest_idx
+ # Splat rest slot ("def f(*a)"): every remaining positional arg
+ # feeds it. Widen the element type across them and keep the slot
+ # an array (int_array seed -> int_array for int args, poly_array
+ # for objects / mixed) rather than collapsing it to scalar poly,
+ # which is what the per-arg unify below would do.
+        elem_rest = "int"
+        if pos_idx < ptypes.length
+          elem_rest = rest_slot_elem_type(ptypes[pos_idx])
+        end
+        rj = ai
+        while rj < arg_ids.length
+          ar = arg_ids[rj]
+          if @nd_type[ar] != "KeywordHashNode"
+            elem_rest = unify_call_types(elem_rest, infer_type(ar), ar)
+          end
+          rj = rj + 1
+        end
+        if pos_idx < ptypes.length
+          ptypes[pos_idx] = rest_slot_array_type(elem_rest)
+        end
+        ai = arg_ids.length
       else
         if pos_idx < ptypes.length
           at = infer_type(aid)
@@ -14101,7 +14205,8 @@ class Compiler
                 ptypes = cls_meth_ptypes_get(owner_ci, midx)
                 if ptypes.length > 0
                   pnames = cls_meth_pnames_get(owner_ci, midx)
-                  widen_ptypes_from_args(arg_ids, pnames, ptypes)
+                  rest_i_w = cls_meth_rest_idx(@cls_names[owner_ci], mname)
+                  widen_ptypes_from_args(arg_ids, pnames, ptypes, rest_i_w)
                   cls_meth_ptypes_put(owner_ci, midx, ptypes)
                 end
               end
@@ -30573,6 +30678,8 @@ class Compiler
     buf = ir_emit_sa(buf, "@cls_meth_ptypes", @cls_meth_ptypes)
     buf = ir_emit_sa(buf, "@cls_meth_returns", @cls_meth_returns)
     buf = ir_emit_sa(buf, "@cls_meth_bodies", @cls_meth_bodies)
+    buf = ir_emit_sa(buf, "@cls_rest_keys", @cls_rest_keys)
+    buf = ir_emit_ia(buf, "@cls_rest_idxs", @cls_rest_idxs)
     buf = ir_emit_sa(buf, "@cls_meth_defaults", @cls_meth_defaults)
     buf = ir_emit_sa(buf, "@cls_meth_ptypes_empty", @cls_meth_ptypes_empty)
     buf = ir_emit_sa(buf, "@cls_meth_prep_chain", @cls_meth_prep_chain)

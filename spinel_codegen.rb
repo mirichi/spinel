@@ -297,6 +297,10 @@ class Compiler
     @cls_meth_ptypes = "".split(",", -1)
     @cls_meth_returns = "".split(",", -1)
     @cls_meth_bodies = "".split(",", -1)
+ # Splat ("def f(*a)") rest-slot map, keyed by "<cname>#<mname>";
+ # see the analyze-side comment. Used to pack trailing call args.
+    @cls_rest_keys = "".split(",", -1)
+    @cls_rest_idxs = []
     @cls_meth_defaults = "".split(",", -1)
  # Mirror of @meth_param_empty for class methods. Pipe-separated by
  # method, comma-separated by param. .
@@ -2415,6 +2419,21 @@ class Compiler
   def method_rest_index(mi)
     if mi >= 0 && mi < @meth_rest_index.length
       return @meth_rest_index[mi]
+    end
+    -1
+  end
+
+ # Splat ("def f(*a)") rest-param position for an instance method,
+ # keyed by "<cname>#<mname>"; -1 when the method has no splat. The
+ # map is sparse (only splat methods are recorded).
+  def cls_meth_rest_idx(cname, mname)
+    key = cname + "#" + mname
+    k = 0
+    while k < @cls_rest_keys.length
+      if @cls_rest_keys[k] == key
+        return @cls_rest_idxs[k]
+      end
+      k = k + 1
     end
     -1
   end
@@ -31178,6 +31197,80 @@ class Compiler
     if target_midx < all_defaults.length
       defaults = all_defaults[target_midx].split(",", -1)
     end
+ # Trailing splat ("def f(*a)" / "def f(x, *a)"): pack the args from
+ # the rest position onward into the rest slot's array and pass it as
+ # a single argument, instead of spilling each into its own slot
+ # (which produced "too many arguments to function"). Gated to the
+ # last-param splat with no kwargs and no block-forward omission --
+ # the common shape; other arrangements fall through unchanged.
+    if omit_trailing == 0
+      mname_rs = ""
+      cmn_rs = @cls_meth_names[target_ci].split(";", -1)
+      if target_midx < cmn_rs.length
+        mname_rs = cmn_rs[target_midx]
+      end
+      rest_ci_rs = cls_meth_rest_idx(@cls_names[target_ci], mname_rs)
+      kw_in_args_rs = 0
+      kk_rs = 0
+      while kk_rs < raw_arg_ids.length
+        if @nd_type[raw_arg_ids[kk_rs]] == "KeywordHashNode"
+          kw_in_args_rs = 1
+        end
+        kk_rs = kk_rs + 1
+      end
+      if rest_ci_rs >= 0 && rest_ci_rs == ptypes.length - 1 && kw_in_args_rs == 0
+        parts_rs = ""
+ # Fixed params before the splat: cast/box to their slot type.
+        pj_rs = 0
+        while pj_rs < rest_ci_rs
+          av_rs = "0"
+          if pj_rs < raw_arg_ids.length
+            ex_rs = compile_expr(raw_arg_ids[pj_rs])
+            if pj_rs < ptypes.length && ptypes[pj_rs] == "poly"
+              ex_rs = box_non_nullable_value_to_poly(infer_type(raw_arg_ids[pj_rs]), ex_rs)
+            end
+            av_rs = ex_rs
+          end
+          parts_rs = (parts_rs == "") ? av_rs : parts_rs + ", " + av_rs
+          pj_rs = pj_rs + 1
+        end
+ # Build the rest array (int_array seed, or poly_array when the
+ # widen pass saw object/heterogeneous trailing args).
+        rest_t_rs = "int_array"
+        if rest_ci_rs < ptypes.length
+          rest_t_rs = ptypes[rest_ci_rs]
+        end
+        arr_rs = new_temp
+        @needs_gc = 1
+        if rest_t_rs == "poly_array"
+          @needs_rb_value = 1
+          emit("  sp_PolyArray *" + arr_rs + " = sp_PolyArray_new();")
+          emit("  SP_GC_ROOT(" + arr_rs + ");")
+          ej_rs = rest_ci_rs
+          while ej_rs < raw_arg_ids.length
+            a_rs = raw_arg_ids[ej_rs]
+            emit("  sp_PolyArray_push(" + arr_rs + ", " + box_non_nullable_value_to_poly(infer_type(a_rs), compile_expr(a_rs)) + ");")
+            ej_rs = ej_rs + 1
+          end
+        else
+          @needs_int_array = 1
+          emit("  sp_IntArray *" + arr_rs + " = sp_IntArray_new();")
+          emit("  SP_GC_ROOT(" + arr_rs + ");")
+          ej_rs = rest_ci_rs
+          while ej_rs < raw_arg_ids.length
+            a_rs = raw_arg_ids[ej_rs]
+            if @nd_type[a_rs] == "SplatNode"
+              emit_splat_into_int_array(arr_rs, @nd_expression[a_rs])
+            else
+              emit("  sp_IntArray_push(" + arr_rs + ", " + compile_expr(a_rs) + ");")
+            end
+            ej_rs = ej_rs + 1
+          end
+        end
+        parts_rs = (parts_rs == "") ? arr_rs : parts_rs + ", " + arr_rs
+        return parts_rs
+      end
+    end
  # Pull out kwargs (KeywordHashNode) from the positional stream
  # so the loop below can map `key: value` to the matching named
  # param. Without this, a trailing `head(204, content_type: "x")`
@@ -47313,6 +47406,8 @@ class Compiler
       @cls_meth_ptypes = val
     elsif name == "@cls_meth_returns"
       @cls_meth_returns = val
+    elsif name == "@cls_rest_keys"
+      @cls_rest_keys = val
     elsif name == "@cls_meth_bodies"
       @cls_meth_bodies = val
     elsif name == "@cls_meth_defaults"
@@ -47459,6 +47554,8 @@ class Compiler
       @meth_body_ids = val
     elsif name == "@meth_rest_index"
       @meth_rest_index = val
+    elsif name == "@cls_rest_idxs"
+      @cls_rest_idxs = val
     elsif name == "@meth_kwrest_index"
       @meth_kwrest_index = val
     elsif name == "@meth_has_yield"
