@@ -3235,6 +3235,48 @@ static void sp_file_write(const char *path, const char *data) {
 }
 static mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
 static void sp_file_delete(const char *path) { remove(path); }
+static sp_Time sp_file_mtime(const char *path) {
+  if (!path) {
+    sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+    return (sp_Time){0, 0, 0};
+  }
+#if defined(_WIN32)
+  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+  if (len > 0) {
+    wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)len);
+    if (wpath) {
+      if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, len) > 0) {
+        WIN32_FILE_ATTRIBUTE_DATA attr_data;
+        if (GetFileAttributesExW(wpath, GetFileExInfoStandard, &attr_data)) {
+          free(wpath);
+          ULARGE_INTEGER ull;
+          ull.LowPart = attr_data.ftLastWriteTime.dwLowDateTime;
+          ull.HighPart = attr_data.ftLastWriteTime.dwHighDateTime;
+          int64_t total_ns = (ull.QuadPart - 116444736000000000ULL) * 100;
+          return (sp_Time){total_ns / 1000000000LL, (int32_t)(total_ns % 1000000000LL), 0};
+        }
+      }
+      free(wpath);
+    }
+  }
+  sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory @ File.mtime - %s", path));
+  return (sp_Time){0, 0, 0};
+#else
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.mtime - %s", strerror(errno), path));
+    return (sp_Time){0, 0, 0};
+  }
+#if defined(__APPLE__)
+  return (sp_Time){(int64_t)st.st_mtimespec.tv_sec, (int32_t)st.st_mtimespec.tv_nsec, 0};
+#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  return (sp_Time){(int64_t)st.st_mtimespec.tv_sec, (int32_t)st.st_mtimespec.tv_nsec, 0};
+#else
+  /* Linux / others with st_mtim */
+  return (sp_Time){(int64_t)st.st_mtim.tv_sec, (int32_t)st.st_mtim.tv_nsec, 0};
+#endif
+#endif
+}
 static const char *sp_backtick(const char *cmd) { FILE *p = popen(cmd, "r"); if (!p) return sp_str_empty; char *buf = sp_str_alloc_raw(4096); size_t n = fread(buf, 1, 4095, p); buf[n] = 0; pclose(p); return buf; }
 static const char *sp_file_basename(const char *path) {
   const char *s = strrchr(path, '/');

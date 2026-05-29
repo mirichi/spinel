@@ -25505,6 +25505,9 @@ class Compiler
         if mname == "read" || mname == "binread"
           return "sp_file_read(" + compile_arg0(nid) + ")"
         end
+        if mname == "mtime"
+          return "sp_file_mtime(" + compile_arg0(nid) + ")"
+        end
         if mname == "exist?"
           return "sp_file_exist(" + compile_arg0(nid) + ")"
         end
