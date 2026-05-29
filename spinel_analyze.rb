@@ -7029,15 +7029,42 @@ class Compiler
         diverged = 0
         ci = 0
         while ci < @cls_names.length
-          if cls_find_method_direct(ci, mname) >= 0
-            mr = cls_method_return(ci, mname)
-            if mr != "int" && mr != ""
-              if unique_rt == ""
-                unique_rt = mr
-              elsif unique_rt != mr
-                diverged = 1
-                ci = @cls_names.length
+ # Collect `mname`'s candidate return type on this class from any
+ # source the fan-out below also consults: a zero-arg method, an
+ # attr_reader, or an arg method. Unlike the old guard, attr_readers
+ # count AND `int` is not pre-filtered -- a Struct member (an int
+ # attr_reader) named the same as another class's non-int method is
+ # a genuine divergence (#1043). With int candidates suppressed the
+ # guard saw only the non-int side, let the fan-out commit it, and
+ # mis-typed an unresolved recv's int use.
+          cand_g = ""
+          gmnames = @cls_meth_names[ci].split(";", -1)
+          gmparams = @cls_meth_params[ci].split("|", -1)
+          gi = 0
+          while gi < gmnames.length
+            if gmnames[gi] == mname
+              gp = ""
+              if gi < gmparams.length
+                gp = gmparams[gi]
               end
+              if gp == ""
+                cand_g = cls_method_return(ci, mname)
+              end
+            end
+            gi = gi + 1
+          end
+          if cand_g == "" && cls_has_attr_reader(ci, mname) == 1
+            cand_g = cls_ivar_type(ci, "@" + mname)
+          end
+          if cand_g == "" && cls_find_method_direct(ci, mname) >= 0
+            cand_g = cls_method_return(ci, mname)
+          end
+          if cand_g != ""
+            if unique_rt == ""
+              unique_rt = cand_g
+            elsif unique_rt != cand_g
+              diverged = 1
+              ci = @cls_names.length
             end
           end
           ci = ci + 1
