@@ -6586,6 +6586,14 @@ class Compiler
             return "complex"
           end
         end
+ # JSON.generate / JSON.dump produce a JSON string. The codegen
+ # dispatch lives in compile_constant_recv_expr's `rcname == "JSON"`
+ # block; both files must agree on the String return type.
+        if rcname == "JSON"
+          if mname == "generate" || mname == "dump"
+            return "string"
+          end
+        end
         if rcname == "Regexp"
  # `Regexp.escape(s)` / `Regexp.quote(s)` returns a String safe to
  # feed into `Regexp.new(...)` so the original bytes match

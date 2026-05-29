@@ -8552,6 +8552,11 @@ class Compiler
  # routes literal symbol keys here), so the bare-name form always
  # round-trips correctly.
     emit_raw("static const char*sp_SymIntHash_inspect(sp_SymIntHash*h){sp_String*s=sp_String_new(\"{\");for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,\", \");sp_String_append(s,sp_sym_to_s(h->order[i]));sp_String_append(s,\": \");sp_String_append(s,sp_int_to_s(sp_SymIntHash_get(h,h->order[i])));}sp_String_append(s,\"}\");return s->data;}")
+ # JSON.generate for a sym-keyed int hash. The struct is codegen-
+ # emitted, so its JSON serializer lives here (the static-header
+ # sp_json_val can't reference it); keys render as JSON strings.
+    emit_raw("static const char*sp_SymIntHash_json(sp_SymIntHash*h) __attribute__((unused));")
+    emit_raw("static const char*sp_SymIntHash_json(sp_SymIntHash*h){sp_String*o=sp_String_new(\"{\");SP_GC_ROOT(o);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,\",\");sp_String_append(o,sp_json_str(sp_sym_to_s(h->order[i])));sp_String_append(o,\":\");sp_String_append(o,sp_int_to_s(sp_SymIntHash_get(h,h->order[i])));}}sp_String_append(o,\"}\");return o->data;}")
  # Hash#to_proc lookup fn — `cap` is the hash, args[0] the symbol key.
     emit_raw("static mrb_int sp_SymIntHash_proc_fn(void*cap,mrb_int*args){return sp_SymIntHash_get((sp_SymIntHash*)cap,(sp_sym)args[0]);}")
  # sym_array.tally — emitted alongside sp_SymIntHash because the
@@ -8596,6 +8601,9 @@ class Compiler
  # Issue #851: inspect for sym_str_hash, rendered with Ruby's
  # `{:k=>"v", ...}` shorthand (sym keys, str values).
     emit_raw("static const char*sp_SymStrHash_inspect(sp_SymStrHash*h){sp_String*s=sp_String_new(\"{\");if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,\", \");sp_String_append(s,sp_sym_to_s(h->order[i]));sp_String_append(s,\": \");sp_String_append(s,sp_str_inspect(sp_SymStrHash_get(h,h->order[i])));}}sp_String_append(s,\"}\");return s->data;}")
+ # JSON.generate for a sym-keyed string hash (codegen-emitted struct).
+    emit_raw("static const char*sp_SymStrHash_json(sp_SymStrHash*h) __attribute__((unused));")
+    emit_raw("static const char*sp_SymStrHash_json(sp_SymStrHash*h){sp_String*o=sp_String_new(\"{\");SP_GC_ROOT(o);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,\",\");sp_String_append(o,sp_json_str(sp_sym_to_s(h->order[i])));sp_String_append(o,\":\");sp_String_append(o,sp_json_str(sp_SymStrHash_get(h,h->order[i])));}}sp_String_append(o,\"}\");return o->data;}")
  # Cross-variant merge: when a `sym_str_hash` and a `sym_poly_hash`
  # are merged in either direction, both result paths return a
  # fresh sym_poly_hash with the str entries boxed via sp_box_str.
@@ -25703,6 +25711,32 @@ class Compiler
           return "((" + idx_expr + " < sp_argv.len) ? sp_argv.data[(int)" + idx_expr + "] : NULL)"
         end
       end
+ # JSON.generate(v) / JSON.dump(v) -> a JSON string. Sym-keyed
+ # int/str hashes use the codegen-emitted serializers (their structs
+ # aren't in the static header); everything else boxes to poly and
+ # runs the recursive sp_json_val. Unsupported arg types fall through
+ # (the analyze side types the call as String regardless). The
+ # matching return-type arm is in spinel_analyze.rb's ConstantReadNode
+ # JSON case.
+      if rcname == "JSON" && (mname == "generate" || mname == "dump")
+        args_id_j = @nd_arguments[nid]
+        if args_id_j >= 0
+          aa_j = get_args(args_id_j)
+          if aa_j.length >= 1
+            bt_j = base_type(infer_type(aa_j[0]))
+            if bt_j == "sym_int_hash"
+              return "sp_SymIntHash_json(" + compile_expr(aa_j[0]) + ")"
+            end
+            if bt_j == "sym_str_hash"
+              return "sp_SymStrHash_json(" + compile_expr(aa_j[0]) + ")"
+            end
+            if json_serializable_type(bt_j) == 1
+              @needs_rb_value = 1
+              return "sp_json_val(" + box_non_nullable_value_to_poly(bt_j, compile_expr(aa_j[0])) + ")"
+            end
+          end
+        end
+      end
  # Math.<fn> dispatch. Single source of truth via
  # math_fn_one_arg? / math_fn_two_arg?; the matching analyze-side
  # gate lives in spinel_analyze.rb:math_fn_returns_float? and
@@ -29547,6 +29581,24 @@ class Compiler
       end
     end
     box_non_nullable_value_to_poly(at, val)
+  end
+
+ # 1 if a value of base type `bt` can be serialized by sp_json_val
+ # (boxed to poly). Sym-keyed int/str hashes are handled separately
+ # by their codegen-emitted serializers, so they're excluded here.
+  def json_serializable_type(bt)
+    if bt == "int" || bt == "bigint" || bt == "float" || bt == "string" ||
+       bt == "mutable_str" || bt == "bool" || bt == "nil" || bt == "symbol" || bt == "poly"
+      return 1
+    end
+    if is_array_type(bt) == 1
+      return 1
+    end
+    if bt == "str_int_hash" || bt == "str_str_hash" || bt == "int_str_hash" ||
+       bt == "str_poly_hash" || bt == "sym_poly_hash" || bt == "poly_poly_hash"
+      return 1
+    end
+    0
   end
 
   def box_non_nullable_value_to_poly(at, val)
