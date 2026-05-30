@@ -12138,7 +12138,8 @@ class Compiler
       end
       j = j + 1
     end
-    if has_gc_locals == 1
+    has_gc_params = (param_needs_gc_root_count(params) > 0) ? 1 : 0
+    if has_gc_locals == 1 || has_gc_params == 1
       if @needs_gc == 1 && @in_gc_scope == 0
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
@@ -12149,9 +12150,12 @@ class Compiler
       emit("  " + c_type(ltypes[j]) + " lv_" + lnames[j] + " = " + c_default_val(ltypes[j]) + ";")
       j = j + 1
     end
-    if has_gc_locals == 1
-      if @needs_gc == 1
+    if @needs_gc == 1
+      if has_gc_locals == 1
         emit_gc_roots(lnames, ltypes)
+      end
+      if has_gc_params == 1
+        emit_param_gc_roots(params)
       end
     end
   end
@@ -12423,7 +12427,8 @@ class Compiler
       end
       j = j + 1
     end
-    if has_gc_locals == 1
+    has_gc_params = (param_needs_gc_root_count(params) > 0) ? 1 : 0
+    if has_gc_locals == 1 || has_gc_params == 1
       if @needs_gc == 1 && @in_gc_scope == 0
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
@@ -12461,9 +12466,12 @@ class Compiler
       emit("  " + vol + c_type(ltypes[j]) + " lv_" + lnames[j] + " = " + c_default_val(ltypes[j]) + ";")
       j = j + 1
     end
-    if has_gc_locals == 1
-      if @needs_gc == 1
+    if @needs_gc == 1
+      if has_gc_locals == 1
         emit_gc_roots(lnames, ltypes)
+      end
+      if has_gc_params == 1
+        emit_param_gc_roots(params)
       end
     end
   end
@@ -12512,6 +12520,38 @@ class Compiler
     j = 0
     while j < lnames.length
       emit_gc_root_for_expr("lv_" + lnames[j], ltypes[j])
+      j = j + 1
+    end
+  end
+
+ # Root heap-typed (string/object/array/poly/value-type) method
+ # parameters at function entry, alongside the local roots. A param is
+ # a live value the caller passed but that nothing else roots; if the
+ # method allocates internally, a collection would free the object a
+ # string/poly param points into (e.g. `sp_poly_to_s(lv_body)` reads a
+ # freed String). Rooting the param keeps it reachable for every read
+ # in the body, regardless of argument evaluation order. The params are
+ # already declare_var'd by the prologue, so the type comes from the
+ # scope. Issue #1068 (follow-up to #1057).
+  def param_needs_gc_root_count(params)
+    c = 0
+    j = 0
+    while j < params.length
+      if gc_trace_kind(find_var_declared_type(params[j])) != "none"
+        c = c + 1
+      end
+      j = j + 1
+    end
+    c
+  end
+
+  def emit_param_gc_roots(params)
+    j = 0
+    while j < params.length
+      pt = find_var_declared_type(params[j])
+      if gc_trace_kind(pt) != "none"
+        emit_gc_root_for_expr("lv_" + params[j], pt)
+      end
       j = j + 1
     end
   end
