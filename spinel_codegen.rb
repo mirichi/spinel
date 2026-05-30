@@ -7382,7 +7382,7 @@ class Compiler
  # return type was inferred too narrowly upstream, but the call site
  # can recover at the boundary.
       if at == "mutable_str"
-        return "(" + val + ")->data"
+        return mutable_str_to_cstr(val)
       end
     end
     if is_obj_type(expected_base) == 1 && at == "poly"
@@ -15816,6 +15816,19 @@ class Compiler
     tmp
   end
 
+ # A mutable_str (sp_String *) owns its `->data` buffer, freed by the
+ # object's finalizer. That buffer carries a 0xfd marker byte which
+ # sp_gc_mark deliberately ignores, so a `const char *` aliasing it
+ # cannot be kept alive independently: once the unreferenced sp_String
+ # is collected the alias dangles. Whenever the alias would escape the
+ # object's rooted scope -- boxed into a poly slot, returned, stored --
+ # copy into a sweep-owned (0xfe) buffer via sp_str_dup_external so the
+ # resulting immutable string carries its own lifetime. `expr` is
+ # emitted exactly once.
+  def mutable_str_to_cstr(expr)
+    "sp_str_dup_external((" + expr + ")->data)"
+  end
+
   def compile_arg0(nid)
     args_id = @nd_arguments[nid]
     if args_id >= 0
@@ -17490,7 +17503,7 @@ class Compiler
         return "sp_String_dup(" + rc + ")"
       end
       if mname == "to_s"
-        return rc + "->data"
+        return mutable_str_to_cstr(rc)
       end
  # Issues #740, #741: mutating methods on mutable_str.
       if mname == "prepend" || mname == "<<" || mname == "concat"
@@ -17541,8 +17554,18 @@ class Compiler
       if mname == "frozen?"
         return "sp_String_is_frozen(" + rc + ")"
       end
- # For all other string methods, convert via ->data
-      r = compile_string_method_expr(nid, mname, rc + "->data")
+ # For all other string methods, operate on a sweep-owned copy of the
+ # buffer instead of the object-owned alias. Methods that return the
+ # receiver unchanged (itself, encode, each_char/each_byte, and
+ # gsub/sub/chomp/tr_s on a no-op) would otherwise hand back a
+ # `const char *` aliasing `->data`, which dangles once the sp_String
+ # is collected. The copy is rooted so it also survives a GC inside an
+ # allocating method (split, chars, scan, ...) that reads the receiver.
+      cptmp = new_temp
+      @needs_gc = 1
+      emit("  const char *" + cptmp + " = " + mutable_str_to_cstr(rc) + ";")
+      emit_gc_root_for_expr(cptmp, "string")
+      r = compile_string_method_expr(nid, mname, cptmp)
       if r != ""
         return r
       end
@@ -18260,7 +18283,7 @@ class Compiler
             return "sp_bigint_to_s((sp_Bigint *)" + a_e_S + ")"
           end
           if at_S == "mutable_str"
-            return "(" + a_e_S + ")->data"
+            return mutable_str_to_cstr(a_e_S)
           end
           if at_S == "poly"
             @needs_rb_value = 1
@@ -30033,7 +30056,7 @@ class Compiler
  # a statement-expression so side effects fire exactly once.
     if at == "mutable_str"
       mtmp = new_temp
-      return "({ sp_String *" + mtmp + " = " + val + "; " + mtmp + " ? sp_box_str(" + mtmp + "->data) : sp_box_nil(); })"
+      return "({ sp_String *" + mtmp + " = " + val + "; " + mtmp + " ? sp_box_str(" + mutable_str_to_cstr(mtmp) + ") : sp_box_nil(); })"
     end
  # Other pointer types — box with a neutral cls_id of 0 rather
  # than truncating the pointer to int.
