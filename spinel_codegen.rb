@@ -17575,7 +17575,7 @@ class Compiler
  # even when to_f references the value twice.
     if recv_type == "time"
       if mname == "to_i"
-        return "({ sp_Time _t = " + rc + "; (mrb_int)_t.tv_sec; })"
+        return "({ sp_Time _t = " + rc + "; sp_i64_to_int(_t.tv_sec); })"
       end
       if mname == "to_f"
         return "({ sp_Time _t = " + rc + "; (mrb_float)_t.tv_sec + (mrb_float)_t.tv_nsec / 1e9; })"

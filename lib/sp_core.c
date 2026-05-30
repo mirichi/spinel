@@ -145,6 +145,12 @@ mrb_int sp_str_to_i_strict(const char *s) {
   if (errno == ERANGE) sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
   while (isspace((unsigned char)*endptr)) endptr++;
   if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  /* On 32-bit mrb_int, a value that fit int64 (strtoll) may not fit the
+     Ruby Integer; raise rather than silently truncate. No-op on 64-bit. */
+#if INTPTR_MAX != INT64_MAX
+  if (v < (long long)INTPTR_MIN || v > (long long)INTPTR_MAX)
+    sp_raise_cls("RangeError", sp_sprintf("integer %lld out of range for 32-bit Integer", v));
+#endif
   return (mrb_int)v;
 }
 

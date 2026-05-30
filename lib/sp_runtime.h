@@ -194,6 +194,22 @@ static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
+/* Narrow a foreign 64-bit value (time_t / off_t, etc.) to a Ruby
+   Integer. On 64-bit mrb_int this is the identity. On 32-bit, a value
+   outside the mrb_int range can't be represented; rather than silently
+   truncating a clock/size value the program never computed (which
+   `int-overflow=wrap` is NOT meant to license -- wrap is about the
+   user's own arithmetic), raise RangeError. promote-mode bigint
+   promotion of these boundary values is a follow-up. */
+static inline mrb_int sp_i64_to_int(int64_t v){
+#if INTPTR_MAX == INT64_MAX
+  return (mrb_int)v;
+#else
+  if(v < (int64_t)INTPTR_MIN || v > (int64_t)INTPTR_MAX)
+    sp_raise_cls("RangeError","value out of range for 32-bit Integer");
+  return (mrb_int)v;
+#endif
+}
 
 /* Forward decls for helpers used across this header (and by the
    string->number parsers that now live in libspinel_rt.a). */
