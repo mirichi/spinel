@@ -1385,7 +1385,7 @@ static const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){size_t cap=
 static const char*sp_str_reverse(const char*s){if(!s)return sp_str_empty;size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;const char*p=s;while(*p){int cn=sp_utf8_advance(p);end-=cn;memcpy(r+end,p,cn);p+=cn;}r[bl]=0;return r;}
 static const char*sp_str_sub(const char*s,const char*pat,const char*rep){if(!s)return sp_str_empty;if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);return r;}
 static const char*sp_str_capitalize(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=tolower((unsigned char)s[i]);if(l>0)r[0]=toupper((unsigned char)r[0]);return r;}
-static mrb_int sp_str_count(const char*s,const char*chars){if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t setn;uint32_t*set=sp_utf8_decode_charset(chars,&setn);mrb_int c=0;const char*p=s;while(*p){uint32_t cp;p+=sp_utf8_decode(p,&cp);if(sp_utf8_set_has(set,setn,cp))c++;}free(set);return c;}
+static mrb_int sp_str_count(const char*s,const char*chars){if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");int negate=0;const char*csp=chars;if(*csp=='^'){negate=1;csp++;}size_t setn;uint32_t*set=sp_utf8_decode_charset(csp,&setn);mrb_int c=0;const char*p=s;while(*p){uint32_t cp;p+=sp_utf8_decode(p,&cp);int in_set=sp_utf8_set_has(set,setn,cp);if(negate)in_set=!in_set;if(in_set)c++;}free(set);return c;}
 /* Issue #800: clamp l*n so a malicious input can't allocate a tiny
    buffer through size_t overflow. */
 /* Issue #836: bound the multiplier so a wildly oversized request
@@ -1458,7 +1458,7 @@ static const char*sp_str_tr_s(const char*s,const char*from,const char*to){
   free(buf); free(fcps); free(tcps);
   return r;
 }
-static const char*sp_str_delete(const char*s,const char*chars){if(!s)return sp_str_empty;if(!chars)return s;size_t setn;uint32_t*set=sp_utf8_decode_charset(chars,&setn);size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t n=0;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);if(!sp_utf8_set_has(set,setn,cp)){memcpy(r+n,p,cn);n+=cn;}p+=cn;}r[n]=0;sp_str_set_len(r,n);free(set);return r;}
+static const char*sp_str_delete(const char*s,const char*chars){if(!s)return sp_str_empty;if(!chars)return s;int negate=0;const char*csp=chars;if(*csp=='^'){negate=1;csp++;}size_t setn;uint32_t*set=sp_utf8_decode_charset(csp,&setn);size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t n=0;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);int in_set=sp_utf8_set_has(set,setn,cp);if(negate)in_set=!in_set;if(!in_set){memcpy(r+n,p,cn);n+=cn;}p+=cn;}r[n]=0;sp_str_set_len(r,n);free(set);return r;}
 /* Issue #921: shrink the heap-string header length to match the
    squeezed payload — the alloc gives bl+1 bytes, the squeezed
    write fills n<=bl, leaving the header's stored length stale.
