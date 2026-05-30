@@ -15498,6 +15498,10 @@ class Compiler
     end
     fmt = ""
     arg_exprs = "".split(",", -1)
+ # Source node id per emitted arg, kept aligned with arg_exprs, so the
+ # sibling-arg GC rooting below can tell which interpolated values are
+ # fresh allocations (#1057).
+    arg_inner_ids = []
     parts.each { |pid|
       if @nd_type[pid] == "StringNode"
         fmt = fmt + escape_c_format(@nd_content[pid])
@@ -15515,6 +15519,7 @@ class Compiler
                 k_es2 = k_es2 + 1
               end
               inner = stmts[stmts.length - 1]
+              arg_inner_ids.push(inner)
               it = infer_type(inner)
               if it == "int"
                 fmt = fmt + "%lld"
@@ -15627,6 +15632,42 @@ class Compiler
         end
       end
     }
+ # Root fresh heap (`%s` const char*) interpolation values across the
+ # evaluation of sibling values when two or more may allocate. Without
+ # this, e.g. a 7-`%s` layout sprintf frees an earlier-built helper
+ # string when a later one collects, and vsnprintf walks a dangling
+ # pointer (#1057). `%lld` args are integers (the "(long long)" prefix)
+ # and need no rooting; a lone allocating value has no sibling to free
+ # it, so the gate keeps the common case zero-cost.
+    gc_n_ip = 0
+    jj = 0
+    while jj < arg_exprs.length
+      rootable_cnt = 1
+      if arg_exprs[jj].start_with?("(long long)")
+        rootable_cnt = 0
+      end
+      if rootable_cnt == 1 && jj < arg_inner_ids.length && arg_inner_ids[jj] >= 0 && expr_may_gc(arg_inner_ids[jj]) == 1
+        gc_n_ip = gc_n_ip + 1
+      end
+      jj = jj + 1
+    end
+    if gc_n_ip >= 2
+      @needs_gc = 1
+      jj = 0
+      while jj < arg_exprs.length
+        rootable_ip = 1
+        if arg_exprs[jj].start_with?("(long long)")
+          rootable_ip = 0
+        end
+        if rootable_ip == 1 && jj < arg_inner_ids.length && arg_inner_ids[jj] >= 0 && expr_may_gc(arg_inner_ids[jj]) == 1
+          t_ip = new_temp
+          emit("  const char *" + t_ip + " = " + arg_exprs[jj] + ";")
+          emit("  SP_GC_ROOT(" + t_ip + ");")
+          arg_exprs[jj] = t_ip
+        end
+        jj = jj + 1
+      end
+    end
     result = "sp_sprintf(\"" + fmt + "\""
     j = 0
     while j < arg_exprs.length
@@ -30616,6 +30657,31 @@ class Compiler
       kwrest_param_idx = -1
     end
 
+ # Root fresh heap arg temporaries across sibling-arg evaluation when
+ # two or more args may allocate (the #1057 use-after-free). A lone
+ # allocating arg has no sibling to free it, so the common case stays
+ # zero-cost. root_constructor_arg_if_needed hoists only the may-gc
+ # heap-typed args into rooted temps; literals/locals pass through.
+    gc_count_cd = 0
+    gi_cd = 0
+    while gi_cd < positional_ids.length
+      if @nd_type[positional_ids[gi_cd]] != "SplatNode" && expr_may_gc(positional_ids[gi_cd]) == 1
+        gc_count_cd = gc_count_cd + 1
+      end
+      gi_cd = gi_cd + 1
+    end
+    gi_cd = 0
+    while gi_cd < kw_arg_ids.length
+      if kw_arg_ids[gi_cd] >= 0 && expr_may_gc(kw_arg_ids[gi_cd]) == 1
+        gc_count_cd = gc_count_cd + 1
+      end
+      gi_cd = gi_cd + 1
+    end
+    do_root_cd = 0
+    if gc_count_cd >= 2
+      do_root_cd = 1
+    end
+
     result = ""
     k = 0
     while k < pnames.length
@@ -30669,7 +30735,11 @@ class Compiler
  # (e.g. `model:` after call-site widening folds
  # Article + Comment into poly) is exactly the path
  # that flows non-string objs through here.
-              result = result + box_expr_to_poly(kw_arg_ids[ki])
+              kw_pv_cd = box_expr_to_poly(kw_arg_ids[ki])
+              if do_root_cd == 1
+                kw_pv_cd = root_constructor_arg_if_needed(kw_arg_ids[ki], kw_pv_cd, "poly", 0)
+              end
+              result = result + kw_pv_cd
             else
  # promote-mode coerce: kw value's static type vs
  # param's declared type may need int <-> bigint.
@@ -30682,10 +30752,17 @@ class Compiler
                 @needs_bigint = 1
                 kw_val_pft = "sp_bigint_to_int((sp_Bigint *)" + kw_val_pft + ")"
               end
+              if do_root_cd == 1
+                kw_val_pft = root_constructor_arg_if_needed(kw_arg_ids[ki], kw_val_pft, ptypes[k], 0)
+              end
               result = result + kw_val_pft
             end
           else
-            result = result + kw_vals[ki]
+            kw_nv_cd = kw_vals[ki]
+            if do_root_cd == 1
+              kw_nv_cd = root_constructor_arg_if_needed(kw_arg_ids[ki], kw_nv_cd, infer_type(kw_arg_ids[ki]), 0)
+            end
+            result = result + kw_nv_cd
           end
         end
         ki = ki + 1
@@ -30829,7 +30906,11 @@ class Compiler
         if k < positional_ids.length
           if k < ptypes.length
             if ptypes[k] == "poly"
-              result = result + box_expr_to_poly(positional_ids[k])
+              av_cd = box_expr_to_poly(positional_ids[k])
+              if do_root_cd == 1
+                av_cd = root_constructor_arg_if_needed(positional_ids[k], av_cd, "poly", 0)
+              end
+              result = result + av_cd
               k = k + 1
               next
             end
@@ -30926,9 +31007,17 @@ class Compiler
  # the caller is more general than the callee) is unboxed via
  # the matching union field. Mirrors the #438 IntStrHash-key
  # unbox and extends it to user-method args.
-            result = result + cast_away_volatile_arg(positional_ids[k], compile_expr_for_expected_type(positional_ids[k], ptypes[k]))
+            av_cd = cast_away_volatile_arg(positional_ids[k], compile_expr_for_expected_type(positional_ids[k], ptypes[k]))
+            if do_root_cd == 1
+              av_cd = root_constructor_arg_if_needed(positional_ids[k], av_cd, ptypes[k], 0)
+            end
+            result = result + av_cd
           else
-            result = result + cast_away_volatile_arg(positional_ids[k], compile_expr(positional_ids[k]))
+            av_cd = cast_away_volatile_arg(positional_ids[k], compile_expr(positional_ids[k]))
+            if do_root_cd == 1
+              av_cd = root_constructor_arg_if_needed(positional_ids[k], av_cd, infer_type(positional_ids[k]), 0)
+            end
+            result = result + av_cd
           end
         else
  # Use default value
@@ -31680,22 +31769,42 @@ class Compiler
     if total == 0
       return ""
     end
-    later_arg_may_gc = []
-    if root_constructor_args == 1
-      gc_expr_ids = []
-      gk = 0
-      while gk < total
-        gc_expr_id = -1
-        if gk < arg_ids.length
-          gc_expr_id = arg_ids[gk]
-        else
-          if gk < defaults.length
-            gc_expr_id = defaults[gk].to_i
-          end
+ # Root fresh heap argument temporaries across sibling-arg evaluation.
+ # A call like `f(fresh_str, allocating())` can free `fresh_str` when
+ # `allocating()` triggers a collection before the call consumes it
+ # (use-after-free). Engage the per-arg rooting for constructors
+ # (always) and for any call with >= 2 args that may allocate -- a
+ # lone allocating arg has no sibling to free, so the common case
+ # stays zero-cost. The gate mirrors the untyped compile_call_args /
+ # compile_gc_safe_args precedent.
+    gc_expr_ids = []
+    gk = 0
+    while gk < total
+      gc_expr_id = -1
+      if gk < arg_ids.length
+        gc_expr_id = arg_ids[gk]
+      else
+        if gk < defaults.length
+          gc_expr_id = defaults[gk].to_i
         end
-        gc_expr_ids.push(gc_expr_id)
-        gk = gk + 1
       end
+      gc_expr_ids.push(gc_expr_id)
+      gk = gk + 1
+    end
+    gc_count_ta = 0
+    gk = 0
+    while gk < total
+      if gc_expr_ids[gk] >= 0 && expr_may_gc(gc_expr_ids[gk]) == 1
+        gc_count_ta = gc_count_ta + 1
+      end
+      gk = gk + 1
+    end
+    do_root = root_constructor_args
+    if gc_count_ta >= 2
+      do_root = 1
+    end
+    later_arg_may_gc = []
+    if do_root == 1
       seen_gc = 0
       gk = total - 1
       while gk >= 0
@@ -31735,7 +31844,7 @@ class Compiler
           pt_base = base_type(pt)
           if pt_base == "poly" || pt_base == "string" || is_array_type(pt_base) == 1 || (at == "poly" && is_obj_type(pt_base) == 1) || (at == "poly" && is_hash_type(pt_base) == 1) || (pt_base == "bigint" && at != "bigint") || (at == "bigint" && pt_base != "bigint")
             aexpr = compile_expr_for_expected_type(arg_ids[k], pt)
-            if root_constructor_args == 1
+            if do_root == 1
               aexpr = root_constructor_arg_if_needed(arg_ids[k], aexpr, pt, later_arg_may_gc[k])
             end
             result = result + aexpr
@@ -31772,7 +31881,7 @@ class Compiler
           aexpr = compile_expr(arg_ids[k])
           pt = at
         end
-        if root_constructor_args == 1
+        if do_root == 1
           aexpr = root_constructor_arg_if_needed(arg_ids[k], aexpr, pt, later_arg_may_gc[k])
         end
         result = result + aexpr
@@ -31814,13 +31923,13 @@ class Compiler
             end
             if k < ptypes.length
               aexpr = compile_expr_for_expected_type(def_id, ptypes[k])
-              if root_constructor_args == 1
+              if do_root == 1
                 aexpr = root_constructor_arg_if_needed(def_id, aexpr, ptypes[k], later_arg_may_gc[k])
               end
               result = result + aexpr
             else
               aexpr = compile_expr(def_id)
-              if root_constructor_args == 1
+              if do_root == 1
                 aexpr = root_constructor_arg_if_needed(def_id, aexpr, infer_type(def_id), later_arg_may_gc[k])
               end
               result = result + aexpr
