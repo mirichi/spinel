@@ -21702,6 +21702,32 @@ class Compiler
       args_id = @nd_arguments[nid]
       if args_id >= 0
         a = get_args(args_id)
+ # s.slice(1..3) / s.slice(1...3) — decompose the Range and
+ # dispatch to the same `_r` runtime helper that s[1..3] uses,
+ # which normalizes negative endpoints and the exclusive flag.
+ # Without this arm the single Range arg fell through to
+ # compile_arg0_as_int below, emitting sp_range_new(...) where
+ # an mrb_int start was expected -> incompatible-type C error.
+ # Endless/beginless ranges mirror the s[..] handling: a missing
+ # start becomes 0 and a missing end becomes -1 (inclusive to end).
+        if a.length == 1 && @nd_type[a[0]] == "RangeNode"
+          range_node_sl = a[0]
+          left_nid_sl = @nd_left[range_node_sl]
+          right_nid_sl = @nd_right[range_node_sl]
+          if left_nid_sl < 0
+            left_sl = "0"
+          else
+            left_sl = compile_expr_as_int(left_nid_sl)
+          end
+          if right_nid_sl < 0
+            right_sl = "-1"
+            excl_sl = "0"
+          else
+            right_sl = compile_expr_as_int(right_nid_sl)
+            excl_sl = (range_excl_end(range_node_sl) == 1 ? "1" : "0")
+          end
+          return "sp_str_sub_range_r(" + rc + ", " + left_sl + ", " + right_sl + ", " + excl_sl + ")"
+        end
         if a.length >= 2
           return "sp_str_sub_range(" + rc + ", " + compile_expr_as_int(a[0]) + ", " + compile_expr_as_int(a[1]) + ")"
         end
