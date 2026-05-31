@@ -20814,12 +20814,16 @@ class Compiler
   end
 
   def infer_body_return(body_id)
+ # An empty method body -- whether the parser yields no body node
+ # (body_id < 0) or an empty statement list -- implicitly returns nil
+ # in Ruby, so `f.nil?` on the result must be true. (A body that *has*
+ # statements returns its last expression, handled below.)
     if body_id < 0
-      return "void"
+      return "nil"
     end
     stmts = get_stmts(body_id)
     if stmts.length == 0
-      return "void"
+      return "nil"
     end
  # Collect all explicit return types
     types = "".split(",", -1)
