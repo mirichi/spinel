@@ -32,6 +32,7 @@ sp_Time sp_time_at_float(double epoch);
 sp_Time sp_time_new(int64_t y, int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s);
 sp_Time sp_time_new_utc(int64_t y, int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s);
 sp_Time sp_time_utc(sp_Time t);
+sp_Time sp_time_localtime(sp_Time t);
 
 /* Broken-down resolver: is_utc selects gmtime vs localtime, off is the
    UTC offset in seconds, zbuf is the timezone abbreviation (8 bytes). */

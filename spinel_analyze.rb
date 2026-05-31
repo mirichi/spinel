@@ -4490,10 +4490,11 @@ class Compiler
         return "string"
       end
     end
- # Time#utc — same instant with UTC presentation
- # flag set. Returns a Time so chained calls (`Time.now.utc.iso8601`)
+ # Time#utc / gmtime / localtime (and the non-mutating getutc /
+ # getlocal) — same instant with the UTC-presentation flag set or
+ # cleared. Returns a Time so chained calls (`Time.now.utc.iso8601`)
  # type as the chained method's result.
-    if mname == "utc"
+    if mname == "utc" || mname == "gmtime" || mname == "localtime" || mname == "getutc" || mname == "getlocal"
       if recv >= 0 && infer_type(recv) == "time"
         return "time"
       end

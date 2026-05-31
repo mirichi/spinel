@@ -73,6 +73,11 @@ sp_Time sp_time_utc(sp_Time t) {
   return t;
 }
 
+sp_Time sp_time_localtime(sp_Time t) {
+  t.is_utc = 0;
+  return t;
+}
+
 /* is_utc selects gmtime vs localtime, off is UTC offset in seconds,
    zbuf is the timezone abbreviation (8 bytes). mktime(gmtime(s))-s
    is the portable offset technique (MSVCRT's %z emits the timezone

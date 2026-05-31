@@ -17645,8 +17645,15 @@ class Compiler
  # flag flipped to UTC. Returns a sp_Time so chained calls
  # (`Time.now.utc.iso8601`) lower correctly via sp_time_iso8601's
  # is_utc branch.
-      if mname == "utc"
+      if mname == "utc" || mname == "gmtime" || mname == "getutc"
         return "sp_time_utc(" + rc + ")"
+      end
+ # localtime / getlocal flip is_utc back off. sp_Time is a value
+ # type, so (like utc) this yields a new Time rather than mutating
+ # in place; `t2 = t.localtime` works, a bare `t.localtime` is a
+ # no-op on the receiver.
+      if mname == "localtime" || mname == "getlocal"
+        return "sp_time_localtime(" + rc + ")"
       end
  # Time broken-down accessors and zone observation. is_utc is
  # respected by sp_time_vtm (gmtime vs localtime). Local Time.new
