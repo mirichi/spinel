@@ -528,6 +528,7 @@ class Compiler
     @nd_type = Array.new(n, "")
     @nd_name = Array.new(n, "")
     @nd_value = Array.new(n, 0)
+    @nd_line = Array.new(n, 0)
     @nd_content = Array.new(n, "")
     @nd_flags = Array.new(n, 0)
     @nd_operator = Array.new(n, "")
@@ -664,6 +665,13 @@ class Compiler
  # UnsupportedNode carries the source line so codegen can cite
  # location in the compile error.
       @nd_value[nid] = val
+    end
+ # Debug builds only (SPINEL_DEBUG=1): the parser stamps every node
+ # with its 1-based source line in a dedicated slot so codegen can
+ # emit `#line` directives. Kept separate from @nd_value, which is
+ # overloaded for integer/float literal values, numbered-param max, etc.
+    if field == "node_line"
+      @nd_line[nid] = val
     end
   end
 

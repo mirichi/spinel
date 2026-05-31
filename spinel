@@ -18,6 +18,9 @@
 #              first .rb file ends spinel-flag parsing, and the rest
 #              of the command line becomes the binary's ARGV.
 #   -O LEVEL   Optimization level for cc (default: 2)
+#   --debug    Debug build: #line directives + non-inlined methods + -g -O0,
+#              so gdb/lldb step through the original .rb source
+#   -g         Add debug info + #line without forcing -O0
 #   --cc=CMD   C compiler command (default: cc)
 #   -e STR     Inline Ruby source (repeatable; multiple -e join with \n)
 
@@ -49,6 +52,7 @@ RUN_MODE=0
 OPT_LEVEL="2"
 CC_CMD="cc"
 EXTRA_FLAGS=""
+DEBUG=0
 C_TMP=""
 C_TMP_DIR=""
 RUN_TMP_DIR=""
@@ -98,6 +102,14 @@ while [ $# -gt 0 ]; do
                 ;;
     -o)         shift; OUTPUT="$1"; shift ;;
     -O)         shift; OPT_LEVEL="$1"; shift ;;
+    --debug)    # Debug build: native-debugger stepping through Ruby.
+                # Emits #line directives + keeps methods non-inlined
+                # (SPINEL_DEBUG=1), forces -O0 and adds -g.
+                DEBUG=1; OPT_LEVEL="0"; shift ;;
+    -g)         # Debug info + #line, but leave -O as-is (a -g build at
+                # the default -O2 gives lossy DWARF; use --debug for
+                # faithful stepping).
+                DEBUG=1; shift ;;
     -e)         shift
                 if [ "$EVAL_USED" -eq 0 ]; then
                   EVAL_SCRIPT="$1"
@@ -197,6 +209,9 @@ if [ -z "$SOURCE" ]; then
   echo "  -S          Print C to stdout" >&2
   echo "  -E          Run the compiled binary; leftover args become its ARGV" >&2
   echo "  -O LEVEL    Optimization level (default: 2)" >&2
+  echo "  --debug     Debug build: step through the .rb in gdb/lldb" >&2
+  echo "              (emits #line, keeps methods non-inlined, -g -O0)" >&2
+  echo "  -g          Add debug info + #line without forcing -O0" >&2
   echo "  --cc=CMD    C compiler (default: cc)" >&2
   echo "  -e STR      Inline Ruby source (repeatable; joined with newlines)" >&2
   echo "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)" >&2
@@ -220,6 +235,14 @@ fi
 AST_TMP="$(mktemp /tmp/spinel_ast.XXXXXX)"
 IR_TMP="$(mktemp /tmp/spinel_ir.XXXXXX)"
 trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP" "$SEED_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"; [ -n "$RUN_TMP_DIR" ] && rm -rf "$RUN_TMP_DIR"' EXIT
+
+# Debug mode signal, read by the parser (per-node line stamps) and the
+# codegen (#line emission + non-inlined methods). Must be exported
+# before the parse step below since spinel_parse reads it at init.
+if [ "$DEBUG" -eq 1 ]; then
+  export SPINEL_DEBUG=1
+  EXTRA_FLAGS="$EXTRA_FLAGS -g"
+fi
 
 # Step 1: Parse. spinel_parse is C-only; build it via `make parse`
 # (or `make all`) before invoking spinel.

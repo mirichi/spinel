@@ -67,6 +67,10 @@ static void out_add(const char *fmt, ...) {
 static const pm_parser_t *g_parser;
 static const char *g_source_file = "";
 static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set once at init */
+/* Debug builds: when SPINEL_DEBUG=1, flatten() emits a per-node
+   `node_line` field so codegen can place C `#line` directives. Off by
+   default so the AST text format (and golden tests) are unchanged. */
+static int g_emit_line = 0;
 
 static char *cstr(pm_constant_id_t id) {
   if (id == 0) return strdup("");
@@ -227,6 +231,17 @@ static int flatten(pm_node_t *node) {
 
   int id = node_counter++;
   pm_node_type_t t = PM_NODE_TYPE(node);
+
+  /* Debug builds only: stamp every node with its 1-based source line so
+     codegen can emit `#line` directives. Same newline-list lookup the
+     __LINE__ / UnsupportedNode cases already use; written to a dedicated
+     `node_line` field (NOT the overloaded `value`/`start_line` slot). */
+  if (g_emit_line) {
+    int32_t node_line = pm_newline_list_line(&g_parser->newline_list,
+                                             node->location.start,
+                                             g_parser->start_line);
+    emit_int(id, "node_line", (long long)node_line);
+  }
 
 #define N(type_name) out_add("N %d " type_name, id)
 #define S(field, val) do { char *_e = (val); emit_str(id, field, _e); free(_e); } while(0)
@@ -1898,6 +1913,10 @@ int main(int argc, char **argv) {
   g_parser = &parser;
   g_source_file = source_file;
   g_source_file_escaped = escape_str((const uint8_t *)g_source_file, strlen(g_source_file));
+  {
+    const char *dbg = getenv("SPINEL_DEBUG");
+    g_emit_line = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0') ? 1 : 0;
+  }
 
   /* Flatten AST to text */
   lines = NULL;

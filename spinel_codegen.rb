@@ -55,11 +55,19 @@ class Compiler
  # the cache is up-to-date and the override stays off.
     @int_overflow_mode = ENV["SPINEL_INT_OVERFLOW"] || "raise"
 
+ # Debug builds (`spinel --debug` / `-g`, which export SPINEL_DEBUG=1):
+ # emit `#line N "src.rb"` before each statement and keep every method a
+ # real (non-inlined) frame, so a native debugger steps through the
+ # original Ruby. Off by default -> output byte-for-byte unchanged.
+    @debug = (ENV["SPINEL_DEBUG"] == "1")
+    @last_line_emitted = 0
+
  # ---- AST node storage (parallel arrays by node ID) ----
  # Use "".split(",", -1) for StrArray init (v1 infers StrArray from split)
     @nd_type = "".split(",", -1)
     @nd_name = "".split(",", -1)
     @nd_value = []
+    @nd_line = []
     @nd_content = "".split(",", -1)
     @nd_flags = []
     @nd_operator = "".split(",", -1)
@@ -3226,6 +3234,40 @@ class Compiler
 
   def emit_raw(s)
     @out_lines.push(s)
+  end
+
+ # Debug builds: emit a C `#line N "src.rb"` directive (column 0) so the
+ # C toolchain's DWARF maps generated code back to the original Ruby
+ # source. No-op unless @debug. `node_line` is stamped per-node by the
+ # parser under SPINEL_DEBUG (a dedicated slot, never the overloaded
+ # @nd_value). Consecutive duplicates are suppressed so a multi-line
+ # statement doesn't reset to the same line repeatedly.
+  def emit_line_directive(nid)
+    if @debug == false
+      return
+    end
+    if nid < 0
+      return
+    end
+    ln = @nd_line[nid]
+    if ln == nil
+      return
+    end
+    if ln <= 0
+      return
+    end
+    if ln == @last_line_emitted
+      return
+    end
+    @last_line_emitted = ln
+    path = @source_file_path
+    if path == nil
+      path = "source.rb"
+    end
+    if path == ""
+      path = "source.rb"
+    end
+    @out_lines.push("#line " + ln.to_s + " \"" + path + "\"")
   end
 
 
@@ -9918,6 +9960,13 @@ class Compiler
  # no yield, and not self-recursive are considered inlineable.
 
   def method_linkage_named(body_id, has_yield, mname)
+ # Debug builds: never promote to `static inline`. An inlined method has
+ # no distinct frame after the C compiler runs, so a native debugger
+ # can't break on it or show it in a backtrace. Keep every method a real
+ # `static` function for faithful stepping (paired with cc -O0).
+    if @debug
+      return "static "
+    end
     if has_yield == 1
       return "static "
     end
@@ -34914,6 +34963,7 @@ class Compiler
     if nid < 0
       return
     end
+    emit_line_directive(nid)
     t = @nd_type[nid]
     if t == "UnsupportedNode"
  # Imaginary / Rational now have proper nodes (#840 #841). Any
@@ -49358,6 +49408,12 @@ class Compiler
       i = i + 1
     end
     last = stmts.last
+ # Debug builds: the method's tail (implicit-return) expression is
+ # compiled through the specialized paths below, not compile_stmt, so
+ # stamp its source line here too — otherwise it would inherit the
+ # previous statement's #line and only map correctly by C/Ruby line
+ # coincidence.
+    emit_line_directive(last)
     if @nd_type[last] == "ReturnNode"
       compile_return_stmt(last)
       return
