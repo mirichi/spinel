@@ -17676,6 +17676,25 @@ class Compiler
       if mname == "sec"
         return "sp_time_sec(" + rc + ")"
       end
+ # Subsecond and epoch accessors read the sp_Time value's fields
+ # directly (tv_nsec is the stored nanosecond fraction). usec/tv_usec
+ # report microseconds (nsec / 1000); nsec/tv_nsec report the raw
+ # nanoseconds; tv_sec mirrors to_i. rc is bound once so a
+ # side-effecting receiver expression isn't evaluated twice.
+      if mname == "usec" || mname == "tv_usec"
+        return "({ sp_Time _t = " + rc + "; sp_i64_to_int((int64_t)(_t.tv_nsec / 1000)); })"
+      end
+      if mname == "nsec" || mname == "tv_nsec"
+        return "({ sp_Time _t = " + rc + "; sp_i64_to_int((int64_t)_t.tv_nsec); })"
+      end
+      if mname == "tv_sec"
+        return "({ sp_Time _t = " + rc + "; sp_i64_to_int(_t.tv_sec); })"
+      end
+ # utc? / gmt? observe the presentation flag set by Time.utc / .gmtime
+ # / .getutc (and inherited through sp_time arithmetic).
+      if mname == "utc?" || mname == "gmt?"
+        return "({ sp_Time _t = " + rc + "; (_t.is_utc != 0); })"
+      end
       if mname == "wday"
         return "sp_time_wday(" + rc + ")"
       end
