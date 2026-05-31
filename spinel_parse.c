@@ -246,9 +246,10 @@ static int flatten(pm_node_t *node) {
      raw value is the line in the concatenated buffer; the map translates it
      back to the original file and line. */
   if (g_emit_line) {
-    int32_t bl = pm_newline_list_line(&g_parser->newline_list,
-                                      node->location.start,
-                                      g_parser->start_line);
+    pm_line_column_t lc = pm_newline_list_line_column(&g_parser->newline_list,
+                                                      node->location.start,
+                                                      g_parser->start_line);
+    int32_t bl = lc.line;
     int orig = bl;
     int fid = 0;
     if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n) {
@@ -257,6 +258,9 @@ static int flatten(pm_node_t *node) {
     }
     emit_int(id, "node_line", (long long)orig);
     emit_int(id, "node_file", (long long)fid);
+    /* Column is concatenation-stable (require splicing is line-based), so the
+       buffer column equals the original-file column. 0-based, as Prism gives. */
+    emit_int(id, "node_col", (long long)lc.column);
   }
 
 #define N(type_name) out_add("N %d " type_name, id)

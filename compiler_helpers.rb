@@ -468,6 +468,7 @@ class Compiler
     @nd_value.push(0)
     @nd_line.push(0)   # keep the source-map arrays parallel with the rest, so a
     @nd_file.push(0)   # dynamically-allocated node can't drift them out of sync
+    @nd_col.push(0)    # (and the self-host inferencer needs the literal push here)
     @nd_content.push("")
     @nd_flags.push(0)
     @nd_operator.push("")
@@ -532,6 +533,7 @@ class Compiler
     @nd_value = Array.new(n, 0)
     @nd_line = Array.new(n, 0)
     @nd_file = Array.new(n, 0)
+    @nd_col = Array.new(n, 0)
     @nd_content = Array.new(n, "")
     @nd_flags = Array.new(n, 0)
     @nd_operator = Array.new(n, "")
@@ -679,6 +681,10 @@ class Compiler
  # Debug multi-file map: id into the FILE table (0 = toplevel source).
     if field == "node_file"
       @nd_file[nid] = val
+    end
+ # Debug/types export: 0-based source column for hover position keys.
+    if field == "node_col"
+      @nd_col[nid] = val
     end
   end
 

@@ -73,6 +73,7 @@ class Compiler
     @nd_value = []
     @nd_line = []
     @nd_file = []
+    @nd_col = []
     @nd_content = "".split(",", -1)
     @nd_flags = []
     @nd_operator = "".split(",", -1)

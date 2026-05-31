@@ -47,6 +47,7 @@ SOURCE=""
 OUTPUT=""
 C_ONLY=0
 EMIT_RBS=0
+EMIT_TYPES=0
 STDOUT_MODE=0
 RUN_MODE=0
 OPT_LEVEL="2"
@@ -122,6 +123,10 @@ $1"
     -c)         C_ONLY=1; shift ;;
     --emit-rbs) # Analyze-only: dump inferred signatures as RBS, no binary.
                 EMIT_RBS=1; shift ;;
+    --emit-types) # Analyze-only: dump per-position inferred types + degrade
+                  # diagnostics as JSON (for the ruby-lsp addon). Needs node
+                  # positions, so it turns on SPINEL_DEBUG below.
+                EMIT_TYPES=1; DEBUG=1; shift ;;
     -S)         STDOUT_MODE=1; shift ;;
     -E)         RUN_MODE=1; shift ;;
     *.rb)
@@ -177,6 +182,22 @@ if [ "$EMIT_RBS" -eq 1 ]; then
   fi
 fi
 
+# --emit-types is likewise analyze-only — reject the binary/C-output modes.
+if [ "$EMIT_TYPES" -eq 1 ]; then
+  if [ "$RUN_MODE" -eq 1 ]; then
+    echo "spinel: --emit-types cannot be combined with -E (run)" >&2
+    exit 2
+  fi
+  if [ "$C_ONLY" -eq 1 ]; then
+    echo "spinel: --emit-types cannot be combined with -c (C source only)" >&2
+    exit 2
+  fi
+  if [ "$STDOUT_MODE" -eq 1 ]; then
+    echo "spinel: --emit-types cannot be combined with -S (stdout)" >&2
+    exit 2
+  fi
+fi
+
 # `-e` mode: write the accumulated inline script to a temp file and
 # treat it as the source. Default output name is `a` since the
 # inline form has no .rb basename to derive from. If both -e and a
@@ -206,6 +227,7 @@ if [ -z "$SOURCE" ]; then
   echo "  -o FILE     Output file" >&2
   echo "  -c          C source only (don't compile)" >&2
   echo "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary" >&2
+  echo "  --emit-types Dump per-position inferred types + degrade diagnostics as JSON" >&2
   echo "  -S          Print C to stdout" >&2
   echo "  -E          Run the compiled binary; leftover args become its ARGV" >&2
   echo "  -O LEVEL    Optimization level (default: 2)" >&2
@@ -289,6 +311,10 @@ if [ "$EMIT_RBS" -eq 1 ]; then
   RBS_OUT="${OUTPUT:-$BASENAME.rbs}"
   export SPINEL_EMIT_RBS="$RBS_OUT"
 fi
+if [ "$EMIT_TYPES" -eq 1 ]; then
+  TYPES_OUT="${OUTPUT:-$BASENAME.types.json}"
+  export SPINEL_EMIT_TYPES="$TYPES_OUT"
+fi
 if [ -x "$ANALYZE_BIN" ]; then
   "$ANALYZE_BIN" "$AST_TMP" "$IR_TMP" $SEED_TMP
 else
@@ -299,9 +325,14 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# --emit-rbs is analyze-only: the signatures are written, stop before codegen.
+# --emit-rbs / --emit-types are analyze-only: the artifact is written by the
+# analyzer; stop before codegen.
 if [ "$EMIT_RBS" -eq 1 ]; then
   echo "Wrote $RBS_OUT" >&2
+  exit 0
+fi
+if [ "$EMIT_TYPES" -eq 1 ]; then
+  echo "Wrote $TYPES_OUT" >&2
   exit 0
 fi
 

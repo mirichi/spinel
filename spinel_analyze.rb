@@ -36,6 +36,7 @@ class Compiler
     @nd_value = []
     @nd_line = []
     @nd_file = []
+    @nd_col = []
     @file_table = []
     @nd_content = "".split(",", -1)
     @nd_flags = []
@@ -26542,6 +26543,165 @@ class Compiler
     out
   end
 
+ # ---- Position-keyed type + diagnostics export (for the ruby-lsp addon) ----
+ # Emits JSON: every node with a concrete inferred type, keyed by source
+ # position (1-based line / 0-based col, matching Prism's node.location), plus
+ # a focused list of degrade diagnostics (parameters that widened to the boxed
+ # poly slow path). Positions come from the parser's node_line/node_file/node_col
+ # (the --debug machinery); gated by SPINEL_EMIT_TYPES in main. Hand-rolled JSON
+ # because the self-hosted subset has no stdlib json.
+
+  def json_escape(s)
+    out = ""
+    i = 0
+    while i < s.length
+      c = s[i]
+      if c == "\""
+        out = out + "\\\""
+      elsif c == "\\"
+        out = out + "\\\\"
+      elsif c == "\n"
+        out = out + "\\n"
+      elsif c == "\t"
+        out = out + "\\t"
+      else
+        out = out + c
+      end
+      i = i + 1
+    end
+    out
+  end
+
+  def types_file_path(fid)
+    if fid != nil && fid >= 0 && fid < @file_table.length
+      if @file_table[fid] != nil && @file_table[fid] != ""
+        return @file_table[fid]
+      end
+    end
+    if @source_file_path != nil
+      return @source_file_path
+    end
+    "source.rb"
+  end
+
+ # 1 when a type tag is on the boxed poly slow path (the degrade signal).
+  def is_poly_degraded(t)
+    b = base_type(t)
+    if b == "poly"
+      return 1
+    end
+    if b == "poly_array"
+      return 1
+    end
+    if t.include?("poly_hash")
+      return 1
+    end
+    0
+  end
+
+ # 1 when any param or the return of a signature is on the poly slow path.
+  def method_sig_degraded(ptypes, ret)
+    i = 0
+    while i < ptypes.length
+      if ptypes[i] != "" && is_poly_degraded(ptypes[i]) == 1
+        return 1
+      end
+      i = i + 1
+    end
+    if ret != nil && ret != "" && is_poly_degraded(ret) == 1
+      return 1
+    end
+    0
+  end
+
+ # Return a string of "|<body-node-id>|" tokens for each degraded method of a
+ # class (instance or singleton). Body ids index-align with ptypes (`|`-sep)
+ # and returns (`;`-sep); body sentinel "-2" is the injected builtin, skipped.
+  def degraded_bodies_for_class(ptypes_str, returns_str, bodies_str)
+    out = ""
+    ptall = ptypes_str.split("|", -1)
+    rets = returns_str.split(";", -1)
+    bodies = bodies_str.split(";", -1)
+    j = 0
+    while j < bodies.length
+      if bodies[j] != "" && bodies[j] != "-2"
+        pts = "".split(",", -1)
+        if j < ptall.length
+          pts = ptall[j].split(",", -1)
+        end
+        rr = ""
+        if j < rets.length
+          rr = rets[j]
+        end
+        if method_sig_degraded(pts, rr) == 1
+          out = out + "|" + bodies[j] + "|"
+        end
+      end
+      j = j + 1
+    end
+    out
+  end
+
+  def emit_types_json
+    types_out = ""
+    tn = 0
+    nid = 0
+    while nid < @nd_type.length
+      ty = @nd_inferred_type[nid]
+      ln = @nd_line[nid]
+      if ty != nil && ty != "" && ty != "void" && ln != nil && ln > 0
+        if tn > 0
+          types_out = types_out + ",\n"
+        end
+        types_out = types_out + "    {\"file\":\"" + json_escape(types_file_path(@nd_file[nid])) + "\",\"line\":" + ln.to_s + ",\"col\":" + @nd_col[nid].to_s + ",\"type\":\"" + json_escape(ty) + "\",\"rbs\":\"" + json_escape(type_to_rbs(ty)) + "\"}"
+        tn = tn + 1
+      end
+      nid = nid + 1
+    end
+ # Diagnostics: methods whose signature degraded to the boxed poly slow path
+ # (the same widening the RBS export comments), positioned at the `def`. The
+ # degrade lives in the signature tables, not the per-node cache (which holds
+ # context-specialised concrete types), so we match each DefNode to its method
+ # by body-node id. Low-noise (one per degraded method); the per-node type map
+ # above still lets the editor show concrete types on hover everywhere.
+    degraded = ""
+    mi = 0
+    while mi < @meth_names.length
+      if @meth_names[mi] != "" && mi < @meth_body_ids.length
+        if method_sig_degraded(@meth_param_types[mi].split(",", -1), @meth_return_types[mi]) == 1
+          degraded = degraded + "|" + @meth_body_ids[mi].to_s + "|"
+        end
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      degraded = degraded + degraded_bodies_for_class(@cls_meth_ptypes[ci], @cls_meth_returns[ci], @cls_meth_bodies[ci])
+      degraded = degraded + degraded_bodies_for_class(@cls_cmeth_ptypes[ci], @cls_cmeth_returns[ci], @cls_cmeth_bodies[ci])
+      ci = ci + 1
+    end
+
+    diag_out = ""
+    dn = 0
+    nid2 = 0
+    while nid2 < @nd_type.length
+      if @nd_type[nid2] == "DefNode"
+        bid = @nd_body[nid2]
+        ln2 = @nd_line[nid2]
+        if bid != nil && bid >= 0 && ln2 != nil && ln2 > 0 && degraded.include?("|" + bid.to_s + "|")
+          if dn > 0
+            diag_out = diag_out + ",\n"
+          end
+          msg = "Spinel: `" + @nd_name[nid2] + "` has a parameter or return widened to untyped (boxed poly slow path)"
+          diag_out = diag_out + "    {\"file\":\"" + json_escape(types_file_path(@nd_file[nid2])) + "\",\"line\":" + ln2.to_s + ",\"col\":" + @nd_col[nid2].to_s + ",\"severity\":\"warning\",\"message\":\"" + json_escape(msg) + "\"}"
+          dn = dn + 1
+        end
+      end
+      nid2 = nid2 + 1
+    end
+    "{\n  \"types\": [\n" + types_out + "\n  ],\n  \"diagnostics\": [\n" + diag_out + "\n  ]\n}\n"
+  end
+
  # B1 discovery (STALIN.md §11): count slot types that landed on
  # poly / nullable-poly / *_poly_hash / poly_array. Output to
  # stderr after all analyze passes finish, gated by envvar to
@@ -34803,5 +34963,11 @@ compiler.analyze_phase
  # IR is still written so the same run can also feed codegen).
 if ENV["SPINEL_EMIT_RBS"] != nil && ENV["SPINEL_EMIT_RBS"] != ""
   File.write(ENV["SPINEL_EMIT_RBS"], compiler.emit_rbs)
+end
+ # Position-keyed type + diagnostics export (for the ruby-lsp addon). Requires
+ # the parser to have stamped node positions (SPINEL_DEBUG=1, set by the
+ # wrapper's --emit-types mode).
+if ENV["SPINEL_EMIT_TYPES"] != nil && ENV["SPINEL_EMIT_TYPES"] != ""
+  File.write(ENV["SPINEL_EMIT_TYPES"], compiler.emit_types_json)
 end
 File.write(ir_file, compiler.dump_analysis_buf)
