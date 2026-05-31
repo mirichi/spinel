@@ -10736,8 +10736,9 @@ class Compiler
  # Same base, one nullable: keep / adopt the nullable form
  # rather than collapsing to poly. `@x = "hi"` (string) +
  # `@x = some_string_or_nil` (string?) is one storage shape
- # — `const char *` with NULL as the nil sentinel.
-            elsif base_type(old) == base_type(new_type) && is_nullable_pointer_type(old) == 1
+ # — `const char *` with NULL as the nil sentinel. Scalar int?
+ # follows the same merge rule with SP_INT_NIL as its sentinel.
+            elsif base_type(old) == base_type(new_type) && (is_nullable_pointer_type(old) == 1 || is_scalar_nullable_type(old) == 1)
               if is_nullable_type(new_type) == 1 && is_nullable_type(old) == 0
                 types[k] = new_type
                 @cls_ivar_types[ci] = types.join(";")
@@ -13656,6 +13657,11 @@ class Compiler
       end
     end
     if at == "int"
+ # A literal int call-site is compatible with an existing int?
+ # slot; keep the sentinel-capable storage instead of widening.
+      if is_scalar_nullable_type(old_pt) == 1
+        return old_pt
+      end
  # Numeric compat: int + float is safe in both directions.
       if old_pt == "float"
         return "float"
@@ -16690,6 +16696,22 @@ class Compiler
     end
   end
 
+  def synthetic_struct_class?(ci)
+    if ci < 0 || ci >= @cls_meth_names.length
+      return 0
+    end
+    names = @cls_meth_names[ci].split(";", -1)
+    bodies = @cls_meth_bodies[ci].split(";", -1)
+    k = 0
+    while k < names.length && k < bodies.length
+      if names[k] == "initialize" && bodies[k] == "-2"
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
  # Post-pass for #634 shape A. An optional param with an explicit
  # `= nil` default whose call sites then widen its type to a
  # Post-pass for #634 shape B. An ivar exposed by attr_reader /
@@ -16749,8 +16771,12 @@ class Compiler
               assigned = ivar_assigned_in_init_chain?(ci, iname)
               obs = cls_ivar_observed_types_for(ci, iname)
               if assigned == 0 && obs == ""
-                types[k] = "poly"
-                @needs_rb_value = 1
+                if pt == "int" && synthetic_struct_class?(ci) == 1
+                  types[k] = "int?"
+                else
+                  types[k] = "poly"
+                  @needs_rb_value = 1
+                end
                 changed_c = 1
               end
           end
