@@ -3834,6 +3834,13 @@ class Compiler
           return "poly"
         end
       end
+ # TrueClass / FalseClass logical operators yield a boolean, not an
+ # int: `true & false` is `false`, `true ^ false` is `true`. For two
+ # boolean operands the codegen's bitwise op already gives the right
+ # 0/1 value; only the result type needed correcting.
+      if lt == "bool" && (mname == "&" || mname == "|" || mname == "^")
+        return "bool"
+      end
  # Proc / lambda composition operators return another proc / lambda
  # of the same representation. `(f << g)` / `(f >> g)`.
       if (lt == "lambda" || lt == "proc") && (mname == "<<" || mname == ">>")
