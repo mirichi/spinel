@@ -31727,6 +31727,8 @@ class Compiler
       if found == 0
         if pt == "poly"
           result = result + "sp_box_nil()"
+        elsif is_scalar_nullable_type(pt) == 1
+          result = result + c_default_val(pt)
         else
           result = result + "0"
         end
@@ -32434,6 +32436,8 @@ class Compiler
           else
             if k < ptypes.length && ptypes[k] == "poly"
               result = result + "sp_box_nil()"
+            elsif k < ptypes.length && is_scalar_nullable_type(ptypes[k]) == 1
+              result = result + c_default_val(ptypes[k])
             else
               result = result + "0"
             end
@@ -32441,6 +32445,8 @@ class Compiler
         else
           if k < ptypes.length && ptypes[k] == "poly"
             result = result + "sp_box_nil()"
+          elsif k < ptypes.length && is_scalar_nullable_type(ptypes[k]) == 1
+            result = result + c_default_val(ptypes[k])
           else
             result = result + "0"
           end
