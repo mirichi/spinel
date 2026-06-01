@@ -1501,6 +1501,10 @@ static const char*sp_str_squeeze(const char*s){if(!s)return sp_str_empty;size_t 
    (same charset syntax as tr: a-z, ^x, etc.). Consecutive runs of
    non-listed chars pass through untouched. */
 static const char*sp_str_squeeze_chars(const char*s,const char*cs){if(!s)return sp_str_empty;if(!cs||!*cs)return sp_str_squeeze(s);int negate=0;const char*csp=cs;if(*csp=='^'&&*(csp+1)){negate=1;csp++;}size_t fn;uint32_t*fcps=sp_utf8_decode_charset(csp,&fn);size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t n=0;uint32_t prev=0xFFFFFFFFu;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);int in_set=0;for(size_t j=0;j<fn;j++)if(fcps[j]==cp){in_set=1;break;}if(negate)in_set=!in_set;if(!in_set){memcpy(r+n,p,cn);n+=cn;prev=0xFFFFFFFFu;}else if(cp!=prev){memcpy(r+n,p,cn);n+=cn;prev=cp;}p+=cn;}r[n]=0;sp_str_set_len(r,n);free(fcps);return r;}
+/* Multi-arg delete/squeeze: delete (or squeeze runs of) characters that
+   are in the INTERSECTION of all n charset args, mirroring
+   sp_str_count_n. Each arg is a charset spec (^negation, a-z ranges). */
+static const char*sp_str_delete_n(const char*s,const char**chars,mrb_int n){if(!s)return sp_str_empty;if(n<=0)return s;size_t*setns=(size_t*)malloc(n*sizeof(size_t));uint32_t**sets=(uint32_t**)malloc(n*sizeof(uint32_t*));int*negs=(int*)malloc(n*sizeof(int));for(mrb_int i=0;i<n;i++){if(!chars[i])sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*cs=chars[i];negs[i]=0;if(*cs=='^'&&*(cs+1)){negs[i]=1;cs++;}sets[i]=sp_utf8_decode_charset(cs,&setns[i]);}size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t m=0;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);int all=1;for(mrb_int i=0;i<n;i++){int in_set=sp_utf8_set_has(sets[i],setns[i],cp);if(negs[i])in_set=!in_set;if(!in_set){all=0;break;}}if(!all){memcpy(r+m,p,cn);m+=cn;}p+=cn;}r[m]=0;sp_str_set_len(r,m);for(mrb_int i=0;i<n;i++)free(sets[i]);free(sets);free(setns);free(negs);return r;}
 
 /* Forward decl from sp_crypto.h (libspinel_rt.a). Used by
    sp_str_crypt below to provide a deterministic crypt-like

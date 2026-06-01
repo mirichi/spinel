@@ -21875,6 +21875,20 @@ class Compiler
       return helper + "(" + rc + ", " + compile_arg0(nid) + ", " + arg1 + ")"
     end
     if mname == "delete"
+ # Multiple args delete the INTERSECTION of the charsets (mirrors
+ # count's multi-arg form); a single arg uses the plain helper.
+      args_id_del = @nd_arguments[nid]
+      if args_id_del >= 0
+        a_del = get_args(args_id_del)
+        if a_del.length > 1
+          tmp_arr_del = new_temp
+          emit("  const char *" + tmp_arr_del + "[" + a_del.length.to_s + "];")
+          a_del.each_with_index do |arg, i|
+            emit("  " + tmp_arr_del + "[" + i.to_s + "] = " + compile_expr(arg) + ";")
+          end
+          return "sp_str_delete_n(" + rc + ", " + tmp_arr_del + ", " + a_del.length.to_s + ")"
+        end
+      end
       return "sp_str_delete(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "crypt"
