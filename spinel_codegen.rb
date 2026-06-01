@@ -9985,10 +9985,16 @@ class Compiler
   def method_linkage_named(body_id, has_yield, mname)
  # Debug builds: never promote to `static inline`. An inlined method has
  # no distinct frame after the C compiler runs, so a native debugger
- # can't break on it or show it in a backtrace. Keep every method a real
- # `static` function for faithful stepping (paired with cc -O0).
+ # can't break on it or show it in a backtrace. Emit each method with
+ # *external* linkage (not `static`): glibc's backtrace_symbols can only
+ # resolve a frame to a name if its symbol is in the dynamic symbol table,
+ # which `static` functions never reach even under -rdynamic. External +
+ # -rdynamic (added by the wrapper for debug builds) is what makes native
+ # Exception#backtrace name user frames on Linux. macOS resolves via the
+ # Mach-O symbol table regardless, so it was already fine; this just brings
+ # Linux to parity. Paired with cc -O0 for faithful stepping.
     if @debug
-      return "static "
+      return ""
     end
     if has_yield == 1
       return "static "

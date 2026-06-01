@@ -3362,20 +3362,34 @@ static int sp_bt_is_runtime(const char *n) {
   return 0;
 }
 
-/* macOS backtrace_symbols line: "<idx> <image> <addr> <symbol> + <off>".
-   Extract the symbol token; NULL if it isn't a keepable user frame. */
+/* Extract the symbol token from a backtrace_symbols line. Two formats:
+     - glibc/Linux: "<module>(<symbol>+0x<off>) [0x<addr>]". The symbol is
+       empty for unresolved frames (static or stripped fns) -> skip.
+     - macOS:       "<idx> <image> <addr> <symbol> + <off>".
+   Returns NULL if it isn't a keepable user frame. Detect Linux by the '('
+   that delimits the symbol (the macOS format has none). */
 static const char *sp_bt_symbol(const char *line) {
-  const char *p = strstr(line, "0x");           /* the address */
-  if (!p) return 0;
-  while (*p && *p != ' ') p++;                   /* skip the address */
-  while (*p == ' ') p++;                          /* to the symbol */
-  if (!*p) return 0;
-  const char *end = p;
-  while (*end && *end != ' ') end++;             /* symbol ends at space/" +" */
-  size_t len = (size_t)(end - p);
-  if (len == 0 || len > 250) return 0;
   char sym[256];
-  memcpy(sym, p, len); sym[len] = 0;
+  const char *lp = strchr(line, '(');
+  if (lp) {                                       /* glibc/Linux paren form */
+    const char *p = lp + 1;
+    const char *end = p;
+    while (*end && *end != '+' && *end != ')') end++;
+    size_t len = (size_t)(end - p);
+    if (len == 0 || len > 250) return 0;          /* unresolved (static/stripped) */
+    memcpy(sym, p, len); sym[len] = 0;
+  } else {                                        /* macOS space-delimited form */
+    const char *p = strstr(line, "0x");           /* the address */
+    if (!p) return 0;
+    while (*p && *p != ' ') p++;                   /* skip the address */
+    while (*p == ' ') p++;                          /* to the symbol */
+    if (!*p) return 0;
+    const char *end = p;
+    while (*end && *end != ' ') end++;             /* symbol ends at space/" +" */
+    size_t len = (size_t)(end - p);
+    if (len == 0 || len > 250) return 0;
+    memcpy(sym, p, len); sym[len] = 0;
+  }
   if (strcmp(sym, "main") == 0) return strdup("<main>");
   if (strncmp(sym, "sp_", 3) != 0) return 0;     /* skip non-Spinel frames */
   const char *name = sym + 3;
