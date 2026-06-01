@@ -4286,7 +4286,7 @@ class Compiler
     if mname == "itself" || mname == "then" || mname == "yield_self"
       return 1
     end
-    if mname == "getbyte" || mname == "setbyte" || mname == "__method__" || mname == "__dir__"
+    if mname == "getbyte" || mname == "setbyte" || mname == "__method__" || mname == "__callee__" || mname == "__dir__"
       return 1
     end
     if mname == "slice!" || mname == "intern"
@@ -4984,7 +4984,7 @@ class Compiler
     if mname == "setbyte"
       return "int"
     end
-    if mname == "__method__"
+    if mname == "__method__" || mname == "__callee__"
       return "string"
     end
  # Issue #878: Kernel#__dir__ -- compile-time string.
@@ -5075,6 +5075,16 @@ class Compiler
         return infer_type(recv)
       end
       return "string"
+    end
+ # String#clone behaves like dup for the value (spinel doesn't track
+ # the frozen-state copy distinction). Scoped to string/mutable_str so
+ # it doesn't intercept array/hash clone, which have their own paths.
+ # Issue #1222.
+    if mname == "clone" && recv >= 0
+      rt_cl = infer_type(recv)
+      if rt_cl == "string" || rt_cl == "mutable_str"
+        return rt_cl
+      end
     end
     if mname == "ord"
       return "int"

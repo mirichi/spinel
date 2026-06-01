@@ -17869,7 +17869,7 @@ class Compiler
       if mname == "length" || mname == "size"
         return "sp_String_length(" + rc + ")"
       end
-      if mname == "dup"
+      if mname == "dup" || mname == "clone"
         return "sp_String_dup(" + rc + ")"
       end
       if mname == "to_s"
@@ -18298,6 +18298,10 @@ class Compiler
  # need an expression-level answer; other nil methods like .nil? are
  # already handled earlier.)
     if recv_type == "nil"
+ # NilClass#itself returns self (nil). Issue #1222.
+      if mname == "itself"
+        return "0"
+      end
       if mname == "inspect"
         return "\"nil\""
       end
@@ -18575,7 +18579,7 @@ class Compiler
     if mname == "system"
       return compile_system_call(nid)
     end
-    if mname == "__method__"
+    if mname == "__method__" || mname == "__callee__"
       return "\"" + @current_method_name + "\""
     end
  # Issue #878: Kernel#__dir__ -- compile-time dirname of the
@@ -22399,7 +22403,7 @@ class Compiler
     if mname == "rstrip"
       return "sp_str_rstrip(" + rc + ")"
     end
-    if mname == "dup"
+    if mname == "dup" || mname == "clone"
       return "sp_str_dup(" + rc + ")"
     end
     if mname == "getbyte"
