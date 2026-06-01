@@ -28081,6 +28081,35 @@ class Compiler
     0
   end
 
+ # Set the scan-time side channels that ArrayPatternNode /
+ # HashPatternNode read to type their bound locals, given a scrutinee
+ # of inferred type `cmt`. Shared by case/in and rightward assignment.
+  def scan_pred_channels_for(cmt)
+    @scan_case_match_pred_type = cmt
+    if cmt == "int_array" || cmt == "sym_array"
+      @scan_case_match_pred_elem = "int"
+    elsif cmt == "str_array"
+      @scan_case_match_pred_elem = "string"
+    elsif cmt == "float_array"
+      @scan_case_match_pred_elem = "float"
+    elsif cmt == "poly_array"
+      @scan_case_match_pred_elem = "poly"
+    elsif is_ptr_array_type(cmt) == 1
+      @scan_case_match_pred_elem = ptr_array_elem_type(cmt)
+    else
+      @scan_case_match_pred_elem = ""
+    end
+    if cmt == "sym_int_hash" || cmt == "str_int_hash"
+      @scan_case_match_pred_val_t = "int"
+    elsif cmt == "sym_str_hash" || cmt == "str_str_hash" || cmt == "int_str_hash"
+      @scan_case_match_pred_val_t = "string"
+    elsif cmt == "sym_poly_hash" || cmt == "str_poly_hash" || cmt == "poly_poly_hash"
+      @scan_case_match_pred_val_t = "poly"
+    else
+      @scan_case_match_pred_val_t = ""
+    end
+  end
+
   def scan_locals(nid, names, types, params)
     if nid < 0
       return
@@ -28206,6 +28235,24 @@ class Compiler
     end
  # CaseMatchNode: stash the scrutinee's element type so the
  # ArrayPatternNode handler above can type the bound LVs.
+ # `value => pattern` (MatchRequiredNode). The scrutinee is the
+ # `value`; type the destructured locals from it exactly as case/in
+ # types them from its predicate.
+    if @nd_type[nid] == "MatchRequiredNode"
+      saved_mr_elem = @scan_case_match_pred_elem
+      saved_mr_val_t = @scan_case_match_pred_val_t
+      saved_mr_type = @scan_case_match_pred_type
+ # The AST loader routes the "value" ref to @nd_expression.
+      mr_val = @nd_expression[nid]
+      if mr_val >= 0
+        scan_pred_channels_for(infer_type(mr_val))
+      end
+      scan_locals_children(nid, names, types, params)
+      @scan_case_match_pred_elem = saved_mr_elem
+      @scan_case_match_pred_val_t = saved_mr_val_t
+      @scan_case_match_pred_type = saved_mr_type
+      return
+    end
     if @nd_type[nid] == "CaseMatchNode"
       saved_pred_elem = @scan_case_match_pred_elem
       saved_pred_val_t = @scan_case_match_pred_val_t
@@ -28216,32 +28263,9 @@ class Compiler
  # Issues #884 #905: stash the scrutinee's full type so a bare
  # `LocalVariableTargetNode` pattern (`case x in n`) or a
  # `CapturePatternNode` (`case x in [...] => arr`) can bind
- # its LV with the right slot type.
-        @scan_case_match_pred_type = cmt
-        if cmt == "int_array" || cmt == "sym_array"
-          @scan_case_match_pred_elem = "int"
-        elsif cmt == "str_array"
-          @scan_case_match_pred_elem = "string"
-        elsif cmt == "float_array"
-          @scan_case_match_pred_elem = "float"
-        elsif cmt == "poly_array"
-          @scan_case_match_pred_elem = "poly"
-        elsif is_ptr_array_type(cmt) == 1
-          @scan_case_match_pred_elem = ptr_array_elem_type(cmt)
-        else
-          @scan_case_match_pred_elem = ""
-        end
- # Issue #805: stash the hash value type so HashPatternNode's
- # LV binding above gets the right element type.
-        if cmt == "sym_int_hash" || cmt == "str_int_hash"
-          @scan_case_match_pred_val_t = "int"
-        elsif cmt == "sym_str_hash" || cmt == "str_str_hash" || cmt == "int_str_hash"
-          @scan_case_match_pred_val_t = "string"
-        elsif cmt == "sym_poly_hash" || cmt == "str_poly_hash" || cmt == "poly_poly_hash"
-          @scan_case_match_pred_val_t = "poly"
-        else
-          @scan_case_match_pred_val_t = ""
-        end
+ # its LV with the right slot type. Issue #805: the hash value
+ # type feeds HashPatternNode's LV binding.
+        scan_pred_channels_for(cmt)
       end
       scan_locals_children(nid, names, types, params)
       @scan_case_match_pred_elem = saved_pred_elem

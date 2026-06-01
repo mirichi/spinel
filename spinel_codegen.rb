@@ -34838,6 +34838,13 @@ class Compiler
       compile_case_match_stmt(nid)
       return
     end
+    if t == "MatchRequiredNode"
+      if compile_match_required_stmt(nid) == 1
+        return
+      end
+ # Pattern shape we don't destructure -- fall through to the
+ # default statement handling below (evaluate the value, no bind).
+    end
     if t == "ReturnNode"
       compile_return_stmt(nid)
       return
@@ -36278,6 +36285,54 @@ class Compiler
       k = k + 1
     end
     result
+  end
+
+ # `value => pattern` (MatchRequiredNode): a one-line pattern match
+ # that binds the pattern's variables and raises NoMatchingPatternError
+ # when the value doesn't match. Reuses the case/in arm builders with a
+ # single `if` arm plus a raising `else`; the bound locals are declared
+ # at function scope (scan_locals), so binding inside the `if` persists.
+ # Only Array / Hash destructuring patterns are handled here -- returns
+ # 1 when it emitted the match, 0 to let the caller fall through.
+  def compile_match_required_stmt(nid)
+    pat = @nd_pattern[nid]
+    if @nd_type[pat] != "ArrayPatternNode" && @nd_type[pat] != "HashPatternNode"
+      return 0
+    end
+ # The AST loader routes MatchRequiredNode's "value" ref to
+ # @nd_expression (see compiler_helpers.rb set_ref_field).
+    val = @nd_expression[nid]
+    pred_type = infer_type(val)
+    pred_val = compile_expr(val)
+    tmp = new_temp
+    if pred_type == "poly"
+      emit("  sp_RbVal " + tmp + " = " + pred_val + ";")
+    elsif pred_type == "string"
+      emit("  const char *" + tmp + " = " + pred_val + ";")
+    elsif pred_type == "float"
+      emit("  mrb_float " + tmp + " = " + pred_val + ";")
+    elsif pred_type == "bigint"
+      @needs_bigint = 1
+      emit("  mrb_int " + tmp + " = sp_bigint_to_int((sp_Bigint *)" + pred_val + ");")
+      pred_type = "int"
+    elsif pred_type == "int" || pred_type == "bool" || pred_type == "symbol" || pred_type == "nil" || pred_type == ""
+      emit("  mrb_int " + tmp + " = " + pred_val + ";")
+    else
+      emit("  " + c_type(pred_type) + " " + tmp + " = " + pred_val + ";")
+    end
+    if @nd_type[pat] == "ArrayPatternNode"
+      compile_array_pattern_arm(pat, tmp, pred_type, "if", nid)
+    else
+      compile_hash_pattern_arm(pat, tmp, pred_type, "if", nid)
+    end
+    ins_msg = compile_inspect_for(pred_type, tmp)
+    if ins_msg != ""
+      emit("  } else { sp_raise_cls(\"NoMatchingPatternError\", " + ins_msg + ");")
+    else
+      emit("  } else { sp_raise_cls(\"NoMatchingPatternError\", \"no matching pattern\");")
+    end
+    emit("  }")
+    return 1
   end
 
   def compile_case_match_stmt(nid)
