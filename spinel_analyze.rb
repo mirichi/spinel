@@ -5582,6 +5582,15 @@ class Compiler
     # of [key, value] pairs). Issue #738.
  # `to_h` on a Hash variant is identity. Surface so the caller
  # gets the recv's exact type rather than an unresolved fallback.
+ # Struct member accessors: `S.new(...).to_a` / `.values` collect the
+ # member values into a poly_array (members can be heterogeneous).
+    if mname == "to_a" || mname == "values"
+      sci_sv = struct_recv_ci(recv)
+      if sci_sv >= 0 && cls_find_method(sci_sv, mname) < 0
+        @needs_poly_array = 1
+        return "poly_array"
+      end
+    end
     if mname == "to_h"
       if recv >= 0
         rt = infer_type(recv)
@@ -16942,6 +16951,24 @@ class Compiler
       k = k + 1
     end
     0
+  end
+
+ # If recv is statically a synthetic-struct instance, return its
+ # class index; otherwise -1. Used to type Struct#to_a/values/to_h.
+  def struct_recv_ci(recv)
+    if recv < 0
+      return -1
+    end
+    rt = base_type(infer_type(recv))
+    if is_obj_type(rt) == 0
+      return -1
+    end
+    cn = rt[4, rt.length - 4]
+    ci = find_class_idx(cn)
+    if ci >= 0 && synthetic_struct_class?(ci) == 1
+      return ci
+    end
+    -1
   end
 
  # Post-pass for #634 shape A. An optional param with an explicit

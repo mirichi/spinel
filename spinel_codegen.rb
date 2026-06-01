@@ -2783,6 +2783,25 @@ class Compiler
     -1
   end
 
+ # A class generated from Struct.new(...) carries a synthetic
+ # `initialize` whose body id is the marker "-2". Mirrors the
+ # analyze-side helper of the same name.
+  def synthetic_struct_class?(ci)
+    if ci < 0 || ci >= @cls_meth_names.length
+      return 0
+    end
+    names = @cls_meth_names[ci].split(";", -1)
+    bodies = @cls_meth_bodies[ci].split(";", -1)
+    k = 0
+    while k < names.length && k < bodies.length
+      if names[k] == "initialize" && bodies[k] == "-2"
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
  # Walk the parent chain looking for a method named `mname`.
  # Returns the class index that defines it (the owner), or -1.
  # `kind` selects @cls_cmeth_names ("cmeth") or @cls_meth_names
@@ -28297,6 +28316,34 @@ class Compiler
               end
             end
           end
+        end
+ # Struct#to_a / #values -- gather the member values into a
+ # poly_array (members can be heterogeneous). Gated on a synthetic
+ # struct that doesn't define its own version.
+        if (mname == "to_a" || mname == "values") && synthetic_struct_class?(ci) == 1 && cls_find_method(ci, mname) < 0
+          inames_st = @cls_ivar_names[ci].split(";", -1)
+          itypes_st = @cls_ivar_types[ci].split(";", -1)
+          @needs_gc = 1
+          rtmp_st = new_temp
+          emit("  sp_" + cname + " *" + rtmp_st + " = (sp_" + cname + " *)" + rc + ";")
+ # Keep the struct rooted: its members are dereferenced across the
+ # PolyArray allocations below, which are GC points.
+          emit("  SP_GC_ROOT(" + rtmp_st + ");")
+          @needs_poly_array = 1
+          atmp_st = new_temp
+          emit("  sp_PolyArray *" + atmp_st + " = sp_PolyArray_new();")
+          emit("  SP_GC_ROOT(" + atmp_st + ");")
+          j_st = 0
+          while j_st < inames_st.length
+            itype_st = "int"
+            if j_st < itypes_st.length
+              itype_st = itypes_st[j_st]
+            end
+            memb_st = rtmp_st + "->" + sanitize_ivar(inames_st[j_st])
+            emit("  sp_PolyArray_push(" + atmp_st + ", " + box_value_to_poly(itype_st, memb_st) + ");")
+            j_st = j_st + 1
+          end
+          return atmp_st
         end
  # attr_writer
         if mname.length > 1
