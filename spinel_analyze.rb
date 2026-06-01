@@ -33320,7 +33320,20 @@ class Compiler
     while cei < @const_expr_ids.length
       ceid = @const_expr_ids[cei]
       if ceid >= 0
+ # Set the lexical scope to the const's defining namespace so a bare
+ # constant reference inside the RHS (`V = "v#{A}"` where both live
+ # in `module M`) resolves to `M_A` rather than falling through to
+ # the int default. Without this the cached type for the inner ref
+ # was "int" and interpolation/codegen treated the String constant
+ # as a raw pointer. Mirrors the @multi_const_inits loop below.
+        saved_lex_c = @current_lexical_scope
+        if cei < @const_scope_names.length
+          @current_lexical_scope = @const_scope_names[cei]
+        else
+          @current_lexical_scope = ""
+        end
         walk_and_cache(ceid)
+        @current_lexical_scope = saved_lex_c
       end
       cei = cei + 1
     end
