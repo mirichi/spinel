@@ -6916,6 +6916,12 @@ class Compiler
           if mname == "escape" || mname == "quote"
             return "string"
           end
+ # `Regexp.last_match(n)` returns the n-th capture of the most
+ # recent match (n==0 is the whole match), or nil. Same nullable
+ # String slot codegen draws from sp_re_captures / sp_re_match_str.
+          if mname == "last_match"
+            return "string"
+          end
         end
         if rcname == "File"
           if mname == "read" || mname == "binread"

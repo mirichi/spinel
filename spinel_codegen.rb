@@ -27504,6 +27504,25 @@ class Compiler
             end
           end
         end
+ # `Regexp.last_match(n)` -- the n-th capture of the most recent
+ # match: n==0 is the whole match (sp_re_match_str), n in 1..9 are
+ # the groups (sp_re_captures[n], same slots $1..$9 read). Out of
+ # range or an unmatched group yields NULL, which the nullable
+ # String path renders as nil. Mirrors NumberedReferenceReadNode.
+        if mname == "last_match"
+          args_id_lm = @nd_arguments[nid]
+          if args_id_lm >= 0
+            argl_lm = get_args(args_id_lm)
+            if argl_lm.length == 1
+              @needs_regexp = 1
+              tmp_lm = new_temp
+              return "({ mrb_int " + tmp_lm + " = " + compile_expr_as_int(argl_lm[0]) +
+                     "; (" + tmp_lm + " == 0) ? sp_re_match_str : ((" + tmp_lm +
+                     " >= 1 && " + tmp_lm + " <= 9) ? sp_re_captures[" + tmp_lm +
+                     "] : (const char *)0); })"
+            end
+          end
+        end
       end
  # ENV
       if rcname == "ENV"
