@@ -5583,10 +5583,15 @@ class Compiler
  # `to_h` on a Hash variant is identity. Surface so the caller
  # gets the recv's exact type rather than an unresolved fallback.
  # Struct member accessors: `S.new(...).to_a` / `.values` collect the
- # member values into a poly_array (members can be heterogeneous).
-    if mname == "to_a" || mname == "values"
+ # member values into a poly_array (members can be heterogeneous);
+ # `.to_h` builds a symbol-keyed hash of member name => value.
+    if mname == "to_a" || mname == "values" || mname == "to_h"
       sci_sv = struct_recv_ci(recv)
       if sci_sv >= 0 && cls_find_method(sci_sv, mname) < 0
+        if mname == "to_h"
+          @needs_sym_poly_hash = 1
+          return "sym_poly_hash"
+        end
         @needs_poly_array = 1
         return "poly_array"
       end
