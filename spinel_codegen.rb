@@ -23178,6 +23178,77 @@ class Compiler
         return recv_mb
       end
     end
+ # `select!`/`filter!`/`keep_if`/`reject!`/`delete_if` -- filter the
+ # array in place and return the receiver. Kept elements keep their
+ # type (no element-type guard needed); the loop compacts survivors to
+ # the front and truncates. (CRuby's select!/reject! return nil when
+ # nothing is removed; spinel returns the receiver in all cases.)
+    if (mname == "select!" || mname == "filter!" || mname == "keep_if" || mname == "reject!" || mname == "delete_if") && @nd_block[nid] >= 0
+      ctype_fb = ""
+      get_fb = ""
+      set_fb = ""
+      elem_fb = ""
+      if recv_type == "int_array"
+        ctype_fb = "sp_IntArray"; get_fb = "sp_IntArray_get"; set_fb = "sp_IntArray_set"; elem_fb = "int"
+      elsif recv_type == "str_array"
+        ctype_fb = "sp_StrArray"; get_fb = "sp_StrArray_get"; set_fb = "sp_StrArray_set"; elem_fb = "string"
+      elsif recv_type == "float_array"
+        ctype_fb = "sp_FloatArray"; get_fb = "sp_FloatArray_get"; set_fb = "sp_FloatArray_set"; elem_fb = "float"
+      elsif recv_type == "sym_array"
+        ctype_fb = "sp_IntArray"; get_fb = "sp_IntArray_get"; set_fb = "sp_IntArray_set"; elem_fb = "symbol"
+      elsif recv_type == "poly_array"
+        ctype_fb = "sp_PolyArray"; get_fb = "sp_PolyArray_get"; set_fb = "sp_PolyArray_set"; elem_fb = "poly"
+      end
+      if ctype_fb != ""
+        keep_true_fb = (mname == "select!" || mname == "filter!" || mname == "keep_if")
+        @needs_gc = 1
+        recv_fb = new_temp
+        i_fb = new_temp
+        w_fb = new_temp
+        bp_fb = get_block_param(nid, 0)
+        bp_fb = "_x" if bp_fb == ""
+        emit("  " + ctype_fb + " *" + recv_fb + " = " + rc + ";")
+        emit("  SP_GC_ROOT(" + recv_fb + ");")
+        emit("  mrb_int " + w_fb + " = 0;")
+        emit("  for (mrb_int " + i_fb + " = 0; " + i_fb + " < " + recv_fb + "->len; " + i_fb + "++) {")
+        get_expr_fb = get_fb + "(" + recv_fb + ", " + i_fb + ")"
+        if elem_fb == "int"
+          emit("    mrb_int lv_" + bp_fb + " = " + get_expr_fb + ";")
+        elsif elem_fb == "symbol"
+          emit("    sp_sym lv_" + bp_fb + " = (sp_sym)" + get_expr_fb + ";")
+        elsif elem_fb == "string"
+          emit("    const char *lv_" + bp_fb + " = " + get_expr_fb + ";")
+        elsif elem_fb == "float"
+          emit("    mrb_float lv_" + bp_fb + " = " + get_expr_fb + ";")
+        else
+          emit("    sp_RbVal lv_" + bp_fb + " = " + get_expr_fb + ";")
+        end
+        @indent = @indent + 1
+        push_scope
+        declare_var(bp_fb, elem_fb)
+        bbody_fb = @nd_body[@nd_block[nid]]
+        cexpr_fb = "0"
+        if bbody_fb >= 0
+          bs_fb = get_stmts(bbody_fb)
+          if bs_fb.length > 0
+            k_fb = 0
+            while k_fb < bs_fb.length - 1
+              compile_stmt(bs_fb[k_fb])
+              k_fb = k_fb + 1
+            end
+            cexpr_fb = compile_expr(bs_fb.last)
+          end
+        end
+        keep_cond_fb = keep_true_fb ? "(" + cexpr_fb + ")" : "!(" + cexpr_fb + ")"
+        store_elem_fb = (elem_fb == "symbol") ? "(mrb_int)lv_" + bp_fb : "lv_" + bp_fb
+        emit("    if (" + keep_cond_fb + ") { " + set_fb + "(" + recv_fb + ", " + w_fb + ", " + store_elem_fb + "); " + w_fb + " = " + w_fb + " + 1; }")
+        pop_scope
+        @indent = @indent - 1
+        emit("  }")
+        emit("  " + recv_fb + "->len = " + w_fb + ";")
+        return recv_fb
+      end
+    end
  # Array#dig with a single index reduces to []. Multi-arg dig that
  # walks into nested arrays/hashes isn't supported here yet — fall
  # through to the unsupported-call warning.

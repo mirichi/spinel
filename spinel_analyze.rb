@@ -6191,6 +6191,16 @@ class Compiler
         end
       end
     end
+ # `select!`/`filter!`/`keep_if`/`reject!`/`delete_if` filter in place
+ # and return the receiver, keeping its array type.
+    if (mname == "select!" || mname == "filter!" || mname == "keep_if" || mname == "reject!" || mname == "delete_if") && @nd_block[nid] >= 0
+      if recv >= 0
+        rt_fb = infer_type(recv)
+        if is_array_type(rt_fb) == 1
+          return rt_fb
+        end
+      end
+    end
     if mname == "map"
       if recv >= 0
  # Declare bp inside a scope so infer_type sees the inner element type, not a shadowed outer local.
