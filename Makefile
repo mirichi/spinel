@@ -677,6 +677,7 @@ install: all
 	install -m 644 spinel_codegen.rb     $(SPNLDIR)/
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
+	install -m 644 lib/sp_types.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_core.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
