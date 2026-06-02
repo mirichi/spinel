@@ -35,6 +35,7 @@ extern const char *sp_ext_str_empty(void);
 extern size_t sp_ext_str_byte_len(const char *s);
 extern void *sp_ext_gc_alloc(size_t sz, void (*fin)(void *), void (*scan)(void *));
 extern void  sp_ext_mark_string(const char *s);
+extern void  sp_raise_cls(const char *cls, const char *msg);
 
 /* The scanner struct lives in spinel's GC heap. `source` /
    `matched` are GC-tracked strings; the scan function below
@@ -230,6 +231,13 @@ const char *sp_StringScanner_peek(sp_StringScanner *sc, mrb_int n) {
 
 sp_StringScanner *sp_StringScanner_unscan(sp_StringScanner *sc) {
   if (!sc) return sc;
+  /* CRuby raises StringScanner::Error when there is no match record to
+     rewind to: a double unscan, or unscan before any successful scan.
+     Guard before mutating state so a failed unscan leaves pos intact. */
+  if (!sc->matched_p) {
+    sp_raise_cls("StringScanner_Error",
+                 "unscan failed: previous match record not exist");
+  }
   sc->pos = sc->last_pos;
   sc->matched = sp_ext_str_empty();
   sc->matched_p = 0;

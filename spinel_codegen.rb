@@ -9226,6 +9226,9 @@ class Compiler
       ["FiberError", "StandardError"],
       ["NoMatchingPatternError", "StandardError"],
       ["NoMatchingPatternKeyError", "NoMatchingPatternError"],
+ # StringScanner::Error (flattened to StringScanner_Error) so that
+ # `rescue StandardError` / `rescue Exception` catch a failed unscan.
+      ["StringScanner_Error", "StandardError"],
       ["Exception", ""],
     ]
     bp = 0
