@@ -375,11 +375,21 @@ build/codegen1.c: build/codegen.ast build/codegen.ir $(CODEGEN_STAMP) $(NODE_TAB
 
 ifeq ($(FAST_BOOTSTRAP),auto)
 # Default: rebuild BOTH compiler binaries from the previous binaries (stage0)
-# via tools/fast-bootstrap, gated on the source stamps. Grouped target (&:)
-# runs the helper once for both. Helper falls back to the CRuby rules
-# (FAST_BOOTSTRAP=0) when stage0 is missing or can't compile the source.
-spinel_analyze$(EXE) spinel_codegen$(EXE) &: $(ANALYZE_STAMP) $(CODEGEN_STAMP) $(NODE_TABLE_LOADER_STAMP) $(COMPILER_HELPERS_STAMP) $(SP_RT_LIB) | spinel_parse$(EXE)
+# via tools/fast-bootstrap, gated on the source stamps. Helper falls back to
+# the CRuby rules (FAST_BOOTSTRAP=0) when stage0 is missing or can't compile
+# the source.
+#
+# spinel_analyze carries the recipe and the helper produces BOTH binaries;
+# spinel_codegen just waits on it. We deliberately do NOT use a `&:` grouped
+# target: macOS's system Make (GNU Make 3.81) predates `&:` and runs the recipe
+# once PER target, spawning two concurrent helpers that race on the shared
+# build/*.ast / *.ir intermediates (a flaky macOS-only build break -- corrupt
+# IR -> "undeclared identifier" in codegen1.c). Listing both source stamps as
+# prereqs of spinel_analyze means any compiler-source edit re-runs the helper.
+spinel_analyze$(EXE): $(ANALYZE_STAMP) $(CODEGEN_STAMP) $(NODE_TABLE_LOADER_STAMP) $(COMPILER_HELPERS_STAMP) $(SP_RT_LIB) | spinel_parse$(EXE)
 	@CC='$(CC)' EXE='$(EXE)' BOOTSTRAP_CFLAGS='$(BOOTSTRAP_CFLAGS)' SP_RT_LIB='$(SP_RT_LIB)' LDFLAGS='$(LDFLAGS)' sh tools/fast-bootstrap
+spinel_codegen$(EXE): spinel_analyze$(EXE)
+	@:
 else
 spinel_analyze$(EXE): build/analyze1.c $(SP_RT_LIB)
 	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze1.c $(SP_RT_LIB) $(LDFLAGS) -lm -o spinel_analyze$(EXE)
