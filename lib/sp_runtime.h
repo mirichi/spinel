@@ -324,6 +324,19 @@ static const char *sp_rational_inspect(sp_Rational r) {
    (pool push) or free it. Used by class-instance free-list pools. */
 static sp_gc_hdr *sp_gc_heap = NULL; static size_t sp_gc_bytes = 0; static size_t sp_gc_threshold = 256*1024;
 
+/* ---- GC verify: opt-in mark-path validation (release-neutral) ------------
+ * SPINEL_GC_VERIFY=1  before the collector invokes an object's scan hook,
+ *   check that the object is a currently-registered heap allocation. If a
+ *   raw/aliased pointer (e.g. into a string or builder buffer) has been put
+ *   on the mark path, abort with a diagnostic at that point instead of
+ *   calling through a bogus scan-function pointer (which otherwise faults at
+ *   a garbage address and is near-impossible to attribute).
+ * Default OFF; with it unset, behavior and codegen are unchanged. */
+static int sp_gc_verify = 0;
+static void sp_gc_verify_snapshot(void);
+static int  sp_gc_obj_registered(sp_gc_hdr *h);
+static void sp_gc_verify_fail(void *obj, sp_gc_hdr *h);
+
 /* ---- String GC ---- */
 static sp_str_hdr *sp_str_heap = NULL;
 #define SPL(s) (&("\xff" s)[1])
@@ -722,7 +735,7 @@ static void**sp_gc_mark_stack=NULL;static int sp_gc_mark_top=0;
  *          and crash with SIGBUS / SIGSEGV.
  *   else : a real GC-allocated object; cast back to sp_gc_hdr and
  *          recurse through its scan function. */
-static void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){((char*)obj)[-1]=(char)0xfc;return;}if(pm==0xfc||pm==0xff||pm==0xfd)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->marked)return;h->marked=1;if(h->scan){if(sp_gc_mark_stack&&sp_gc_mark_top<SP_GC_MARK_STACK_MAX){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}else{h->scan(obj);}}}
+static void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){((char*)obj)[-1]=(char)0xfc;return;}if(pm==0xfc||pm==0xff||pm==0xfd)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(sp_gc_verify&&!sp_gc_obj_registered(h))sp_gc_verify_fail(obj,h);if(h->marked)return;h->marked=1;if(h->scan){if(sp_gc_mark_stack&&sp_gc_mark_top<SP_GC_MARK_STACK_MAX){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}else{h->scan(obj);}}}
 /* Forward decl: defined alongside the regex globals it marks. */
 static void sp_re_mark_globals(void);
 /* Hook installed by the Fiber section below to mark every
@@ -737,13 +750,49 @@ static void (*sp_gc_mark_suspended_fibers_hook)(void) = NULL;
    plain void** whose target is a direct GC pointer. Defined after
    sp_RbVal / sp_mark_rbval; forward-declared here. */
 static inline void sp_gc_mark_root_entry(void**e);
-static void sp_gc_mark_all(void){if(!sp_gc_mark_stack)sp_gc_mark_stack=(void**)malloc(sizeof(void*)*SP_GC_MARK_STACK_MAX);sp_gc_mark_top=0;for(int i=0;i<sp_gc_nroots;i++){void**e=sp_gc_roots[i];if((uintptr_t)e&(uintptr_t)1){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook();sp_re_mark_globals();while(sp_gc_mark_top>0){void*obj=sp_gc_mark_stack[--sp_gc_mark_top];sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->scan)h->scan(obj);}}
+static void sp_gc_mark_all(void){if(!sp_gc_mark_stack)sp_gc_mark_stack=(void**)malloc(sizeof(void*)*SP_GC_MARK_STACK_MAX);sp_gc_mark_top=0;if(sp_gc_verify)sp_gc_verify_snapshot();for(int i=0;i<sp_gc_nroots;i++){void**e=sp_gc_roots[i];if((uintptr_t)e&(uintptr_t)1){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook();sp_re_mark_globals();while(sp_gc_mark_top>0){void*obj=sp_gc_mark_stack[--sp_gc_mark_top];sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->scan)h->scan(obj);}}
 static void sp_gc_cleanup(int*p){sp_gc_nroots=*p;}
 #define SP_GC_NBUCKETS 32
 static sp_gc_hdr*sp_gc_buckets[SP_GC_NBUCKETS];
 static inline int sp_gc_bucket(size_t sz){int b=(int)(sz/16);return b<SP_GC_NBUCKETS?b:SP_GC_NBUCKETS-1;}
 static int sp_gc_cycle=0;
 static sp_gc_hdr*sp_gc_old_heap=NULL;static size_t sp_gc_old_bytes=0;
+
+/* GC verify support (only touched when SPINEL_GC_VERIFY=1). A sorted
+ * snapshot of every registered header, taken at the start of each mark, so
+ * the scan-time membership test is O(log n). During the mark phase the sweep
+ * has not run yet, so every legitimately-reachable object is still linked in
+ * sp_gc_heap / sp_gc_old_heap; a pointer reached by the collector that is NOT
+ * present is therefore a non-object (raw/aliased) on the mark path. */
+static sp_gc_hdr **sp_gc_vsnap = NULL; static size_t sp_gc_vsnap_n = 0, sp_gc_vsnap_cap = 0;
+/* Compare by integer address: relational comparison of pointers from
+ * distinct allocations is UB in C, so cast to uintptr_t first. */
+static int sp_gc_vsnap_cmp(const void *a, const void *b){ uintptr_t x=(uintptr_t)*(sp_gc_hdr*const*)a, y=(uintptr_t)*(sp_gc_hdr*const*)b; return x<y?-1:x>y?1:0; }
+static void sp_gc_vsnap_push(sp_gc_hdr *h){ if(sp_gc_vsnap_n==sp_gc_vsnap_cap){ size_t c=sp_gc_vsnap_cap?sp_gc_vsnap_cap*2:1024; sp_gc_hdr**n=(sp_gc_hdr**)realloc(sp_gc_vsnap,c*sizeof(sp_gc_hdr*)); if(!n)sp_oom_die(); sp_gc_vsnap=n; sp_gc_vsnap_cap=c; } sp_gc_vsnap[sp_gc_vsnap_n++]=h; }
+static void sp_gc_verify_snapshot(void){ sp_gc_vsnap_n=0; for(sp_gc_hdr*p=sp_gc_heap;p;p=p->next)sp_gc_vsnap_push(p); for(sp_gc_hdr*p=sp_gc_old_heap;p;p=p->next)sp_gc_vsnap_push(p); if(sp_gc_vsnap_n>1)qsort(sp_gc_vsnap,sp_gc_vsnap_n,sizeof(sp_gc_hdr*),sp_gc_vsnap_cmp); }
+static int sp_gc_obj_registered(sp_gc_hdr *h){ uintptr_t hv=(uintptr_t)h; size_t lo=0,hi=sp_gc_vsnap_n; while(lo<hi){ size_t m=lo+(hi-lo)/2; uintptr_t x=(uintptr_t)sp_gc_vsnap[m]; if(x==hv)return 1; if(x<hv)lo=m+1; else hi=m; } return 0; }
+static void sp_gc_verify_fail(void *obj, sp_gc_hdr *h){
+  /* Print the safe part (pointer values only) and flush BEFORE touching the
+   * header: h is unregistered and may be unmapped, so dereferencing it could
+   * secondary-fault inside fprintf and swallow the diagnostic. The header
+   * fields are printed in a second, flushed call — if that line is missing,
+   * the header itself was unmapped (itself a useful signal). */
+  fprintf(stderr,
+    "\n*** SPINEL_GC_VERIFY: collector reached a non-heap/corrupt object ***\n"
+    "  obj    = %p\n  header = %p\n"
+    "  This pointer is on the GC mark path but is not a registered live GC\n"
+    "  allocation -- most likely a raw/aliased pointer (e.g. into a string or\n"
+    "  builder buffer) reachable from a root or a scanned field. Invoking its\n"
+    "  scan hook would jump through a bogus function pointer.\n",
+    obj, (void*)h);
+  fflush(stderr);
+  fprintf(stderr, "  ->scan = %p   ->size = %zu\n\n",
+    (void*)(uintptr_t)h->scan, (size_t)h->size);
+  abort();
+}
+__attribute__((constructor)) static void sp_gc_debug_env(void){
+  const char *v=getenv("SPINEL_GC_VERIFY"); sp_gc_verify=(v&&*v&&*v!='0');
+}
 #define SP_GC_FULL_INTERVAL 8
 static void sp_gc_collect(void){int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;sp_gc_hdr*hh=sp_gc_old_heap;while(hh){hh->marked=0;hh=hh->next;}sp_gc_mark_all();if(full){sp_gc_hdr**pp=&sp_gc_old_heap;sp_gc_old_bytes=0;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;sp_gc_old_bytes+=h->size;pp=&h->next;}}}else{hh=sp_gc_old_heap;while(hh){hh->marked=1;hh=hh->next;}}sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}sp_str_sweep();if(full)malloc_trim(0);}
 static size_t sp_gc_threshold_init=256*1024;
