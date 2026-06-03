@@ -21603,6 +21603,15 @@ class Compiler
   end
 
   def infer_all_returns
+ # The return-type fixpoint allocates heavily (per-pass type-string
+ # rebuilds); without a collection here the transient garbage from each
+ # of the ~15 passes accumulates between the GC's (growing) auto-collect
+ # points, so peak RSS tracks the high-water of churn rather than the
+ # live set. Collecting at the pass boundary caps that: on a large
+ # auto-generated class graph it roughly halves analyzer peak RSS
+ # (#1302) at a few % wall cost, and is result-neutral (only unreachable
+ # garbage is freed).
+    GC.start
  # Pre-pass: infer class method param types from body usage
     infer_cls_meth_param_from_body
  # Pre-pass: scan for .new calls to infer constructor param types
