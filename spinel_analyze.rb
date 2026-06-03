@@ -34,6 +34,9 @@ class Compiler
     @nd_type = "".split(",", -1)
     @nd_name = "".split(",", -1)
     @nd_value = []
+    @nd_line = []
+    @nd_file = []
+    @file_table = []
     @nd_content = "".split(",", -1)
     @nd_flags = []
     @nd_operator = "".split(",", -1)

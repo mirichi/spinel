@@ -32,6 +32,14 @@ class NodeTableLoader
               @table.set_source_file_path(unescape_str(parts[1]))
             end
           end
+ # Debug multi-file map (FILE <id> <escaped-path>): records which
+ # original file each node's `node_file` id refers to, so codegen can
+ # emit `#line N "file"` across require_relative-inlined sources.
+          if parts.first == "FILE"
+            if parts.length >= 3
+              @table.set_file_entry(parts[1].to_i, unescape_str(parts[2]))
+            end
+          end
           if parts.first == "N"
             nid = parts[1].to_i
             if nid > max_id

@@ -466,6 +466,8 @@ class Compiler
     @nd_type.push("")
     @nd_name.push("")
     @nd_value.push(0)
+    @nd_line.push(0)   # keep the source-map arrays parallel with the rest, so a
+    @nd_file.push(0)   # dynamically-allocated node can't drift them out of sync
     @nd_content.push("")
     @nd_flags.push(0)
     @nd_operator.push("")
@@ -528,6 +530,8 @@ class Compiler
     @nd_type = Array.new(n, "")
     @nd_name = Array.new(n, "")
     @nd_value = Array.new(n, 0)
+    @nd_line = Array.new(n, 0)
+    @nd_file = Array.new(n, 0)
     @nd_content = Array.new(n, "")
     @nd_flags = Array.new(n, 0)
     @nd_operator = Array.new(n, "")
@@ -665,6 +669,30 @@ class Compiler
  # location in the compile error.
       @nd_value[nid] = val
     end
+ # Debug builds only (SPINEL_DEBUG=1): the parser stamps every node
+ # with its 1-based source line in a dedicated slot so codegen can
+ # emit `#line` directives. Kept separate from @nd_value, which is
+ # overloaded for integer/float literal values, numbered-param max, etc.
+    if field == "node_line"
+      @nd_line[nid] = val
+    end
+ # Debug multi-file map: id into the FILE table (0 = toplevel source).
+    if field == "node_file"
+      @nd_file[nid] = val
+    end
+  end
+
+ # Debug multi-file map: record a FILE <id> <path> table entry emitted by
+ # the parser. Grown on demand so ids can arrive in any order.
+  def set_file_entry(id, path)
+ # The analyze/codegen consumers initialize @file_table = []; this shared
+ # helper assumes the slot exists. A bare `@file_table ||= []` fallback is
+ # unsafe under self-host inference: the empty literal lowers to IntArray
+ # and collides with the PolyArray-typed slot, breaking the build.
+    while @file_table.length <= id
+      @file_table.push("")
+    end
+    @file_table[id] = path
   end
 
   def set_ref_field(nid, field, ref_id)

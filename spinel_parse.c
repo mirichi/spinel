@@ -67,6 +67,17 @@ static void out_add(const char *fmt, ...) {
 static const pm_parser_t *g_parser;
 static const char *g_source_file = "";
 static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set once at init */
+/* Debug builds: when SPINEL_DEBUG=1, flatten() emits a per-node
+   `node_line` field so codegen can place C `#line` directives. Off by
+   default so the AST text format (and golden tests) are unchanged. */
+static int g_emit_line = 0;
+/* Debug multi-file source map, populated by sp_build_line_map() before
+   flatten() runs and read in flatten() to attribute each node to its
+   original file/line. Declared here because flatten() precedes the
+   require-resolution machinery that defines the builder. */
+static int *sp_line_file = NULL;  /* buffer line (1-based) -> file id */
+static int *sp_line_orig = NULL;  /* buffer line (1-based) -> original line */
+static int sp_line_map_n = 0;
 
 static char *cstr(pm_constant_id_t id) {
   if (id == 0) return strdup("");
@@ -227,6 +238,26 @@ static int flatten(pm_node_t *node) {
 
   int id = node_counter++;
   pm_node_type_t t = PM_NODE_TYPE(node);
+
+  /* Debug builds only: stamp every node with its source line — and, when a
+     multi-file map was built, its original file — so codegen can emit
+     `#line N "file"` directives. Written to dedicated `node_line` /
+     `node_file` fields (NOT the overloaded `value`/`start_line` slot). The
+     raw value is the line in the concatenated buffer; the map translates it
+     back to the original file and line. */
+  if (g_emit_line) {
+    int32_t bl = pm_newline_list_line(&g_parser->newline_list,
+                                      node->location.start,
+                                      g_parser->start_line);
+    int orig = bl;
+    int fid = 0;
+    if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n) {
+      orig = sp_line_orig[bl];
+      fid = sp_line_file[bl];
+    }
+    emit_int(id, "node_line", (long long)orig);
+    emit_int(id, "node_file", (long long)fid);
+  }
 
 #define N(type_name) out_add("N %d " type_name, id)
 #define S(field, val) do { char *_e = (val); emit_str(id, field, _e); free(_e); } while(0)
@@ -1487,6 +1518,108 @@ static void sp_includes_free(void) {
   sp_included_cap = 0;
 }
 
+/* ---- Debug multi-file source map (g_emit_line only) -------------------
+   require/require_relative are resolved by *textual* splicing into one
+   buffer, so a node's Prism line is a line in that concatenated buffer and
+   the original file boundaries are lost. For --debug we recover them: each
+   spliced file's content is wrapped in PUSH/POP marker *comments* (Prism
+   ignores comments, so the AST is unchanged), and a single pass over the
+   final buffer reconstructs, per buffer line, which file and original line
+   it came from. The stack accounting needs no original-line bookkeeping at
+   splice time: a PUSH consumes the parent's (replaced) require line, then
+   content lines count within the child's own coordinates until POP. */
+#define SP_PUSH_PREFIX "#<SPINEL_PUSH>"
+#define SP_POP_PREFIX "#<SPINEL_POP>"
+
+static char **sp_file_table = NULL;  /* id -> path */
+static int sp_file_count = 0, sp_file_cap = 0;
+
+static int sp_intern_file(const char *path) {
+  for (int i = 0; i < sp_file_count; i++)
+    if (strcmp(sp_file_table[i], path) == 0) return i;
+  if (sp_file_count >= sp_file_cap) {
+    int nc = sp_file_cap == 0 ? 8 : sp_file_cap * 2;
+    char **np = (char **)realloc(sp_file_table, sizeof(char *) * nc);
+    if (!np) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    sp_file_table = np; sp_file_cap = nc;
+  }
+  char *dup_path = strdup(path);
+  if (!dup_path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  sp_file_table[sp_file_count] = dup_path;
+  return sp_file_count++;
+}
+
+/* In debug mode, wrap an included file's (already-resolved) content with
+   PUSH <path> / POP marker lines. Takes ownership of `content`; returns it
+   unchanged when not in debug mode. */
+static char *sp_wrap_included(char *content, const char *path) {
+  if (!g_emit_line) return content;
+  size_t clen = strlen(content);
+  int need_nl = (clen > 0 && content[clen - 1] != '\n') ? 1 : 0;
+  size_t total = strlen(SP_PUSH_PREFIX) + strlen(path) + 1 + clen + need_nl
+               + strlen(SP_POP_PREFIX) + 1 + 1;
+  char *w = malloc(total + 8);
+  if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  size_t o = (size_t)sprintf(w, SP_PUSH_PREFIX "%s\n", path);
+  memcpy(w + o, content, clen); o += clen;
+  if (need_nl) w[o++] = '\n';
+  o += (size_t)sprintf(w + o, SP_POP_PREFIX "\n");
+  w[o] = '\0';
+  free(content);
+  return w;
+}
+
+/* Reconstruct the line map from the final spliced buffer. toplevel is the
+   path of the outermost file (interned as the initial frame). */
+static void sp_build_line_map(const char *src, const char *toplevel) {
+  size_t nlines = 1;
+  for (const char *p = src; *p; p++) if (*p == '\n') nlines++;
+  sp_line_map_n = (int)nlines;
+  sp_line_file = (int *)calloc(nlines + 2, sizeof(int));
+  sp_line_orig = (int *)calloc(nlines + 2, sizeof(int));
+
+  int *stk_file = (int *)malloc(sizeof(int) * (nlines + 2));
+  int *stk_next = (int *)malloc(sizeof(int) * (nlines + 2));
+  if (!sp_line_file || !sp_line_orig || !stk_file || !stk_next) {
+    fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
+  }
+  int sp = 0;
+  stk_file[sp] = sp_intern_file(toplevel);
+  stk_next[sp] = 1;
+
+  int bl = 1;
+  const char *line = src;
+  while (1) {
+    const char *eol = strchr(line, '\n');
+    size_t len = eol ? (size_t)(eol - line) : strlen(line);
+    if (strncmp(line, SP_PUSH_PREFIX, strlen(SP_PUSH_PREFIX)) == 0) {
+      /* The replaced require occupied one parent line: consume it. */
+      if (sp >= 0) stk_next[sp] += 1;
+      char pathbuf[1024];
+      size_t plen = len - strlen(SP_PUSH_PREFIX);
+      if (plen >= sizeof(pathbuf)) plen = sizeof(pathbuf) - 1;
+      memcpy(pathbuf, line + strlen(SP_PUSH_PREFIX), plen);
+      pathbuf[plen] = '\0';
+      sp++;
+      stk_file[sp] = sp_intern_file(pathbuf);
+      stk_next[sp] = 1;
+      /* marker line maps to nothing meaningful */
+    } else if (strncmp(line, SP_POP_PREFIX, strlen(SP_POP_PREFIX)) == 0) {
+      if (sp > 0) sp--;
+    } else {
+      sp_line_file[bl] = stk_file[sp];
+      sp_line_orig[bl] = stk_next[sp];
+      stk_next[sp] += 1;
+    }
+    bl++;
+    if (!eol) break;
+    line = eol + 1;
+    if (*line == '\0') break;
+  }
+  free(stk_file);
+  free(stk_next);
+}
+
 /* Simple require_relative resolver: replace lines matching
    require_relative "path" with the file content. Files that have
    already been included once are silently skipped on subsequent
@@ -1572,6 +1705,10 @@ static char *resolve_requires(const char *source, const char *source_path) {
       }
       free(canonical);
     }
+
+    /* Debug: wrap with PUSH/POP markers so the line map can attribute this
+       file's nodes to the right source. No-op outside --debug. */
+    content = sp_wrap_included(content, full_path);
 
     /* Replace the line */
     size_t line_len = (line_end - pos) + ((*line_end == '\n') ? 1 : 0);
@@ -1720,6 +1857,10 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
         continue;
       }
     }
+
+    /* Debug: marker-wrap so plain-require'd lib content doesn't corrupt the
+       line map's accounting for code after the require. No-op without --debug. */
+    content = sp_wrap_included(content, lib_path);
 
     /* Replace only the `require "name"` statement itself, not the whole
        line, so `require "x"; code` keeps `code`. Consume trailing
@@ -1911,11 +2052,41 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  /* Set the debug flag before resolving requires so the resolvers insert the
+     PUSH/POP markers used to rebuild the multi-file source map. */
+  {
+    const char *dbg = getenv("SPINEL_DEBUG");
+    g_emit_line = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0') ? 1 : 0;
+  }
+
   /* Resolve require_relative and plain require */
   char *resolved = resolve_requires(source, source_file);
   free(source);
   source = resolve_plain_requires(resolved, argv[0]);
+
+  /* Debug: build the buffer-line -> (file, original line) map from the
+     marker-annotated buffer *before* syntax-sugar rewriting (which could
+     touch a marker line's text). Sugar preserves line count, so the map
+     stays aligned with the parsed node lines; if that ever fails to hold,
+     disable the map rather than emit wrong attributions. */
+  char *premap = NULL;
+  if (g_emit_line) {
+    premap = strdup(source);
+    if (!premap) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  }
   source = rewrite_syntax_sugar(source);
+  if (g_emit_line) {
+    size_t la = 1, lb = 1;
+    for (const char *p = premap; *p; p++) if (*p == '\n') la++;
+    for (const char *p = source; *p; p++) if (*p == '\n') lb++;
+    if (la == lb) {
+      sp_build_line_map(premap, source_file);
+    } else {
+      fprintf(stderr, "spinel_parse: --debug multi-file map disabled "
+                      "(syntax-sugar changed line count)\n");
+    }
+    free(premap);
+  }
 
   size_t source_len = strlen(source);
 
@@ -1979,6 +2150,13 @@ int main(int argc, char **argv) {
      even when the source contains no `__FILE__` reference. The
      loader stashes it in @source_file_path. */
   fprintf(out, "SOURCE_FILE %s\n", g_source_file_escaped);
+  /* Debug multi-file map: emit the id -> path table so codegen can resolve
+     each node's `node_file` id to a path for its `#line` directive. */
+  for (int i = 0; i < sp_file_count; i++) {
+    char *esc = escape_str((const uint8_t *)sp_file_table[i], strlen(sp_file_table[i]));
+    fprintf(out, "FILE %d %s\n", i, esc);
+    free(esc);
+  }
   for (size_t i = 0; i < line_count; i++) {
     fprintf(out, "%s\n", lines[i]);
     free(lines[i]);
