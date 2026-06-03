@@ -23122,6 +23122,13 @@ class Compiler
       emit("  sp_Range " + rtmp_sz + " = " + rc + ";")
       return "(" + rtmp_sz + ".last - " + rtmp_sz + ".first + 1 - " + rtmp_sz + ".excl)"
     end
+ # `exclude_end?` reads the runtime `excl` flag (0 or 1), so it is
+ # correct for both literal `...`/`..` and non-literal sp_Range values.
+    if mname == "exclude_end?"
+      rtmp_ee = new_temp
+      emit("  sp_Range " + rtmp_ee + " = " + rc + ";")
+      return "(" + rtmp_ee + ".excl ? TRUE : FALSE)"
+    end
  # `(a..b).any?/all?/none?/one? { |i| ... }` — the array-shape
  # predicate emitter already iterates ranges via emit_iter_open;
  # just route to it. Without this, the call falls through to the

@@ -4983,6 +4983,9 @@ class Compiler
     if mname == "overlap?"
       return "bool"
     end
+    if mname == "exclude_end?"
+      return "bool"
+    end
     if mname == "==="
       return "bool"
     end
