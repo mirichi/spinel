@@ -22481,6 +22481,37 @@ class Compiler
     pop_scope
   end
 
+ # Register a global that appears as a multi-assignment target
+ # (`$a, $b = ...`, `$x, *$rest = ...`). Without this the slot is only
+ # discovered via a later read, which defaults it to `int`, so a
+ # non-int RHS (string / array / float) declares the C global as
+ # mrb_int and the masgn store fails to compile. Mirrors the
+ # GlobalVariableWriteNode path but keyed off the destructured type.
+  def register_masgn_global(gname0, gt)
+    gname = resolve_gvar_alias(gname0)
+    if is_special_gvar(gname) == 1
+      return
+    end
+    if not_in(gname, @gvar_names) == 1
+      @gvar_names.push(gname)
+      @gvar_types.push(gt)
+      @gvar_written.push(1)
+      return
+    end
+    gi = 0
+    while gi < @gvar_names.length
+      if @gvar_names[gi] == gname
+ # Upgrade an `int` placeholder left by an earlier read to the
+ # real destructured type; keep an existing concrete type.
+        if @gvar_types[gi] == "int" && gt != "int" && gt != "nil"
+          @gvar_types[gi] = gt
+        end
+        @gvar_written[gi] = 1
+      end
+      gi = gi + 1
+    end
+  end
+
   def scan_features(nid)
     if nid < 0
       return
@@ -22749,6 +22780,46 @@ class Compiler
           end
         end
       end
+    end
+    if t == "MultiWriteNode"
+ # Register global targets of a multi-assignment with the type each
+ # one destructures to, so the C global is declared with the right
+ # storage. Mirrors the local-target typing in scan_locals.
+      val_id_mg = @nd_expression[nid]
+      lefts_mg = parse_id_list(@nd_targets[nid])
+      ti_mg = 0
+      lefts_mg.each { |tid|
+        if @nd_type[tid] == "GlobalVariableTargetNode"
+          register_masgn_global(@nd_name[tid], multi_write_target_type(val_id_mg, ti_mg))
+        end
+        ti_mg = ti_mg + 1
+      }
+      rest_mg = @nd_rest[nid]
+      if is_splat_with_target(rest_mg) == 1
+        st_mg = @nd_expression[rest_mg]
+        if st_mg >= 0 && @nd_type[st_mg] == "GlobalVariableTargetNode"
+          register_masgn_global(@nd_name[st_mg], splat_rest_type(val_id_mg))
+        end
+      end
+      rights_mg = parse_id_list(@nd_rights[nid])
+      r_total_mg = 0
+      if val_id_mg >= 0 && @nd_type[val_id_mg] == "ArrayNode"
+        r_total_mg = parse_id_list(@nd_elements[val_id_mg]).length
+      end
+      r_idx_mg = 0
+      rights_mg.each { |tid|
+        if @nd_type[tid] == "GlobalVariableTargetNode"
+          t_idx_mg = 0
+          if r_total_mg > 0
+            t_idx_mg = r_total_mg - rights_mg.length + r_idx_mg
+            if t_idx_mg < 0
+              t_idx_mg = 0
+            end
+          end
+          register_masgn_global(@nd_name[tid], multi_write_target_type(val_id_mg, t_idx_mg))
+        end
+        r_idx_mg = r_idx_mg + 1
+      }
     end
     if t == "CallNode"
       mname = @nd_name[nid]
