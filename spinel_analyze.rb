@@ -5041,6 +5041,19 @@ class Compiler
       end
       return "int"
     end
+ # String#upto: the block form yields successive strings and returns
+ # the receiver; the block-less form materializes as a str_array (the
+ # enumerator's elements). Integer#upto keeps the int default below.
+    if mname == "upto" && recv >= 0
+      rt_up = base_type(infer_type(recv))
+      if rt_up == "string" || rt_up == "mutable_str"
+        if @nd_block[nid] >= 0
+          return "string"
+        end
+        @needs_str_array = 1
+        return "str_array"
+      end
+    end
     if mname == "pred"
       return "int"
     end
@@ -33010,6 +33023,11 @@ class Compiler
     recv_t = "int"
     if recv >= 0
       recv_t = infer_type(recv)
+    end
+ # `"a".upto("e") { |c| ... }` yields successive strings; the block
+ # param is a string (Integer#upto keeps the int default).
+    if mname == "upto" && pi == 0 && (base_type(recv_t) == "string" || base_type(recv_t) == "mutable_str")
+      return "string"
     end
  # Struct#to_h { |member_name, value| ... } yields the member symbol
  # and its value. Members are heterogeneous, so the value param is

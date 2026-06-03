@@ -21649,6 +21649,22 @@ class Compiler
       end
       return "FALSE"
     end
+ # String#upto without a block -- CRuby returns an Enumerator; spinel
+ # materializes the succ-walk as a str_array so `.to_a` / `.each` /
+ # `.map` work. The block form is handled by compile_upto_block.
+    if mname == "upto" && @nd_block[nid] < 0
+      @needs_str_array = 1
+      @needs_gc = 1
+      end_up = "sp_str_empty"
+      args_id_up = @nd_arguments[nid]
+      if args_id_up >= 0
+        a_up = get_args(args_id_up)
+        if a_up.length >= 1
+          end_up = compile_expr_as_string(a_up[0])
+        end
+      end
+      return "sp_StrArray_from_string_range(" + rc + ", " + end_up + ", 0)"
+    end
  # String#each_char returns the receiver. Issue #866. Mirrors the
  # statement-level handler but emits a value (`rc`) so callers
  # like `s = "hi".each_char { ... }` get the string back.
@@ -25482,6 +25498,10 @@ class Compiler
       end
       if mname == "size"
         return "sp_StrArray_length(" + rc + ")"
+      end
+ # `to_a` on an array is the array itself (mirrors poly_array).
+      if mname == "to_a"
+        return rc
       end
  # `arr.values_at(i, j, ...)` -- pick elements at the given
  # indices. Issue #742.
@@ -44486,7 +44506,54 @@ class Compiler
     emit("    " + lbl + ": ;")
   end
 
+ # `"a".upto("e") { |c| ... }` -- iterate successive strings from the
+ # receiver to the argument inclusive (the same succ-based walk that
+ # backs a String range), binding the block param to each string.
+ # Returns are handled by the caller; upto yields self.
+  def compile_string_upto_block(nid)
+    old = @in_loop
+    @in_loop = 1
+    @needs_str_array = 1
+    @needs_gc = 1
+    rc = compile_expr_gc_rooted(@nd_receiver[nid])
+    end_e = "sp_str_empty"
+    args_id_su = @nd_arguments[nid]
+    if args_id_su >= 0
+      a_su = get_args(args_id_su)
+      if a_su.length >= 1
+        end_e = compile_expr_as_string(a_su[0])
+      end
+    end
+    bp1 = get_block_param(nid, 0)
+    range_tmp = new_temp
+    i_tmp = new_temp
+    emit("  sp_StrArray *" + range_tmp + " = sp_StrArray_from_string_range(" + rc + ", " + end_e + ", 0);")
+    emit("  SP_GC_ROOT(" + range_tmp + ");")
+    emit("  for (mrb_int " + i_tmp + " = 0; " + i_tmp + " < " + range_tmp + "->len; " + i_tmp + "++) {")
+    if bp1 != ""
+      emit("    const char *lv_" + bp1 + " = sp_StrArray_get(" + range_tmp + ", " + i_tmp + ");")
+    end
+    @indent = @indent + 1
+    push_scope
+    if bp1 != ""
+      declare_var(bp1, "string")
+    end
+    redo_label = push_redo_label
+    emit_redo_label(redo_label)
+    compile_stmts_body(@nd_body[@nd_block[nid]])
+    pop_redo_label
+    pop_scope
+    @indent = @indent - 1
+    emit("  }")
+    @in_loop = old
+  end
+
   def compile_upto_block(nid)
+    rc_up_t = base_type(infer_type(@nd_receiver[nid]))
+    if rc_up_t == "string" || rc_up_t == "mutable_str"
+      compile_string_upto_block(nid)
+      return
+    end
     old = @in_loop
     @in_loop = 1
     rc = compile_expr_gc_rooted(@nd_receiver[nid])
