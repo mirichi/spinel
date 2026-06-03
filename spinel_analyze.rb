@@ -6157,6 +6157,12 @@ class Compiler
     if mname == "flatten"
       if recv >= 0
         rt_fl = infer_type(recv)
+ # `hash.flatten` interleaves keys and values into a flat boxed
+ # poly_array ([:a, 1, :b, 2]).
+        if is_hash_type(rt_fl) == 1
+          @needs_rb_value = 1
+          return "poly_array"
+        end
  # A typed-array-of-<T>_array (e.g. `[[1,2],[3,4]]` ->
  # int_array_ptr_array) flattens to a flat <T>_array. Issue #739
  # added the int shape; str / float mirror it.

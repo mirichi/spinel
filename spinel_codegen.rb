@@ -26125,6 +26125,96 @@ class Compiler
         return tmp_va
       end
     end
+ # Hash#flatten / #rassoc / #compact on typed hashes. flatten and
+ # rassoc box into a poly_array (rassoc returns NULL on a value miss,
+ # which surfaces as nil); compact returns a same-type hash with nil
+ # values dropped (poly-valued variants only — other value types can't
+ # hold nil, so it's a straight copy). All iterate ->order so insertion
+ # order is preserved.
+    if (mname == "flatten" || mname == "rassoc" || mname == "compact") && is_hash_type(recv_type) == 1
+      vhh = hash_fetch_block_info(recv_type)
+      if vhh != nil
+        kct_hh = "mrb_int"
+        kbox_hh = "sp_box_int"
+        if recv_type.start_with?("sym_")
+          kct_hh = "sp_sym"
+          kbox_hh = "sp_box_sym"
+        elsif recv_type.start_with?("str_")
+          kct_hh = "const char *"
+          kbox_hh = "sp_box_str"
+        end
+        get_hh = vhh[3]
+        if mname == "flatten"
+          @needs_poly_array = 1
+          @needs_rb_value = 1
+          @needs_gc = 1
+          tmp_fl = new_temp
+          it_fl = new_temp
+          k_fl = new_temp
+          emit("  sp_PolyArray *" + tmp_fl + " = sp_PolyArray_new();")
+          emit("  SP_GC_ROOT(" + tmp_fl + ");")
+          emit("  for (mrb_int " + it_fl + " = 0; " + it_fl + " < " + rc + "->len; " + it_fl + "++) {")
+          emit("    " + kct_hh + " " + k_fl + " = " + rc + "->order[" + it_fl + "];")
+          emit("    sp_PolyArray_push(" + tmp_fl + ", " + kbox_hh + "(" + k_fl + "));")
+          emit("    sp_PolyArray_push(" + tmp_fl + ", " + box_value_to_poly(vhh[0], get_hh + "(" + rc + ", " + k_fl + ")") + ");")
+          emit("  }")
+          return tmp_fl
+        end
+        if mname == "rassoc"
+          @needs_poly_array = 1
+          @needs_rb_value = 1
+          @needs_gc = 1
+          args_id_ra = @nd_arguments[nid]
+          if args_id_ra >= 0
+            a_ra = get_args(args_id_ra)
+            if a_ra.length > 0
+              needle_ra = new_temp
+              emit("  sp_RbVal " + needle_ra + " = " + box_expr_to_poly(a_ra[0]) + ";")
+              emit("  SP_GC_ROOT_RBVAL(" + needle_ra + ");")
+              res_ra = new_temp
+              it_ra = new_temp
+              k_ra = new_temp
+              emit("  sp_PolyArray *" + res_ra + " = NULL;")
+              emit("  SP_GC_ROOT(" + res_ra + ");")
+              emit("  for (mrb_int " + it_ra + " = 0; " + it_ra + " < " + rc + "->len; " + it_ra + "++) {")
+              emit("    " + kct_hh + " " + k_ra + " = " + rc + "->order[" + it_ra + "];")
+              emit("    if (sp_poly_eq(" + box_value_to_poly(vhh[0], get_hh + "(" + rc + ", " + k_ra + ")") + ", " + needle_ra + ")) {")
+              emit("      " + res_ra + " = sp_PolyArray_new();")
+              emit("      sp_PolyArray_push(" + res_ra + ", " + kbox_hh + "(" + k_ra + "));")
+              emit("      sp_PolyArray_push(" + res_ra + ", " + box_value_to_poly(vhh[0], get_hh + "(" + rc + ", " + k_ra + ")") + ");")
+              emit("      break;")
+              emit("    }")
+              emit("  }")
+              return res_ra
+            end
+          end
+          return "NULL"
+        end
+ # compact: copy entries into a fresh same-type hash, dropping nil
+ # values (only poly-valued variants can carry nil).
+        set_hh = hash_setter_cname(recv_type)
+        new_hh = set_hh.sub("_set", "_new")
+        @needs_gc = 1
+        tmp_cp = new_temp
+        it_cp = new_temp
+        k_cp = new_temp
+        cprefix = set_hh.sub("_set", "")
+        emit("  " + cprefix + " *" + tmp_cp + " = " + new_hh + "();")
+        emit("  SP_GC_ROOT(" + tmp_cp + ");")
+        emit("  for (mrb_int " + it_cp + " = 0; " + it_cp + " < " + rc + "->len; " + it_cp + "++) {")
+        emit("    " + kct_hh + " " + k_cp + " = " + rc + "->order[" + it_cp + "];")
+        if vhh[0] == "poly"
+          @needs_rb_value = 1
+          v_cp = new_temp
+          emit("    sp_RbVal " + v_cp + " = " + get_hh + "(" + rc + ", " + k_cp + ");")
+          emit("    if (" + v_cp + ".tag != SP_TAG_NIL) " + set_hh + "(" + tmp_cp + ", " + k_cp + ", " + v_cp + ");")
+        else
+          emit("    " + set_hh + "(" + tmp_cp + ", " + k_cp + ", " + get_hh + "(" + rc + ", " + k_cp + "));")
+        end
+        emit("  }")
+        return tmp_cp
+      end
+    end
  # Hash#fetch(k) { |k| default } — block form. `compile_body_into`
  # walks the block body emitting all statements; the final
  # expression assigns into a temp that we return. The non-block
