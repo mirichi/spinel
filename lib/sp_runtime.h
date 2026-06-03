@@ -754,7 +754,26 @@ static size_t sp_gc_threshold_init=256*1024;
    "unhandled exception" style so post-mortem scripts treat it the
    same way. */
 static void sp_oom_die(void){fputs("unhandled exception: out of memory\n",stderr);exit(1);}
-void*sp_gc_alloc(size_t sz,void(*fin)(void*),void(*scn)(void*)){if(sp_gc_bytes>sp_gc_threshold){size_t before=sp_gc_bytes;sp_gc_collect();size_t freed=before-sp_gc_bytes;if(freed<before/4){sp_gc_threshold=before*2;}else if(sp_gc_bytes>0){sp_gc_threshold=sp_gc_bytes*4;if(sp_gc_threshold<sp_gc_threshold_init)sp_gc_threshold=sp_gc_threshold_init;}else{sp_gc_threshold=sp_gc_threshold_init;}}size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);if(!h)sp_oom_die();h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
+/* Issue #1302: optional memory ceiling. When SPINEL_MAX_HEAP_MB is set (>0),
+   abort with a diagnostic once process RSS exceeds it, rather than allocating
+   without limit until the kernel OOM-killer fires and takes down unrelated
+   processes (observed: spinel_analyze reaching 100+ GB on huge auto-generated,
+   mutually-referential gem class graphs). Checked only at GC-trigger points
+   (infrequent) and against REAL RSS from /proc/self/statm — not the sp_gc_bytes
+   running counter, which is unsigned and can transiently underflow as
+   finalizers subtract. Default (unset) is no limit: behavior is unchanged for
+   every program; this is an opt-in safety governor. */
+static size_t sp_gc_max_bytes=0; static int sp_gc_max_bytes_init=0;
+static void sp_gc_enforce_mem_limit(void){
+  if(!sp_gc_max_bytes_init){const char*e=getenv("SPINEL_MAX_HEAP_MB");long v=(e&&*e)?atol(e):0;sp_gc_max_bytes=(v>0)?(size_t)v*1024*1024:0;sp_gc_max_bytes_init=1;}
+  if(!sp_gc_max_bytes)return;
+#if defined(__linux__)
+  FILE*sf=fopen("/proc/self/statm","r");if(!sf)return;long tot=0,res=0;int n=fscanf(sf,"%ld %ld",&tot,&res);fclose(sf);if(n!=2||res<=0)return;
+  size_t rss=(size_t)res*(size_t)sysconf(_SC_PAGESIZE);
+  if(rss>sp_gc_max_bytes){fprintf(stderr,"unhandled exception: out of memory (RSS %zu MB exceeded SPINEL_MAX_HEAP_MB=%zu MB)\n",rss/(1024*1024),sp_gc_max_bytes/(1024*1024));exit(1);}
+#endif
+}
+void*sp_gc_alloc(size_t sz,void(*fin)(void*),void(*scn)(void*)){if(sp_gc_bytes>sp_gc_threshold){size_t before=sp_gc_bytes;sp_gc_collect();size_t freed=before-sp_gc_bytes;if(freed<before/4){sp_gc_threshold=before*2;}else if(sp_gc_bytes>0){sp_gc_threshold=sp_gc_bytes*4;if(sp_gc_threshold<sp_gc_threshold_init)sp_gc_threshold=sp_gc_threshold_init;}else{sp_gc_threshold=sp_gc_threshold_init;}sp_gc_enforce_mem_limit();}size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);if(!h)sp_oom_die();h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
 void*sp_gc_alloc_nogc(size_t sz,void(*fin)(void*),void(*scn)(void*)){size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);if(!h)sp_oom_die();h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
 /* GC-header frozen bit — used for containers whose mutators are NOT
    on a hot path (hashes), so the extra cache line vs. a struct field
