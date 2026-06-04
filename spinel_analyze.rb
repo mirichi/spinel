@@ -8721,6 +8721,15 @@ class Compiler
         nn = @nd_name[@nd_new_name[sid]]
         on = @nd_name[@nd_old_name[sid]]
         if nn != "" && on != ""
+ # The regexp match globals ($&, $`, $', $+, $~) are not ordinary global
+ # storage in Spinel: direct reads lower to special regexp runtime
+ # accessors. Aliasing them (as `require "English"` does) is outside the
+ # AOT subset; without this guard it falls through to an undeclared
+ # generated C symbol (e.g. gv__amp). Fail with a clear diagnostic instead.
+          if on == "$&" || on == "$`" || on == "$'" || on == "$+" || on == "$~"
+            $stderr.puts "Error: global aliasing of regexp special globals is not supported (alias " + nn + " " + on + ")"
+            exit(1)
+          end
           @galias_new.push(nn)
           @galias_old.push(on)
         end

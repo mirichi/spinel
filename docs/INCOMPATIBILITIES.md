@@ -53,6 +53,32 @@ grapheme-break property tables, which Spinel deliberately does not carry.
 supported. For codepoint- or byte-level iteration, use the supported
 `String#chars`, `#each_char`, `#codepoints`, or `#bytes`.
 
+## Aliasing the regexp match globals
+
+CRuby's `English` library aliases the punctuation match globals to readable
+names:
+
+```ruby
+require "English"   # alias $MATCH $&, alias $PREMATCH $`, ...
+"hello world" =~ /\w+/
+puts $MATCH         # => "hello"
+```
+
+In Spinel the match globals (`$&`, `` $` ``, `$'`, `$+`, `$~`) are not ordinary
+global-variable storage: a direct read lowers to a special regexp runtime
+accessor. Supporting `alias $name $&` would require a separate special-global
+alias mechanism plus broader `MatchData` compatibility, which is outside the
+intended AOT subset. Aliasing one of these globals is rejected at compile time
+rather than falling through to an undefined generated symbol:
+
+```
+$ spinel uses_english.rb
+Error: global aliasing of regexp special globals is not supported (alias $MATCH $&)
+```
+
+Direct reads of the match globals work as usual; only aliasing them is
+unsupported. `require "English"` therefore does not compile.
+
 ## Flip-flop operator
 
 CRuby supports the flip-flop operator (a `Range` used as a condition, toggled
