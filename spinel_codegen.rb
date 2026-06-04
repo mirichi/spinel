@@ -40966,6 +40966,19 @@ class Compiler
     if @nd_collection[nid] >= 0
       scan_lambda_free_vars(@nd_collection[nid], params, locals, free_vars)
     end
+ # `case`/`when` arms hang off @nd_conditions (the WhenNode list,
+ # whose own match values are again @nd_conditions). Without this
+ # recursion a local assigned only inside a `when` branch is never
+ # seen, so it's neither captured nor declared in the proc fn —
+ # the lambda's C function then references an undeclared `lv_<name>`.
+ # The `if`/`while` branches already flow through the @nd_body /
+ # @nd_subsequent / @nd_else_clause links above.
+    conds_lf = parse_id_list(@nd_conditions[nid])
+    k = 0
+    while k < conds_lf.length
+      scan_lambda_free_vars(conds_lf[k], params, locals, free_vars)
+      k = k + 1
+    end
   end
 
   def scan_lambda_ret_types(stmts)
