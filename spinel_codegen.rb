@@ -16530,6 +16530,23 @@ class Compiler
     "0"
   end
 
+ # arg0 coerced to `const char *`, snapshotting a mutable_str builder
+ # via mutable_str_to_cstr. A StrArray stores `const char *`; pushing a
+ # raw `sp_String *` (the mutable builder) both type-confuses the slot
+ # and aliases the object-owned ->data buffer, so once the unreferenced
+ # builder is collected the array element dangles and the GC mark walk
+ # faults scanning it (the #1071 / #1314 use-after-free class).
+  def compile_arg0_as_cstr(nid)
+    args_id = @nd_arguments[nid]
+    if args_id >= 0
+      arg_ids = get_args(args_id)
+      if arg_ids.length > 0
+        return compile_expr_for_expected_type(arg_ids[0], "string")
+      end
+    end
+    "0"
+  end
+
  # Returns 1 if `nid` is a CallNode whose receiver AND first argument
  # are both ArrayNode literals (`[...]` or `%i[...]` / `%w[...]`).
  # Used by the int_array-vs-sym_array equality guard so that
@@ -21057,7 +21074,7 @@ class Compiler
       if lt == "str_array"
         @needs_str_array = 1
         rc = compile_expr_gc_rooted(recv)
-        return "(sp_StrArray_push(" + rc + ", " + compile_arg0(nid) + "), " + rc + ")"
+        return "(sp_StrArray_push(" + rc + ", " + compile_arg0_as_cstr(nid) + "), " + rc + ")"
       end
       if lt == "sym_array"
         @needs_int_array = 1
@@ -25831,7 +25848,7 @@ class Compiler
  # ...) compares like an array, not like int 0. Issue #619 puzzle 9.
  # The `<<` operator path further up already does this for its
  # str_array branch.
-        return "(sp_StrArray_push(" + rc + ", " + compile_arg0(nid) + "), " + rc + ")"
+        return "(sp_StrArray_push(" + rc + ", " + compile_arg0_as_cstr(nid) + "), " + rc + ")"
       end
       if mname == "pop"
         return "sp_StrArray_pop(" + rc + ")"
@@ -35107,7 +35124,7 @@ class Compiler
           k = k + 1
           next
         end
-        emit("  sp_StrArray_push(" + tmp + ", " + compile_expr(eid_sa) + ");")
+        emit("  sp_StrArray_push(" + tmp + ", " + compile_expr_for_expected_type(eid_sa, "string") + ");")
         k = k + 1
       end
       return tmp
@@ -39283,7 +39300,7 @@ class Compiler
         end
         if rt == "str_array"
           rc = compile_expr_gc_rooted(recv)
-          emit("  sp_StrArray_push(" + rc + ", " + compile_arg0(nid) + ");")
+          emit("  sp_StrArray_push(" + rc + ", " + compile_arg0_as_cstr(nid) + ");")
           return 1
         end
         if rt == "float_array"
@@ -39523,7 +39540,7 @@ class Compiler
         end
         if rt == "str_array"
           rc = compile_expr_gc_rooted(recv)
-          emit("  sp_StrArray_push(" + rc + ", " + compile_arg0(nid) + ");")
+          emit("  sp_StrArray_push(" + rc + ", " + compile_arg0_as_cstr(nid) + ");")
           return 1
         end
         if rt == "float_array"
