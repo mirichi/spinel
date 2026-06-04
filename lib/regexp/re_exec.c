@@ -154,13 +154,20 @@ add_thread(pike_state *s, re_threadlist *list,
       continue;
 
     case RE_BOL:
-      if (sp == s->str || ((s->pat->flags & RE_FLAG_MULTILINE) && sp > s->str && sp[-1] == '\n')) {
+ /* Ruby's `^` is always line-anchored: it matches at the start of the
+    string and after any '\n', independent of the /m flag (which in
+    Ruby only makes `.` match '\n', i.e. DOTALL). `\A` (RE_BOT) is the
+    absolute-start anchor. */
+      if (sp == s->str || (sp > s->str && sp[-1] == '\n')) {
         pc++; continue;
       }
       return;
 
     case RE_EOL:
-      if (sp == s->str_end || ((s->pat->flags & RE_FLAG_MULTILINE) && *sp == '\n')) {
+ /* Ruby's `$` is always line-anchored: it matches at the end of the
+    string and before any '\n', independent of /m. `\z` (RE_EOT) /
+    `\Z` (RE_EOTNL) are the absolute-end anchors. */
+      if (sp == s->str_end || *sp == '\n') {
         pc++; continue;
       }
       return;
@@ -537,12 +544,16 @@ bt_match_depth(const mrb_regexp_pattern *pat, const char *str, const char *str_e
       }
 
     case RE_BOL:
-      if (sp != str && !(pat->flags & RE_FLAG_MULTILINE && sp > str && sp[-1] == '\n')) return FALSE;
+ /* Ruby `^`: always line-anchored (start of string or after '\n'),
+    independent of /m. See the RE_BOL note in the NFA loop above. */
+      if (sp != str && !(sp > str && sp[-1] == '\n')) return FALSE;
       pc++;
       break;
 
     case RE_EOL:
-      if (sp != str_end && !(pat->flags & RE_FLAG_MULTILINE && *sp == '\n')) return FALSE;
+ /* Ruby `$`: always line-anchored (end of string or before '\n'),
+    independent of /m. */
+      if (sp != str_end && *sp != '\n') return FALSE;
       pc++;
       break;
 
