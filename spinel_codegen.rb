@@ -16547,6 +16547,72 @@ class Compiler
     "0"
   end
 
+ # Coerce one push/append argument to the array's element-slot type.
+  def push_arg_expr(aid, pfx)
+    if pfx == "IntArray"
+ # A lambda value stored in an int_array slot round-trips through the
+ # integer slot; compile_expr_as_int already unboxes poly/bigint.
+      if infer_type(aid) == "lambda"
+        return "(mrb_int)" + compile_expr(aid)
+      end
+ # promote-mode: a slot whose emit produced a sp_Bigint * but whose
+ # infer_type still reports "int" needs the explicit unbox that
+ # compile_expr_as_int's infer_type check would miss.
+      if infer_type(aid) != "bigint" && expr_emit_is_bigint(aid) == 1
+        @needs_bigint = 1
+        return "sp_bigint_to_int((sp_Bigint *)(" + compile_expr(aid) + "))"
+      end
+      return compile_expr_as_int(aid)
+    end
+    if pfx == "StrArray"
+      return compile_expr_for_expected_type(aid, "string")
+    end
+    if pfx == "PolyArray"
+      return box_expr_to_poly(aid)
+    end
+    compile_expr(aid)
+  end
+
+ # Statement-context `arr.push(a, b, ...)`: emit one push per arg.
+  def emit_multi_push(nid, rc, pfx)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return
+    end
+    arg_ids = get_args(args_id)
+    k = 0
+    while k < arg_ids.length
+      emit("  sp_" + pfx + "_push(" + rc + ", " + push_arg_expr(arg_ids[k], pfx) + ");")
+      k = k + 1
+    end
+  end
+
+ # `arr.push(a, b, ...)` / `arr.append(...)` -- Array#push takes any
+ # number of arguments and returns the array. Emit one push per arg as
+ # a comma-expression and yield `rc`. `rc` must be a stable lvalue (a
+ # temp); array-literal receivers are already lifted to one by
+ # compile_expr_gc_rooted. Empty arg list returns the array unchanged.
+  def compile_multi_push(nid, rc, pfx)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return rc
+    end
+ # get_args returns an int array of node ids; do not seed arg_ids with
+ # a str_array (`"".split`) first -- unifying get_args' result with
+ # str_array widens get_args to poly across the whole self-host build.
+    arg_ids = get_args(args_id)
+    if arg_ids.length == 0
+      return rc
+    end
+    parts = "("
+    k = 0
+    while k < arg_ids.length
+      parts = parts + "sp_" + pfx + "_push(" + rc + ", " + push_arg_expr(arg_ids[k], pfx) + "), "
+      k = k + 1
+    end
+    parts + rc + ")"
+  end
+
  # Returns 1 if `nid` is a CallNode whose receiver AND first argument
  # are both ArrayNode literals (`[...]` or `%i[...]` / `%w[...]`).
  # Used by the int_array-vs-sym_array equality guard so that
@@ -25039,7 +25105,7 @@ class Compiler
         return "sp_IntArray_get(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
       if mname == "push"
-        return "(sp_IntArray_push(" + rc + ", " + compile_arg0_as_int(nid) + "), 0)"
+        return compile_multi_push(nid, rc, "IntArray")
       end
       if mname == "pop"
         return "sp_IntArray_pop(" + rc + ")"
@@ -25516,7 +25582,7 @@ class Compiler
         return "sp_FloatArray_get(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
       if mname == "push"
-        return "(sp_FloatArray_push(" + rc + ", " + compile_arg0(nid) + "), 0)"
+        return compile_multi_push(nid, rc, "FloatArray")
       end
       if mname == "pop"
         return "sp_FloatArray_pop(" + rc + ")"
@@ -25603,7 +25669,7 @@ class Compiler
         return "((" + ct + ")sp_PtrArray_get(" + rc + ", sp_PtrArray_length(" + rc + ") - 1))"
       end
       if mname == "push"
-        return "(sp_PtrArray_push(" + rc + ", " + compile_arg0(nid) + "), 0)"
+        return compile_multi_push(nid, rc, pfx)
       end
       if mname == "pop"
  # Array#pop on `<X>_ptr_array`. Returns NULL on empty, cast
@@ -25848,7 +25914,7 @@ class Compiler
  # ...) compares like an array, not like int 0. Issue #619 puzzle 9.
  # The `<<` operator path further up already does this for its
  # str_array branch.
-        return "(sp_StrArray_push(" + rc + ", " + compile_arg0_as_cstr(nid) + "), " + rc + ")"
+        return compile_multi_push(nid, rc, "StrArray")
       end
       if mname == "pop"
         return "sp_StrArray_pop(" + rc + ")"
@@ -26117,12 +26183,7 @@ class Compiler
         return "sp_PolyArray_get(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
       if mname == "push"
-        arg_id = -1
-        aargs = get_args(@nd_arguments[nid])
-        if aargs.length > 0
-          arg_id = aargs[0]
-        end
-        return "(sp_PolyArray_push(" + rc + ", " + box_expr_to_poly(arg_id) + "), 0)"
+        return compile_multi_push(nid, rc, "PolyArray")
       end
  # `clear` in expression position (e.g. `@x ||= @arr.clear`).
  # Mirrors the stmt-form arm in compile_*_stmt: zero the
@@ -39511,46 +39572,22 @@ class Compiler
         rt = infer_type(recv)
         if rt == "int_array" || rt == "sym_array"
           rc = compile_expr_gc_rooted(recv)
-          av = compile_arg0(nid)
- # If pushing a lambda value, cast to mrb_int. With promote
- # mode, an int_array.push(bigint_lv) sees a sp_Bigint * arg
- # against an mrb_int param — unbox.
-          a0id = -1
-          args_id2 = @nd_arguments[nid]
-          if args_id2 >= 0
-            aargs2 = get_args(args_id2)
-            if aargs2.length > 0
-              a0id = aargs2[0]
-            end
-          end
-          if a0id >= 0
-            at_iaip = infer_type(a0id)
-            if at_iaip == "lambda"
-              av = "(mrb_int)" + av
-            elsif at_iaip == "bigint" || expr_emit_is_bigint(a0id) == 1
-              @needs_bigint = 1
-              av = "sp_bigint_to_int((sp_Bigint *)" + av + ")"
-            elsif at_iaip == "poly"
-              @needs_rb_value = 1
-              av = "(" + av + ").v.i"
-            end
-          end
-          emit("  sp_IntArray_push(" + rc + ", " + av + ");")
+          emit_multi_push(nid, rc, "IntArray")
           return 1
         end
         if rt == "str_array"
           rc = compile_expr_gc_rooted(recv)
-          emit("  sp_StrArray_push(" + rc + ", " + compile_arg0_as_cstr(nid) + ");")
+          emit_multi_push(nid, rc, "StrArray")
           return 1
         end
         if rt == "float_array"
           rc = compile_expr_gc_rooted(recv)
-          emit("  sp_FloatArray_push(" + rc + ", " + compile_arg0(nid) + ");")
+          emit_multi_push(nid, rc, "FloatArray")
           return 1
         end
         if is_ptr_array_type(rt) == 1
           rc = compile_expr_gc_rooted(recv)
-          emit("  sp_PtrArray_push(" + rc + ", " + compile_arg0(nid) + ");")
+          emit_multi_push(nid, rc, array_c_prefix(rt))
           return 1
         end
       end
