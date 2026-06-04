@@ -165,6 +165,19 @@ Every ivar listed below is round-tripped through the IR. Codegen has
 no analysis-side derivers for any of them — if analyze does not write
 the record, codegen sees the default value (`0`, `""`, `[]`).
 
+### Compiler-state declaration metadata (`SA`)
+
+`@compiler_state_classes`, `@compiler_state_kinds`, and
+`@compiler_state_names` describe class-body `compiler_state_*`
+declarations. Each position is one field: class name, kind (`int`,
+`str`, `sa`, `ia`), and bare field name.
+
+These metadata records are emitted before the declared compiler state
+itself. Codegen uses them while loading the following `INT` / `STR` /
+`SA` / `IA` rows through the synthetic typed setters, and later while
+emitting the synthetic `init_compiler_state`, `dump_compiler_state_ir`,
+and setter bodies.
+
 ### Counters / scalars (`INT`)
 
 | Ivar              | Meaning                                                                 |
@@ -253,7 +266,13 @@ is consistent with the helper API (`cls_meth_pnames_get`,
 `@ieval_class_idxs` (IA), `@ieval_body_ids` (IA),
 `@pre_execution_blocks` (IA), `@post_execution_blocks` (IA),
 `@toplevel_ivar_names`, `@toplevel_ivar_types`,
-`@lambda_var_ret_names`, `@lambda_var_ret_types`.
+`@lambda_var_ret_names`, `@lambda_var_ret_types`,
+`@compile_time_subst_keys`, `@compile_time_subst_vals`.
+
+`@compile_time_subst_keys` / `@compile_time_subst_vals` carry literal substitutions
+for compile-time class-body declarations. Keys have the form
+`<class_idx>:<method_name>:<body_id>:<blockvar>`; values are tagged
+literal payloads such as `sym:draft`, `str:name`, or `int:3`.
 
 ## Per-AST-node records
 
@@ -299,13 +318,18 @@ type is `ST` element `i`. Both arrays have the same length.
 `load_analysis_buf` processes records in the order they appear in the
 file. Order matters in two places:
 
-1. `INT @nd_count` must precede any per-node record (`T`, `NM`, `NB`,
+1. The `@compiler_state_classes`, `@compiler_state_kinds`, and
+   `@compiler_state_names` records must precede any compiler-state row
+   declared by `compiler_state_*`. The generic IR loader dispatches
+   those rows through generated typed setters, which need the metadata
+   loaded first.
+2. `INT @nd_count` must precede any per-node record (`T`, `NM`, `NB`,
    `SN`, `ST`). The loader bound-checks `nid < @nd_count` and silently
    drops records out of range; with `@nd_count` not yet set, every
    per-node record would be dropped. `dump_analysis_buf` emits
    `@nd_count` as the first scalar after the version stamp for this
    reason.
-2. Class / method tables (`SA`) load before any `T` record that names
+3. Class / method tables (`SA`) load before any `T` record that names
    a class or method type (`obj_<C>`, `class`, etc.) — codegen does
    not re-validate types at load, so a downstream consumer that calls
    `find_class_idx` against an unloaded `@cls_names` would miss. In
