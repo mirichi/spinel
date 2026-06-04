@@ -16547,6 +16547,28 @@ class Compiler
     "0"
   end
 
+ # Equality of two ptr_array elements (each a `void*` from
+ # sp_PtrArray_get) given the static element type. Typed-array elements
+ # deep-compare via their own _eq; a nested ptr_array recurses one
+ # level then falls back to identity; objects/unknown use pointer
+ # identity (matches CRuby's default `==` for objects without a custom
+ # `==`). Cast through the element struct so the helper type-checks.
+  def ptr_array_elem_eq(elem_t, ea, eb)
+    if elem_t == "int_array" || elem_t == "sym_array"
+      return "sp_IntArray_eq((sp_IntArray *)(" + ea + "), (sp_IntArray *)(" + eb + "))"
+    end
+    if elem_t == "str_array"
+      return "sp_StrArray_eq((sp_StrArray *)(" + ea + "), (sp_StrArray *)(" + eb + "))"
+    end
+    if elem_t == "float_array"
+      return "sp_FloatArray_eq((sp_FloatArray *)(" + ea + "), (sp_FloatArray *)(" + eb + "))"
+    end
+    if elem_t == "poly_array"
+      return "sp_PolyArray_eq((sp_PolyArray *)(" + ea + "), (sp_PolyArray *)(" + eb + "))"
+    end
+    "((" + ea + ") == (" + eb + "))"
+  end
+
  # Coerce one push/append argument to the array's element-slot type.
   def push_arg_expr(aid, pfx)
     if pfx == "IntArray"
@@ -32206,6 +32228,23 @@ class Compiler
       else
         return "(!sp_PolyArray_eq(" + lc + ", " + rc + "))"
       end
+    end
+ # ptr_array (array of arrays / objects): no single runtime helper can
+ # deep-compare it -- the elements are bare void* with no runtime tag --
+ # so compare element-wise inline using the statically-known element
+ # type's own equality. Restricted to same-element-type operands; a
+ # differing element type is `!=` per CRuby and falls through to FALSE.
+    if is_ptr_array_type(lt) == 1 && is_ptr_array_type(at) == 1 && ptr_array_elem_type(lt) == ptr_array_elem_type(at)
+      pe_eq = ptr_array_elem_type(lt)
+      la_eq = new_temp
+      ra_eq = new_temp
+      i_eq = new_temp
+      r_eq = new_temp
+      ge_a = "sp_PtrArray_get(" + la_eq + ", " + i_eq + ")"
+      ge_b = "sp_PtrArray_get(" + ra_eq + ", " + i_eq + ")"
+      cmp_eq = ptr_array_elem_eq(pe_eq, ge_a, ge_b)
+      pae = "({ sp_PtrArray *" + la_eq + " = (sp_PtrArray *)(" + lc + "); sp_PtrArray *" + ra_eq + " = (sp_PtrArray *)(" + rc + "); mrb_bool " + r_eq + "; if (!" + la_eq + " || !" + ra_eq + ") " + r_eq + " = (" + la_eq + " == " + ra_eq + "); else if (" + la_eq + "->len != " + ra_eq + "->len) " + r_eq + " = FALSE; else { " + r_eq + " = TRUE; for (mrb_int " + i_eq + " = 0; " + i_eq + " < " + la_eq + "->len; " + i_eq + "++) { if (!(" + cmp_eq + ")) { " + r_eq + " = FALSE; break; } } } " + r_eq + "; })"
+      return op == "==" ? pae : "(!" + pae + ")"
     end
  # `<poly_array> == [nil, nil, ...]` shape (Array.new(N) ==
  # [nil, nil, nil] etc.). The RHS array literal would
