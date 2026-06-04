@@ -16327,7 +16327,22 @@ class Compiler
                     while kk_fwd_c < arg_count_fwd
                       at_fwd_c = infer_type(arg_ids_fwd[kk_fwd_c])
                       if kk_fwd_c < ptypes_fwd_c.length
-                        ptypes_fwd_c[kk_fwd_c] = unify_call_types(ptypes_fwd_c[kk_fwd_c], at_fwd_c, arg_ids_fwd[kk_fwd_c])
+                        prev_fwd_c = ptypes_fwd_c[kk_fwd_c]
+                        unified_fwd_c = unify_call_types(prev_fwd_c, at_fwd_c, arg_ids_fwd[kk_fwd_c])
+ # The receiver type is unresolved ("int"), so this dispatch
+ # target is a GUESS -- every user class defining mname at this
+ # arity is walked, not just the real receiver's class. Lifting an
+ # int-default param to a concrete type is the intended
+ # fallback-signature fix; but letting a guessed target COLLAPSE an
+ # already-concrete param to "poly" contaminates unrelated
+ # same-named setters program-wide (a String-only `Row#body=`
+ # widened to poly because an unrelated `Response#body=` site passes
+ # a poly value through the same as-yet-int-typed local). The real
+ # target's obj-/poly-receiver branches above still unify precisely
+ # once the receiver type resolves. spinel-dev#8.
+                        if prev_fwd_c == "int" || unified_fwd_c != "poly"
+                          ptypes_fwd_c[kk_fwd_c] = unified_fwd_c
+                        end
                       end
                       kk_fwd_c = kk_fwd_c + 1
                     end
