@@ -331,6 +331,18 @@ class Compiler
     @cls_cmeth_rbs_returns = {}
     @meth_rbs_ptypes = {}
     @meth_rbs_returns = {}
+ # Module-method RBS shadow, keyed "<ModuleName>\t<method>". Filled
+ # for every seed `meth` line regardless of whether the header
+ # resolved as a class/module at seed time, so
+ # arbitrate_rbs_vs_inferred_methods can re-pin the declared ptypes
+ # onto every including class post-fixpoint -- a backstop for the
+ # non-deterministic seed-time drop where module_name_exists /
+ # find_class_idx misclassifies the module header (the env-dependent
+ # `Hash[untyped,untyped]` param over-specialization). A header that
+ # is a real class (not included anywhere) simply never matches an
+ # include list, so the extra entries are harmless.
+    @module_meth_rbs_ptypes = {}
+    @module_meth_rbs_returns = {}
  # Per-(class, cmeth) local scope tables. @nd_scope_names is
  # keyed by AST body id only; an inherited class method's body
  # is shared across subclasses, so the per-bid table gets
@@ -25546,16 +25558,30 @@ class Compiler
       elsif parts[0] == "ivar" && parts.length >= 3 && current_ci >= 0
         seed_class_ivar(current_ci, parts[1], parts[2])
         i = i + 1
-      elsif parts[0] == "meth" && parts.length >= 3 && current_ci >= 0
+      elsif parts[0] == "meth" && parts.length >= 3 && current_cls_name != ""
         mname = parts[1]
         ret = parts[2]
         ptypes_token = "-"
         if parts.length >= 4
           ptypes_token = parts[3]
         end
-        seed_class_method(current_ci, mname, ret, ptypes_token)
-        i = i + 1
-      elsif parts[0] == "meth" && parts.length >= 3 && current_is_module == 1
+ # Record the declared signature under the header name
+ # unconditionally, before the class-vs-module dispatch below.
+ # arbitrate_rbs_vs_inferred_methods re-pins from this shadow
+ # post-fixpoint, so the RBS pin survives even when the seed-time
+ # classification here is wrong on this host (module_name_exists /
+ # find_class_idx non-determinism). Class headers never match an
+ # include list, so their entries stay inert.
+        mkey = current_cls_name + "\t" + mname
+        if ptypes_token != "-" && ptypes_token != ""
+          @module_meth_rbs_ptypes[mkey] = ptypes_token
+        end
+        if ret != "-" && ret != ""
+          @module_meth_rbs_returns[mkey] = ret
+        end
+        if current_ci >= 0
+          seed_class_method(current_ci, mname, ret, ptypes_token)
+        elsif current_is_module == 1
  # Module method seed: a class that includes this module ends
  # up with the method in its @cls_meth_* after
  # reconcile_class_includes. Seed each such class so the same
@@ -25564,25 +25590,20 @@ class Compiler
  # would only seed `class Dispatch` (which has no methods in
  # spinel's table) and the include-attached copy stayed at
  # collect_all's int defaults. Issue #613.
-        mname_m = parts[1]
-        ret_m = parts[2]
-        ptypes_token_m = "-"
-        if parts.length >= 4
-          ptypes_token_m = parts[3]
-        end
-        ck = 0
-        while ck < @cls_includes.length
-          incs = @cls_includes[ck].split(";", -1)
-          ik = 0
-          while ik < incs.length
-            if incs[ik] == current_cls_name
-              seed_class_method(ck, mname_m, ret_m, ptypes_token_m)
-              ik = incs.length
-            else
-              ik = ik + 1
+          ck = 0
+          while ck < @cls_includes.length
+            incs = @cls_includes[ck].split(";", -1)
+            ik = 0
+            while ik < incs.length
+              if incs[ik] == current_cls_name
+                seed_class_method(ck, mname, ret, ptypes_token)
+                ik = incs.length
+              else
+                ik = ik + 1
+              end
             end
+            ck = ck + 1
           end
-          ck = ck + 1
         end
         i = i + 1
       elsif parts[0] == "cmeth" && parts.length >= 3 && current_cls_name != ""
@@ -26284,6 +26305,62 @@ class Compiler
         rets[midx] = rbs_ret
         @cls_meth_returns[ci] = rets.join(";")
         @cls_meth_return_cache = {}
+      end
+    }
+ # Module-method backstop. Re-pin each RBS-declared module method
+ # onto every class that includes the module, looking the method up
+ # now (post-fixpoint) when reconcile_class_includes has attached the
+ # include-copy and cls_find_method_direct's cache is stable. This
+ # makes the RBS pin independent of the seed-time include-seed, which
+ # is dropped non-deterministically on some hosts when
+ # module_name_exists / find_class_idx misclassify the module header
+ # -- the cause of the env-dependent `Hash[untyped,untyped]` param
+ # over-specialization (sp_SymPolyHash* vs the str_int_hash callers).
+    @module_meth_rbs_ptypes.each_pair { |mk, rbs_pt|
+      mparts = mk.split("\t", -1)
+      if mparts.length >= 2
+        modname = mparts[0]
+        methname = mparts[1]
+        ck = 0
+        while ck < @cls_includes.length
+          incs = @cls_includes[ck].split(";", -1)
+          if not_in(modname, incs) == 0 && ck < @cls_meth_ptypes.length
+            midx = cls_find_method_direct(ck, methname)
+            if midx >= 0
+              all_pt = @cls_meth_ptypes[ck].split("|", -1)
+              if midx < all_pt.length && all_pt[midx] != rbs_pt
+                all_pt[midx] = rbs_pt
+                @cls_meth_ptypes[ck] = all_pt.join("|")
+                @cls_meth_ptypes_version = @cls_meth_ptypes_version + 1
+              end
+              @cls_meth_rbs_ptypes[ck.to_s + "|" + midx.to_s] = rbs_pt
+            end
+          end
+          ck = ck + 1
+        end
+      end
+    }
+    @module_meth_rbs_returns.each_pair { |mk, rbs_ret|
+      mparts = mk.split("\t", -1)
+      if mparts.length >= 2
+        modname = mparts[0]
+        methname = mparts[1]
+        ck = 0
+        while ck < @cls_includes.length
+          incs = @cls_includes[ck].split(";", -1)
+          if not_in(modname, incs) == 0 && ck < @cls_meth_returns.length
+            midx = cls_find_method_direct(ck, methname)
+            if midx >= 0
+              rets = @cls_meth_returns[ck].split(";", -1)
+              if midx < rets.length && rets[midx] != rbs_ret
+                rets[midx] = rbs_ret
+                @cls_meth_returns[ck] = rets.join(";")
+                @cls_meth_return_cache = {}
+              end
+            end
+          end
+          ck = ck + 1
+        end
       end
     }
  # Class methods (cmeth).
