@@ -36222,7 +36222,7 @@ class Compiler
  # Without these arms the literal `{}` would always emit
  # sp_StrIntHash_new() and the assignment would mismatch the
  # promoted local's struct type.
-      if vt == "str_str_hash" || vt == "int_str_hash" || vt == "sym_int_hash" || vt == "sym_str_hash" || vt == "str_poly_hash" || vt == "sym_poly_hash" || vt == "poly_poly_hash"
+      if vt == "str_str_hash" || vt == "int_str_hash" || vt == "int_int_hash" || vt == "sym_int_hash" || vt == "sym_str_hash" || vt == "str_poly_hash" || vt == "sym_poly_hash" || vt == "poly_poly_hash"
  # `Hash.new(default)` against a poly-widened LV: the
  # compile_constructor_expr emit picks the variant from the
  # default's type, but if the LV later widened (e.g. mixed-key
@@ -36267,6 +36267,8 @@ class Compiler
             elsif vt == "int_str_hash"
               @needs_int_str_hash = 1
               emit("  " + vref + " = sp_IntStrHash_new();")
+            elsif vt == "int_int_hash"
+              emit("  " + vref + " = sp_IntIntHash_new();")
             elsif vt == "sym_int_hash"
               @needs_sym_int_hash = 1
               emit("  " + vref + " = sp_SymIntHash_new();")

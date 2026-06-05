@@ -20561,7 +20561,7 @@ class Compiler
  # `@h[k] = v`. Returns "" when the (key, value) pair has no
  # matching concrete container — the caller leaves the ivar type
  # alone in that case.
-  def promote_empty_hash_for(kt, vt)
+  def promote_empty_hash_for(kt, vt, key_nid = -1)
     if kt == "string"
       if vt == "string"
         return "str_str_hash"
@@ -20584,16 +20584,19 @@ class Compiler
       if vt == "string"
         return "int_str_hash"
       end
- # `kt == "int"` with `vt == "int"` would map to int_int_hash, but
- # promoting an empty-`{}` local/ivar here is incomplete: the slot's
- # decl is updated while the `{}` construction and `[]=` write sites
- # still emit the str_int_hash default (the promotion doesn't
- # propagate to the RHS), yielding a type-mismatched build. It is
- # also ambiguous with the analyzer's first-pass "int" fallback for
- # an unresolved key expression. Defer; int-keyed-int-valued hash
- # *literals* (`{1 => 2}`) are inferred directly by
- # infer_hash_val_type and don't rely on this promotion.
+ # `kt == "int"` with `vt == "int"`: promote to int_int_hash only
+ # when the key is a genuine Integer *literal* (`h[1] = 5`). `kt ==
+ # "int"` is also the analyzer's first-pass fallback for an
+ # unresolved key expression (e.g. `h[parts[0]] = 1`, whose key only
+ # resolves to a String on a later pass), so promoting on the bare
+ # type string would store a String key into an int_int_hash. An
+ # IntegerNode literal key is unambiguous. Without this the empty-{}
+ # local stays str_int_hash and the int key reaches sp_StrIntHash_set
+ # as a `const char *`, dereferenced -> segfault.
       if vt == "int" || vt == "bool" || vt == "nil"
+        if key_nid >= 0 && @nd_type[key_nid] == "IntegerNode"
+          return "int_int_hash"
+        end
         return ""
       end
     end
@@ -21349,7 +21352,7 @@ class Compiler
             iow_iname = @nd_name[iow_recv]
             iow_cur = cls_ivar_type(@current_class_idx, iow_iname)
             if iow_cur == "str_int_hash"
-              iow_promoted = promote_empty_hash_for(iow_kt, iow_vt)
+              iow_promoted = promote_empty_hash_for(iow_kt, iow_vt, iow_args[0])
               if iow_promoted != "" && iow_promoted != iow_cur
                 replace_ivar_type(@current_class_idx, iow_iname, iow_promoted)
                 if iow_promoted == "str_poly_hash" || iow_promoted == "sym_poly_hash"
@@ -21365,7 +21368,7 @@ class Compiler
             iow_lname = @nd_name[iow_recv]
             iow_cur = find_var_type(iow_lname)
             if iow_cur == "str_int_hash"
-              iow_promoted = promote_empty_hash_for(iow_kt, iow_vt)
+              iow_promoted = promote_empty_hash_for(iow_kt, iow_vt, iow_args[0])
               if iow_promoted != "" && iow_promoted != iow_cur
                 set_var_type(iow_lname, iow_promoted)
                 if iow_promoted == "str_poly_hash" || iow_promoted == "sym_poly_hash"
@@ -21496,7 +21499,7 @@ class Compiler
             if ai.length >= 2
               kt = infer_type(ai[0])
               vt = infer_type(ai[ai.length - 1])
-              promoted = promote_empty_hash_for(kt, vt)
+              promoted = promote_empty_hash_for(kt, vt, ai[0])
               if promoted != "" && promoted != cur_t
  # Direct assign: update_ivar_type would widen the
  # existing-vs-new mismatch to `poly`, but we know this
@@ -31566,7 +31569,7 @@ class Compiler
               if iow_promotable && iow_ki < @scan_empty_hash_flags.length && @scan_empty_hash_flags[iow_ki] == "1"
                 iow_kt = scan_locals_arg_type(iow_aargs[0], names, types, params)
                 iow_vt = scan_locals_arg_type(iow_val, names, types, params)
-                iow_promoted = promote_empty_hash_for(iow_kt, iow_vt)
+                iow_promoted = promote_empty_hash_for(iow_kt, iow_vt, iow_aargs[0])
                 if iow_promoted != "" && iow_promoted != iow_cur
                   types[iow_ki] = iow_promoted
                   if iow_promoted == "str_poly_hash" || iow_promoted == "sym_poly_hash"
@@ -31636,7 +31639,7 @@ class Compiler
  # `types[]`. Prefer that local types array when
  # the argument is a LocalVariableReadNode we
  # recorded; fall back to infer_type otherwise.
-                      promoted = promote_empty_hash_for(key_type, val_type)
+                      promoted = promote_empty_hash_for(key_type, val_type, aargs[0])
                     else
  # Non-empty literal init followed by a `[]=` write whose
  # value (or key) type doesn't fit the current variant's
