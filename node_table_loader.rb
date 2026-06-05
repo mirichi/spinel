@@ -10,10 +10,7 @@ class NodeTableLoader
   end
 
   def read_text_ast(data)
- # Keep the split delimiter rooted across sp_str_split allocations.
- # An inline 10.chr temporary can be swept mid-split under GC pressure.
-    nl = 10.chr
-    lines = data.split(nl)
+    lines = data.split(10.chr)
  # Pass 1: find max node ID
     max_id = 0
     i = 0

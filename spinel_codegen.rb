@@ -22148,7 +22148,7 @@ class Compiler
       str_elem_sb = (mname == "chars" || mname == "lines")
       if mname == "chars"
         @needs_str_array = 1
-        emit("  sp_StrArray *" + arr_tmp_sb + " = sp_str_split(" + self_tmp_sb + ", \"\");")
+        emit("  sp_StrArray *" + arr_tmp_sb + " = sp_str_split(" + self_tmp_sb + ", sp_str_empty);")
       elsif mname == "lines"
         @needs_str_array = 1
         emit("  sp_StrArray *" + arr_tmp_sb + " = sp_str_lines(" + self_tmp_sb + ");")
@@ -22874,7 +22874,7 @@ class Compiler
     if mname == "chars"
       @needs_str_array = 1
       @needs_gc = 1
-      return "sp_str_split(" + rc + ", \"\")"
+      return "sp_str_split(" + rc + ", sp_str_empty)"
     end
  # Issue #903: String#codepoints returns int_array of codepoints.
     if mname == "codepoints"
@@ -32712,9 +32712,7 @@ class Compiler
         end
         append_deferred_json_record_line("    " + json_append_escaped_string(out, c_string_literal(m)))
         append_deferred_json_record_line("    " + json_append_token(out, ":"))
- # Keep the split delimiter rooted across sp_str_split allocations.
-        app_nl = 10.chr
-        app_lines = app.split(app_nl, -1)
+        app_lines = app.split(10.chr, -1)
         ak = 0
         while ak < app_lines.length
           if app_lines[ak] != ""
@@ -51311,10 +51309,7 @@ class Compiler
  # parsed AST first (read_text_ast) so the @nd_inferred_type cache
  # has slots to populate.
   def load_analysis_buf(data)
- # Keep the split delimiter rooted across sp_str_split allocations.
- # An inline 10.chr temporary can be swept mid-split under GC pressure.
-    nl = 10.chr
-    lines = data.split(nl)
+    lines = data.split(10.chr)
     i = 0
     while i < lines.length
       line = lines[i]
