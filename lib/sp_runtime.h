@@ -2,17 +2,12 @@
 #ifndef SP_RUNTIME_H
 #define SP_RUNTIME_H
 
-#ifdef __APPLE__
-/* getcontext/makecontext/swapcontext are gated behind _XOPEN_SOURCE on
-   Darwin and marked deprecated since 10.6. _DARWIN_C_SOURCE re-enables
-   Darwin extensions (MAP_ANON, etc.) that _XOPEN_SOURCE alone would hide.
-   Suppress the deprecation warning so -Werror builds pass — we knowingly
-   use these APIs because Spinel's Fiber implementation depends on them. */
-#define _XOPEN_SOURCE 600
-#define _DARWIN_C_SOURCE
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
+/* Platform feature-test macros (_XOPEN_SOURCE for Darwin's ucontext, etc.)
+   live at the top of sp_types.h so every translation unit that includes it --
+   the generated TU here, and the standalone libspinel_rt.a units like
+   sp_fiber.c that reach <ucontext.h> via sp_fiber.h -> sp_gc.h -> sp_types.h --
+   define them before the first system header. Must precede <stdio.h>. */
+#include "sp_types.h"
 
 #include <stdio.h>
 #include <stdlib.h>
