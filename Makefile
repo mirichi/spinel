@@ -168,7 +168,7 @@ NODE_TABLE_LOADER_STAMP := build/stamps/node_table_loader.rb.stamp
 COMPILER_HELPERS_STAMP := build/stamps/compiler_helpers.rb.stamp
 PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
 
-.PHONY: all parse bootstrap bootstrap-fixpoint fast-bootstrap codegen rbs_extract rbs-test regen-rbs-expected test retest fast-test clean-test-results regen-expected bench optcarrot gate check gate-legs gate-test gate-bench gate-optcarrot clean install uninstall deps FORCE
+.PHONY: all parse bootstrap bootstrap-fixpoint fast-bootstrap codegen rbs_extract rbs-test analyze-fail-test regen-rbs-expected test retest fast-test clean-test-results regen-expected bench optcarrot gate check gate-legs gate-test gate-bench gate-optcarrot clean install uninstall deps FORCE
 
 # `make all` includes spinel_rbs_extract when vendor/rbs has been
 # fetched (via `make deps`). Without vendor/rbs the extractor is
@@ -467,6 +467,7 @@ fast-bootstrap: spinel_parse$(EXE) $(SP_RT_LIB)
 # ---- Test ----
 
 TESTS := $(wildcard test/*.rb)
+ANALYZE_FAIL_TESTS := $(sort $(wildcard test/analyze_fail/*.rb))
 # Mode-incompatible tests: int_overflow_raises pins raise-mode semantics
 # (RangeError on overflow); under --int-overflow=promote the same code
 # auto-promotes to bigint and the expected output diverges by design.
@@ -484,7 +485,7 @@ TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 # `make test` is incremental via mtime tracking on .ok files;
 # `make retest` wipes them for a forced rerun. The rbs-test prereq
 # golden-checks the RBS extractor (cheap, runs every invocation).
-test: rbs-test $(TEST_TARGETS)
+test: rbs-test analyze-fail-test $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
 	@pass=$$(grep -l '^PASS' build/test-results/*.ok 2>/dev/null | wc -l); \
@@ -549,6 +550,45 @@ regen-rbs-expected: spinel_rbs_extract$(EXE)
 	done
 endif
 
+# Analyze-fail fixtures are intentionally rejected during the
+# spinel_analyze phase. They cover semantic subset limits that should
+# produce a stable diagnostic, not a generated binary.
+analyze-fail-test: spinel_parse$(EXE) spinel_analyze$(EXE)
+	@mkdir -p build/analyze-fail-results
+	@fail=0; n=0; \
+	for f in $(ANALYZE_FAIL_TESTS); do \
+	  n=$$((n+1)); \
+	  bn=$$(basename "$$f" .rb); \
+	  tmpdir=$$(mktemp -d /tmp/spinel-analyze-fail.XXXXXX); \
+	  ast=$$tmpdir/test.ast; ir=$$tmpdir/test.ir; err=$$tmpdir/analyze.err; \
+	  exp="$${f%.rb}.stderr.expected"; \
+	  if ! ./spinel_parse$(EXE) "$$f" "$$ast" >/dev/null 2>"$$tmpdir/parse.err"; then \
+	    echo "analyze-fail ERR: $$bn (parse failed)"; \
+	    cat "$$tmpdir/parse.err"; \
+	    fail=1; rm -rf "$$tmpdir"; continue; \
+	  fi; \
+	  if ./spinel_analyze$(EXE) "$$ast" "$$ir" >/dev/null 2>"$$err"; then \
+	    echo "analyze-fail FAIL: $$bn (analyze succeeded)"; \
+	    fail=1; rm -rf "$$tmpdir"; continue; \
+	  fi; \
+	  if [ ! -f "$$exp" ]; then \
+	    echo "analyze-fail ERR: $$bn missing $$exp"; \
+	    fail=1; rm -rf "$$tmpdir"; continue; \
+	  fi; \
+	  LC_ALL=C sed 's/\r$$//' "$$exp" > "$$tmpdir/expected.n"; \
+	  LC_ALL=C sed 's/\r$$//' "$$err" > "$$tmpdir/actual.n"; \
+	  if cmp -s "$$tmpdir/expected.n" "$$tmpdir/actual.n"; then \
+	    echo PASS > "build/analyze-fail-results/$$bn.ok"; \
+	  else \
+	    echo "analyze-fail FAIL: $$bn"; \
+	    diff -u "$$tmpdir/expected.n" "$$tmpdir/actual.n" || true; \
+	    fail=1; \
+	  fi; \
+	  rm -rf "$$tmpdir"; \
+	done; \
+	echo "Analyze-fail tests: $$n pass"; \
+	if [ $$fail -ne 0 ]; then exit 1; fi
+
 # The .ok target is the test's stamp; mtime tracking gives per-test
 # caching for free. Order-only spinel_parse$(EXE) / spinel_analyze$(EXE)
 # / spinel_codegen$(EXE) stop a bootstrap relink from invalidating every test.
@@ -597,7 +637,7 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(ANALYZE_STAMP
 	rm -rf "$$tmpdir"
 
 clean-test-results:
-	@rm -rf build/test-results
+	@rm -rf build/test-results build/analyze-fail-results
 
 # ---- Expected-output regeneration ----
 # Capture each test's reference Ruby output into test/<name>.rb.expected.

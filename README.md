@@ -365,7 +365,9 @@ classes, `def`, `attr_accessor`, `if`/`case`/`while`,
 `each`/`map`/`select`, `yield`, `begin`/`rescue`, String/Array/Hash
 operations, File I/O.
 
-No metaprogramming, no `eval`, no `require` in either backend.
+No dynamic metaprogramming or `eval` in either backend. Compile-time class-body
+declarations with compile-time-known literal inputs are supported for
+Struct-style method synthesis.
 
 ### What spinel_analyze does
 
@@ -529,7 +531,8 @@ them behind compile-time switches.
 ## Limitations
 
 - **No eval**: `eval`, `instance_eval`, `class_eval`
-- **No metaprogramming**: `send`, `method_missing`, `define_method` (dynamic)
+- **No dynamic metaprogramming**: `send`, `method_missing`, dynamic
+  `define_method`
 - **No threads**: `Thread`, `Mutex` (Fiber is supported)
 - **No encoding**: assumes UTF-8/ASCII
 - **No general lambda calculus**: deeply nested `-> x { }` with `[]` calls

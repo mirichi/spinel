@@ -1271,11 +1271,40 @@ static sp_IntIntHash*sp_IntArray_tally_int(sp_IntArray*a){sp_IntIntHash*h=sp_Int
 
 /* Reuse an existing StrArray for split, avoiding GC alloc.
    Clears a->len and refills.  Substring strings are still malloc'd. */
+static inline void sp_str_split_push(sp_StrArray*a,const char*p,size_t n){
+  char*r=sp_str_alloc_raw(n+1);
+  memcpy(r,p,n);
+  r[n]=0;
+  sp_StrArray_push(a,r);
+}
 static void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
-  a->len=0;if(*s==0)return;size_t sl=strlen(sep);
-  if(sl==0){const char*p=s;while(*p){int cn=sp_utf8_advance(p);char*c=sp_str_alloc_raw(cn+1);memcpy(c,p,cn);c[cn]=0;sp_StrArray_push(a,c);p+=cn;}return;}
-  const char*p=s;while(1){const char*f=strstr(p,sep);if(!f){char*r=sp_str_alloc_raw(strlen(p)+1);strcpy(r,p);sp_StrArray_push(a,r);break;}
-  size_t n=f-p;char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);p=f+sl;}}
+  SP_GC_ROOT(a);
+  SP_GC_ROOT(s);
+  SP_GC_ROOT(sep);
+  a->len=0;
+  if(*s==0)return;
+  size_t sl=strlen(sep);
+  if(sl==0){
+    const char*p=s;
+    while(*p){
+      int cn=sp_utf8_advance(p);
+      sp_str_split_push(a,p,(size_t)cn);
+      p+=cn;
+    }
+    return;
+  }
+  const char*p=s;
+  while(1){
+    const char*f=strstr(p,sep);
+    if(!f){
+      sp_str_split_push(a,p,strlen(p));
+      break;
+    }
+    size_t n=f-p;
+    sp_str_split_push(a,p,n);
+    p=f+sl;
+  }
+}
 /* Extract the n-th field (0-based) from s split by sep, without
    allocating a full StrArray.  Returns a newly allocated string.
    If the field doesn't exist, returns "". */
@@ -1419,7 +1448,13 @@ static const char*sp_str_chop(const char*s){if(!s)return sp_str_empty;size_t l=s
 static mrb_bool sp_str_include(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;return strstr(s,sub)!=NULL;}
 static mrb_bool sp_str_start_with(const char*s,const char*p){if(!p)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;return strncmp(s,p,strlen(p))==0;}
 static mrb_bool sp_str_end_with(const char*s,const char*suf){if(!suf)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;size_t ls=strlen(s),lsuf=strlen(suf);if(lsuf>ls)return FALSE;return strcmp(s+ls-lsuf,suf)==0;}
-static sp_StrArray*sp_str_split(const char*s,const char*sep){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;size_t sl=strlen(sep);if(sl==0){const char*p=s;while(*p){int cn=sp_utf8_advance(p);char*c=sp_str_alloc_raw(cn+1);memcpy(c,p,cn);c[cn]=0;sp_StrArray_push(a,c);p+=cn;}return a;}const char*p=s;while(1){const char*f=strstr(p,sep);if(!f){char*r=sp_str_alloc_raw(strlen(p)+1);strcpy(r,p);sp_StrArray_push(a,r);break;}size_t n=f-p;char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);p=f+sl;}return a;}
+static sp_StrArray*sp_str_split(const char*s,const char*sep){
+  SP_GC_ROOT(s);
+  SP_GC_ROOT(sep);
+  sp_StrArray*a=sp_StrArray_new();
+  sp_str_split_into(a,s,sep);
+  return a;
+}
 /* Same as sp_str_split but removes trailing empty strings
    (CRuby default limit behavior: split without limit drops
    trailing empties; split(sep, -1) keeps them). */
@@ -1431,12 +1466,61 @@ static sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){sp_St
    empties. Empty separator works the same as the no-limit path --
    splits into Unicode characters; the limit caps the array.
    Issue #619 puzzle 2. */
-static sp_StrArray*sp_str_split_limit(const char*s,const char*sep,mrb_int n){if(n==0)return sp_str_split_drop_trailing(s,sep);if(n<0)return sp_str_split(s,sep);sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;size_t sl=strlen(sep);if(sl==0){const char*p=s;mrb_int k=0;while(*p&&k<n-1){int cn=sp_utf8_advance(p);char*c=sp_str_alloc_raw(cn+1);memcpy(c,p,cn);c[cn]=0;sp_StrArray_push(a,c);p+=cn;k++;}if(*p){char*r=sp_str_alloc_raw(strlen(p)+1);strcpy(r,p);sp_StrArray_push(a,r);}return a;}const char*p=s;mrb_int k=0;while(k<n-1){const char*f=strstr(p,sep);if(!f)break;size_t m=f-p;char*r=sp_str_alloc_raw(m+1);memcpy(r,p,m);r[m]=0;sp_StrArray_push(a,r);p=f+sl;k++;}char*r=sp_str_alloc_raw(strlen(p)+1);strcpy(r,p);sp_StrArray_push(a,r);return a;}
+static sp_StrArray*sp_str_split_limit(const char*s,const char*sep,mrb_int n){
+  if(n==0)return sp_str_split_drop_trailing(s,sep);
+  if(n<0)return sp_str_split(s,sep);
+  SP_GC_ROOT(s);
+  SP_GC_ROOT(sep);
+  sp_StrArray*a=sp_StrArray_new();
+  SP_GC_ROOT(a);
+  if(*s==0)return a;
+  size_t sl=strlen(sep);
+  if(sl==0){
+    const char*p=s;
+    mrb_int k=0;
+    while(*p&&k<n-1){
+      int cn=sp_utf8_advance(p);
+      sp_str_split_push(a,p,(size_t)cn);
+      p+=cn;
+      k++;
+    }
+    if(*p){
+      sp_str_split_push(a,p,strlen(p));
+    }
+    return a;
+  }
+  const char*p=s;
+  mrb_int k=0;
+  while(k<n-1){
+    const char*f=strstr(p,sep);
+    if(!f)break;
+    size_t m=f-p;
+    sp_str_split_push(a,p,m);
+    p=f+sl;
+    k++;
+  }
+  sp_str_split_push(a,p,strlen(p));
+  return a;
+}
 /* `s.split` / `s.split(nil)` -- whitespace mode: split on runs of
    ASCII whitespace, skip leading whitespace. Issue #507: the no-arg
    form previously emitted `sp_str_split(s, 0)` and segfaulted at
    strlen(NULL). */
-static sp_StrArray*sp_str_split_ws(const char*s){sp_StrArray*a=sp_StrArray_new();const char*p=s;while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;while(*p){const char*start=p;while(*p&&!(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v'))p++;size_t n=p-start;char*r=sp_str_alloc_raw(n+1);memcpy(r,start,n);r[n]=0;sp_StrArray_push(a,r);while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;}return a;}
+static sp_StrArray*sp_str_split_ws(const char*s){
+  SP_GC_ROOT(s);
+  sp_StrArray*a=sp_StrArray_new();
+  SP_GC_ROOT(a);
+  const char*p=s;
+  while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;
+  while(*p){
+    const char*start=p;
+    while(*p&&!(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v'))p++;
+    size_t n=p-start;
+    sp_str_split_push(a,start,n);
+    while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;
+  }
+  return a;
+}
 /* String#lines: split on \n but PRESERVE the trailing newline on each
    line (CRuby semantics). The last line keeps its terminator if present;
    if absent, it just stops there. Empty string returns an empty array.

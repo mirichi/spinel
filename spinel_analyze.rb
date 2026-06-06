@@ -16,6 +16,12 @@ class Compiler
 
 
   def initialize
+    init_compiler_state
+
+    @compiler_state_classes = "".split(",", -1)
+    @compiler_state_kinds = "".split(",", -1)
+    @compiler_state_names = "".split(",", -1)
+
     @out_lines = "".split(",", -1)
     @out = ""
     @deferred_tuple = ""
@@ -126,7 +132,6 @@ class Compiler
  # @nd_inferred_type. Switches infer_type to consult the cache
  # first; analysis iterations themselves keep recomputing because
  # cached values would otherwise pin to stale converging types.
-    @analysis_frozen = 0
 
  # Per-scope local-decls cache. Indexed by the body node id (bid)
  # of the scope: top-level main uses @root_id, method bodies use
@@ -142,41 +147,24 @@ class Compiler
     @nd_rat_num = "".split(",", -1)
     @nd_rat_den = "".split(",", -1)
 
-    @nd_count = 0
-    @root_id = 0
-
  # Issue: unresolved-call warnings deduped by "<mname>:<recv_type>"
  # so a hot call site that fails to resolve emits one warning, not N.
     @unresolved_call_warnings = "".split(",", -1)
 
  # ---- Top-level methods (parallel arrays) ----
-    @meth_names = "".split(",", -1)
-    @meth_param_names = "".split(",", -1)
-    @meth_param_types = "".split(",", -1)
  # Per-param "deferred element" flag: "1" means at least one caller
  # passed an empty `[]` literal (or a local that itself was assigned
  # an empty literal). Used by the param body-push promotion pass
  # to decide whether the param's int_array can be safely
  # promoted to a concrete typed-array based on body usage.
-    @meth_param_empty = "".split(",", -1)
-    @meth_return_types = "".split(",", -1)
-    @meth_body_ids = []
-    @meth_has_defaults = "".split(",", -1)
-    @meth_rest_index = []
  # Position of the **kwrest param in @meth_param_names (-1 if no
  # kwrest). Lets call-site arg-packing detect the slot that should
  # receive a packed sym_poly_hash of unmatched keyword args.
-    @meth_kwrest_index = []
 
  # ---- Classes (parallel arrays) ----
-    @cls_names = "".split(",", -1)
-    @cls_parents = "".split(",", -1)
  # per-class list of included module
  # names, semicolon-separated. Modules live in @module_names so
  # the resolution from name -> id is deferred to codegen time.
-    @cls_includes = "".split(",", -1)
-    @cls_ivar_names = "".split(",", -1)
-    @cls_ivar_types = "".split(",", -1)
  # Per-ivar flag: was the ivar's first scanned write a definite
  # literal (IntegerNode / FloatNode / StringNode / ...)? Used to
  # distinguish concrete-literal writes from best-guess inference
@@ -184,7 +172,6 @@ class Compiler
  # definite — non-recognized CallNodes default to "int" through
  # infer_ivar_init_type and a naive trust of that produces
  # spurious disagreement.
-    @cls_ivar_init_definite = "".split(",", -1)
  # Per-(class, ivar) accumulator of distinct concrete writer
  # types observed by scan_writer_calls. After all writer-scan
  # iterations finish, slots with 2+ distinct entries widen to
@@ -196,7 +183,6 @@ class Compiler
  # comma-separated list of distinct types per ivar; the outer
  # dimension is semicolon-separated and parallel to
  # `@cls_ivar_names[ci]`.
-    @cls_ivar_observed_types = "".split(",", -1)
  # Per-class shadow of `@cls_ivar_types`, populated only by
  # `apply_rbs_seeds`. Each entry mirrors `@cls_ivar_names[ci]`'s
  # `;`-separated layout: an RBS-pinned slot carries its declared
@@ -274,28 +260,16 @@ class Compiler
     @cls_cmeth_params_version = 0
  # Top-level (script-scope) ivars. Lowered to `static` file-scope
  # globals because `main()` / top-level `def` bodies have no `self`.
-    @toplevel_ivar_names = "".split(",", -1)
-    @toplevel_ivar_types = "".split(",", -1)
-    @cls_meth_names = "".split(",", -1)
-    @cls_meth_params = "".split(",", -1)
-    @cls_meth_ptypes = "".split(",", -1)
-    @cls_meth_returns = "".split(",", -1)
-    @cls_meth_bodies = "".split(",", -1)
-    @cls_meth_defaults = "".split(",", -1)
  # Splat-param ("def f(*a)") rest-slot tracking for instance methods.
  # Sparse, name-keyed (NOT position-aligned with the per-method
  # arrays) so it adds no desync surface: @cls_rest_keys holds
  # "<cname>#<mname>" and @cls_rest_idxs the rest param's position.
  # Only methods with a splat get an entry; lookup returns -1 otherwise.
-    @cls_rest_keys = "".split(",", -1)
-    @cls_rest_idxs = []
  # Synthetic module class methods (`<Mod>_cls_<name>`) that no
  # in-unit call site reaches; stubbed at emit time so their bodies
  # don't warn (#1062). Computed by compute_dead_module_class_methods.
-    @dead_mod_cls_meths = "".split(",", -1)
  # Mirror of @meth_param_empty for class methods. Pipe-separated by
  # method, comma-separated by param. .
-    @cls_meth_ptypes_empty = "".split(",", -1)
  # Per-class prepend chain table. Issue #720 follow-up: when
  # `prepend M` overrides C's existing method `m`, the original
  # body is registered as a synthetic shadow method on C named
@@ -306,18 +280,9 @@ class Compiler
  # the chain. Higher idx = closer to the active method; super
  # from active calls highest idx, super from shadow at idx k
  # calls k-1, super from idx 0 falls to the parent chain.
-    @cls_meth_prep_chain = "".split(",", -1)
  # When 1, append_cls_meth suppresses its redefinition warning
  # (the overwrite is the explicit semantics of `prepend M`).
     @prep_overwrite_in_progress = 0
-    @cls_attr_readers = "".split(",", -1)
-    @cls_attr_writers = "".split(",", -1)
-    @cls_cmeth_names = "".split(",", -1)
-    @cls_cmeth_params = "".split(",", -1)
-    @cls_cmeth_ptypes = "".split(",", -1)
-    @cls_cmeth_returns = "".split(",", -1)
-    @cls_cmeth_bodies = "".split(",", -1)
-    @cls_cmeth_defaults = "".split(",", -1)
  # RBS shadow tables for method ptypes / returns (#626 sub-issue 2
  # phase 2). Hash-keyed lookups -- RBS info is sparse compared to
  # the dense per-class method tables, so we don't bother mirroring
@@ -353,14 +318,10 @@ class Compiler
  # ";" indexes by cmj (mirrors @cls_cmeth_bodies); inner
  # separator "|" matches @nd_scope_names' format so the codegen
  # consumer can split into the same (lnames, ltypes) pair.
-    @cls_cmeth_scope_names = "".split(",", -1)
-    @cls_cmeth_scope_types = "".split(",", -1)
-    @cls_is_value_type = []
  # SRA (scalar replacement of aggregates) eligibility flag per class.
  # Classes marked here can have their non-escaping instances replaced
  # with individual scalar locals. Distinct from value_type: SRA allows
  # attr_writer (mutation is rewritten to per-field assignment).
-    @cls_is_sra = []
  # Direct `Class.new` allocation sites that were cloned into a
  # per-site class by collect_implicit_new_specializations. The
  # source syntax stays ordinary Ruby; inference sees the cloned
@@ -375,8 +336,6 @@ class Compiler
     @implicit_new_site_arg_type_csvs = "".split(",", -1)
 
  # ---- Constants (parallel arrays) ----
-    @const_names = "".split(",", -1)
-    @const_types = "".split(",", -1)
 
  # ---- Class variables (@@var) ----
  # Per-(class,name) parallel arrays. Storage is a per-class C global
@@ -386,20 +345,11 @@ class Compiler
  # are a known footgun (mame, ko1, et al. publicly disrecommend
  # them); the simpler per-class semantics fit Spinel's compile-time
  # storage model better. Documented in the test fixtures.
-    @cvar_names = "".split(",", -1)
-    @cvar_types = "".split(",", -1)
  # Compile-time literal initializer per cvar, if the class-body
  # write was `@@x = <literal>`. "" means "use type-default". This
  # is necessary because Spinel doesn't run class-body statements
  # at startup, so any initializer that's not a fold-able literal
  # leaves the cvar at its type-default until first write.
-    @cvar_init_values = "".split(",", -1)
-    @const_expr_ids = []
- # Parallel to @const_names: 1 when const `<X>` is compound-assigned
- # (`X += 2`, `X ||= 2`, ...) somewhere, so its read sites must load the
- # live `cst_<X>` slot instead of folding to the declaration literal.
-    @const_mutated = []
-    @const_scope_names = "".split(",", -1)
  # Parallel to @const_names: when const `<X>`'s init RHS is the
  # canonical `<Class>.new(...)` shape, record `<Class>` here so
  # codegen can emit the per-const in-progress flag + read-side
@@ -407,7 +357,6 @@ class Compiler
  # initialized slot during the same RHS evaluation. Empty string
  # means "no guard needed" (other init shape — literal, helper-
  # built, etc.). Issue #646.
-    @const_init_class = "".split(",", -1)
 
  # `redo` -- labeled-goto target stack. Each loop emitter pushes
  # a fresh label name when entering an iteration body and pops on
@@ -419,25 +368,19 @@ class Compiler
  # Populated by collect_all from AliasGlobalVariableNode
  # statements; consulted by sanitize_gvar / scan_features /
  # infer_type so $copy and $orig share storage.
-    @galias_new = "".split(",", -1)
-    @galias_old = "".split(",", -1)
 
  # `undef foo` -- per-(class, method-name) registry of removed
  # methods. Recorded by collect_class_method_undef; compile-time
  # enforcement of "call after undef fails" is currently a
  # documented out-of-scope.
-    @undef_class_idx = []
-    @undef_method = "".split(",", -1)
 
  # `BEGIN { ... }` bodies, in source-encounter order. Hoisted to
  # the top of main() during emit_main.
-    @pre_execution_blocks = []
 
  # `END { ... }` bodies, in source-encounter order. Each emits a
  # static C function; main() startup registers them via atexit()
  # which naturally invokes handlers LIFO -- matches CRuby's
  # reverse-of-source-order END execution.
-    @post_execution_blocks = []
 
  # ---- Scope stack for local variables ----
     @scope_names = "".split(",", -1)
@@ -493,31 +436,20 @@ class Compiler
     @self_override = ""
 
  # Yield/block tracking (parallel with meth_names / cls_meth_names)
-    @meth_has_yield = []
-    @cls_meth_has_yield = "".split(",", -1)
  # #709: per-class type a yielding `initialize`'s `yield` returns,
  # taken from the first `C.new(...) { block }` site's block tail
  # expr. Keyed by class name. Drives `@ivar.push(yield)` ivar typing.
     @cls_ctor_yield_ret = {}
+
+ # Literal substitutions for compile-time class-body declarations.
+ # Literal-unrolled define_method bodies can share one AST body id across
+ # several synthesized methods, so key by class + method + body + local name.
 
  # Block function accumulator (emitted before forward decls)
     @block_funcs = ""
     @block_counter = 0
 
  # Feature flags
-    @needs_gc = 0
-    @needs_system = 0
-    @needs_int_array = 0
-    @needs_float_array = 0
-    @tuple_types = "".split(",", -1)
-    @needs_str_array = 0
-    @needs_str_int_hash = 0
-    @needs_str_str_hash = 0
-    @needs_int_str_hash = 0
-    @needs_sym_int_hash = 0
-    @needs_sym_str_hash = 0
-    @needs_sym_intern = 0
-    @needs_setjmp = 0
  # Stack of (class_var, msg_var) pairs naming the snapshot locals
  # emitted at the top of each rescue body. A bare `raise` inside a
  # rescue body re-raises with the snapshotted class+message rather
@@ -542,19 +474,11 @@ class Compiler
  # in-flight exception after an ensure body runs on the
  # exception path of a `begin..ensure..end`.
     @ensure_emit_depth = 0
-    @needs_mutable_str = 0
-    @needs_rb_value = 0
-    @needs_regexp = 0
-    @needs_rand = 0
-    @regexp_patterns = "".split(",", -1)
-    @regexp_flags = "".split(",", -1)
  # Dynamic-regex (InterpolatedRegularExpressionNode) call-site cache.
  # Each AST node gets a unique idx so the emitter can produce one
  # `sp_re_dyn_<idx>` helper per source location with its own
  # function-scope cache (string key + compiled pattern). Collected
  # in scan_features so indexes are stable across compile_expr visits.
-    @dyn_regex_node_ids = []
-    @dyn_regex_flags = "".split(",", -1)
  # `var = /lit/` resolution. Parallel arrays: `@local_regex_names`
  # holds the local-variable name; `@local_regex_idx` holds the
  # corresponding `@regexp_patterns` index (-1 when the LV is
@@ -562,9 +486,6 @@ class Compiler
  # holds the AST node id of a single-write `Regexp.new(<dyn>)`
  # right-hand side (-1 otherwise), so the read-site dyn-cache emit
  # can locate the call. Multi-write resets both to -1 / -1.
-    @local_regex_names = "".split(",", -1)
-    @local_regex_idx = []
-    @local_regex_call_nids = []
 
  # Cache for parse_id_list: AST list fields never change once loaded,
  # so the parsed IntArray can be shared across callers. The `[[0]]`
@@ -580,8 +501,6 @@ class Compiler
  # wins). User-defined `def <m>` rows aren't marked, so they
  # win over any subsequent include.
     @toplevel_include_alias = {}
-
-    @needs_stringio = 0
     @proc_counter = 0
     @proc_funcs = ""
 
@@ -589,31 +508,18 @@ class Compiler
  # compile_*/emit_* paths (which no longer live in spinel_analyze.rb).
  # Pre-initialize so dump_analysis_buf can reference them and so spinel
  # sees them as struct fields when self-compiling spinel_analyze.rb.
-    @needs_file_io = 0
-    @needs_poly_array = 0
-    @needs_poly_poly_hash = 0
-    @needs_ptr_array = 0
-    @needs_str_poly_hash = 0
-    @needs_sym_poly_hash = 0
-    @cls_cmeth_live = ""
-    @cls_meth_live = ""
-    @multi_const_inits = "".split(",", -1)
 
  # Lambda support
-    @needs_lambda = 0
     @lambda_counter = 0
     @lambda_funcs = ""
     @lambda_params = "".split(",", -1)
     @lambda_captures = "".split(",", -1)
     @lambda_capture_cell_types = "".split(",", -1)
-    @lambda_var_ret_names = "".split(",", -1)
-    @lambda_var_ret_types = "".split(",", -1)
     @last_lambda_ret_type = ""
  # `Klass.method(:cls_meth)` generates an adapter trampoline so the
  # Method object's `(void *self, mrb_int...)` ABI fits a class
  # method's no-self C signature. Tracks emitted (Klass, method)
  # pairs to avoid duplicate definitions.
-    @cls_method_adapters = "".split(",", -1)
 
  # Proc closure support (Phase 2)
     @in_proc_body = 0
@@ -621,8 +527,6 @@ class Compiler
     @proc_capture_types = "".split(",", -1)
 
  # Fiber support
-    @needs_fiber = 0
-    @needs_bigint = 0
  # `--int-overflow=raise|wrap|promote` selected via the spinel wrapper.
  # The wrapper exports SPINEL_INT_OVERFLOW before invoking analyze/
  # codegen so the rewrite of int → bigint locals (in promote mode)
@@ -638,29 +542,18 @@ class Compiler
     @heap_promoted_cells = "".split(",", -1)
 
  # Global variables ($x)
-    @gvar_names = "".split(",", -1)
-    @gvar_types = "".split(",", -1)
-    @gvar_written = []
 
  # Poly tracking: functions with params called with different types
-    @poly_funcs = "".split(",", -1)
-    @poly_param_types = "".split(",", -1)
 
  # Method reference tracking: var_name -> method_name
-    @method_ref_vars = "".split(",", -1)
-    @method_ref_names = "".split(",", -1)
 
  # Open class tracking for built-in types
-    @open_class_names = "".split(",", -1)
 
  # Module tracking: module_name -> body node id
-    @module_names = "".split(",", -1)
-    @module_body_ids = []
  # `@module_includes[mi]`: `;`-separated list of names the module
  # introduced by row `mi` itself includes. Modules can re-open, so
  # each row tracks its own block's `include` calls; const lookup
  # walks every row matching the module name.
-    @module_includes = "".split(",", -1)
  # Module-level singleton accessors :
  # `class << self; attr_accessor :foo; end` inside `module M`.
  # `@module_acc_consts[i]` is a `;`-separated list of distinct
@@ -668,30 +561,12 @@ class Compiler
  # inline; Stage 2: multiple names → runtime sentinel switch).
  # Empty string means at least one write was non-constant — the
  # slot falls through to the un-folded path.
-    @module_acc_keys = "".split(",", -1)
-    @module_acc_consts = "".split(",", -1)
 
  # ---- FFI state (parallel arrays, populated by scan_ffi_decl) ----
  # Per-module registry:
-    @ffi_modules = "".split(",", -1)          # module names that declared FFI
-    @ffi_module_libs = "".split(",", -1)      # ";"-joined -l names
-    @ffi_module_cflags = "".split(",", -1)    # ";"-joined cc flag strings
  # Function registry (one entry per ffi_func decl):
-    @ffi_func_modules = "".split(",", -1)     # owning module name
-    @ffi_func_names = "".split(",", -1)       # C symbol name
-    @ffi_func_arg_types = "".split(",", -1)   # ";"-joined Spinel type tokens
-    @ffi_func_ret_types = "".split(",", -1)   # single Spinel type token
-    @ffi_func_arg_specs = "".split(",", -1)   # ";"-joined original specs (uint32, str, …)
-    @ffi_func_ret_specs = "".split(",", -1)   # original return spec
  # Buffer registry (one entry per ffi_buffer decl):
-    @ffi_buf_modules = "".split(",", -1)
-    @ffi_buf_names = "".split(",", -1)
-    @ffi_buf_sizes = []                   # int sizes in bytes
  # Reader registry (one entry per ffi_read_* decl):
-    @ffi_reader_modules = "".split(",", -1)
-    @ffi_reader_names = "".split(",", -1)
-    @ffi_reader_kinds = "".split(",", -1)     # "u32", "i32", "ptr"
-    @ffi_reader_offsets = []              # int byte offsets
 
     @pending_method_ref = ""
     @lambda_counter = 0
@@ -699,7 +574,6 @@ class Compiler
     @lambda_params = "".split(",", -1)
     @lambda_captures = "".split(",", -1)
     @lambda_insert_pos = 0
-    @cls_method_adapters = "".split(",", -1)
 
  # Proc closure support (Phase 2)
     @in_proc_body = 0
@@ -707,7 +581,6 @@ class Compiler
     @proc_capture_types = "".split(",", -1)
 
  # Symbol type Phase 2 Step 1: intern table (infrastructure only; unused yet).
-    @sym_names = "".split(",", -1)
 
  # instance_eval block hoisting: parallel arrays indexed by synthetic
  # function id N. Each lifted block becomes a file-scope static
@@ -716,20 +589,13 @@ class Compiler
  # expression ("void" when assignment-only); codegen reads it to pick
  # the lifted function's signature and whether the call site emits a
  # direct call or the receiver-comma-expr fallback.
-    @ieval_counter = 0
-    @ieval_class_idxs = []
-    @ieval_body_ids = []
-    @ieval_return_types = "".split(",", -1)
  # Self-bound block-param name per lift (empty for the no-param
  # forms). emit_ieval_func seeds it via `lv_<name> = self;`.
-    @ieval_self_param_names = "".split(",", -1)
  # Extra required block-param names (";"-joined) beyond the
  # self-bound first. CRuby binds these to nil (arity tolerance);
  # precompute_all_scope_decls declares them as nil-typed locals.
-    @ieval_extra_param_names = "".split(",", -1)
  # Receiver classes flagged out of value-type / SRA promotion so
  # the lifted sp_ieval_<N>'s self-pointer signature can mutate.
-    @cls_with_internal_ieval_lift = "".split(",", -1)
 
  # RBS-derived seed lines. Populated by load_rbs_seeds before
  # analyze_phase; consumed by apply_rbs_seeds after collect_all
@@ -2199,6 +2065,15 @@ class Compiler
   def infer_type(nid)
     if nid < 0
       return "void"
+    end
+    if @nd_type[nid] == "LocalVariableReadNode"
+      compile_time_enc = compile_time_subst_for_current(@nd_name[nid])
+      if compile_time_enc != ""
+        st = compile_time_literal_type(compile_time_enc)
+        if st != ""
+          return st
+        end
+      end
     end
  # During analyze fixpoint, types are still converging; reading
  # the cache would freeze callers on stale values from earlier
@@ -10834,7 +10709,16 @@ class Compiler
         end
         if @nd_type[sid] == "CallNode"
           cn = @nd_name[sid]
-          if cn != "include"
+          csk = compiler_state_macro_kind(cn)
+          if csk != ""
+            collect_compiler_state_decl(ci, sid, csk)
+          elsif cn == "attributes" || cn == "attribute"
+            collect_attributes_decl(ci, sid)
+          elsif cn == "define_method"
+            collect_define_method_in_class(ci, sid)
+          elsif collect_compile_time_define_method_each(ci, sid) == 1
+ # handled by compile-time class-body expansion
+          elsif cn != "include"
             if cn != "private"
               collect_attr_call(ci, sid)
             end
@@ -11119,10 +11003,17 @@ class Compiler
       end
       if @nd_type[sid] == "CallNode"
         cn = @nd_name[sid]
-        if cn == "define_method"
+        csk = compiler_state_macro_kind(cn)
+        if csk != ""
+          collect_compiler_state_decl(ci, sid, csk)
+        elsif cn == "attributes" || cn == "attribute"
+          collect_attributes_decl(ci, sid)
+        elsif cn == "define_method"
  # Issue #718: define_method(:name) { ... } in a class body
  # registers an instance method on the surrounding class.
           collect_define_method_in_class(ci, sid)
+        elsif collect_compile_time_define_method_each(ci, sid) == 1
+ # handled by compile-time class-body expansion
         elsif cn != "include"
           if cn != "private"
             collect_attr_call(ci, sid)
@@ -11926,8 +11817,22 @@ class Compiler
     params_str = collect_params_str(nid)
     ptypes_str = collect_ptypes_str(nid, ci)
     defaults_str = collect_defaults_str(nid)
+    ret_str = "int"
+    if mname == "ir_emit_int"
+      ptypes_str = "string,string,int"
+      ret_str = "string"
+    elsif mname == "ir_emit_str"
+      ptypes_str = "string,string,string"
+      ret_str = "string"
+    elsif mname == "ir_emit_sa"
+      ptypes_str = "string,string,str_array"
+      ret_str = "string"
+    elsif mname == "ir_emit_ia"
+      ptypes_str = "string,string,int_array"
+      ret_str = "string"
+    end
     has_y = body_has_yield(body_id)
-    append_cls_meth(ci, mname, params_str, ptypes_str, "int", body_id, defaults_str)
+    append_cls_meth(ci, mname, params_str, ptypes_str, ret_str, body_id, defaults_str)
  # Record a splat param's position so call-site arg packing and the
  # widen-protection can find it by (class, method) name.
     rest_i_cm = collect_rest_index(nid)
@@ -13881,9 +13786,10 @@ class Compiler
     if arg_ids.length < 1
       return
     end
-    mname = @nd_content[arg_ids[0]]
-    if mname == ""
-      mname = @nd_name[arg_ids[0]]
+    mname = eval_static_name_expr(arg_ids[0], "", "")
+    if mname == "" || mname == compile_time_invalid_name
+      $stderr.puts "Spinel: define_method requires a compile-time-known name"
+      exit(1)
     end
     blk = @nd_block[nid]
     if blk < 0
@@ -13912,6 +13818,296 @@ class Compiler
     append_cls_meth(ci, mname, params_str, ptypes_str, "int", body_id, "")
   end
 
+  def compile_time_invalid_name
+    "__spinel_invalid_static_name__"
+  end
+
+  def compile_time_literal_from_node(nid)
+    if nid < 0
+      return ""
+    end
+    if @nd_type[nid] == "SymbolNode"
+      v = @nd_content[nid]
+      if v == ""
+        v = @nd_name[nid]
+      end
+      return "sym:" + v
+    end
+    if @nd_type[nid] == "StringNode"
+      return "str:" + @nd_content[nid]
+    end
+    if @nd_type[nid] == "IntegerNode"
+      return "int:" + @nd_value[nid].to_s
+    end
+    ""
+  end
+
+  def compile_time_literal_name(encoded)
+    compile_time_literal_payload(encoded)
+  end
+
+  def eval_static_name_expr(nid, blockvar, encoded)
+    if nid < 0
+      return compile_time_invalid_name
+    end
+    t = @nd_type[nid]
+    if t == "StringNode"
+      return @nd_content[nid]
+    end
+    if t == "SymbolNode"
+      v = @nd_content[nid]
+      if v == ""
+        v = @nd_name[nid]
+      end
+      return v
+    end
+    if t == "LocalVariableReadNode"
+      if @nd_name[nid] == blockvar
+        return compile_time_literal_name(encoded)
+      end
+      return compile_time_invalid_name
+    end
+    if t == "EmbeddedStatementsNode"
+      body_id = @nd_body[nid]
+      if body_id < 0
+        return compile_time_invalid_name
+      end
+      stmts = get_stmts(body_id)
+      if stmts.length != 1
+        return compile_time_invalid_name
+      end
+      return eval_static_name_expr(stmts[0], blockvar, encoded)
+    end
+    if t == "InterpolatedStringNode" || t == "InterpolatedSymbolNode"
+      parts = parse_id_list(@nd_parts[nid])
+      out = ""
+      k = 0
+      while k < parts.length
+        part = eval_static_name_expr(parts[k], blockvar, encoded)
+        if part == compile_time_invalid_name
+          return part
+        end
+        out = out + part
+        k = k + 1
+      end
+      return out
+    end
+    compile_time_invalid_name
+  end
+
+  def append_compiler_state_method(ci, name, params, ptypes, ret, body_id)
+    if cls_find_method_direct(ci, name) >= 0
+      return
+    end
+    append_cls_meth(ci, name, params, ptypes, ret, body_id, "")
+    @cls_meth_has_yield[ci] = @cls_meth_has_yield[ci] != "" ? @cls_meth_has_yield[ci] + ";0" : "0"
+  end
+
+  def append_compiler_state_methods(ci)
+    append_compiler_state_method(ci, "init_compiler_state", "", "", "int", compiler_state_init_body_id)
+    append_compiler_state_method(ci, "dump_compiler_state_ir", "buf", "string", "string", compiler_state_dump_body_id)
+    append_compiler_state_method(ci, "compiler_state_set_int", "name,val", "string,int", "int", compiler_state_set_int_body_id)
+    append_compiler_state_method(ci, "compiler_state_set_str", "name,val", "string,string", "int", compiler_state_set_str_body_id)
+    append_compiler_state_method(ci, "compiler_state_set_sa", "name,val", "string,str_array", "int", compiler_state_set_sa_body_id)
+    append_compiler_state_method(ci, "compiler_state_set_ia", "name,val", "string,int_array", "int", compiler_state_set_ia_body_id)
+  end
+
+  def collect_compiler_state_decl(ci, nid, kind)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return
+    end
+    append_compiler_state_methods(ci)
+    arg_ids = get_args(args_id)
+    k = 0
+    while k < arg_ids.length
+      fname = symbol_node_literal(arg_ids[k])
+      if fname == ""
+        $stderr.puts "Spinel: compiler_state_* requires symbol names"
+        exit(1)
+      end
+      iname = "@" + fname
+      if ivar_exists(ci, iname) == 0
+        add_ivar(ci, iname, compiler_state_field_type(kind), 0)
+      end
+      @compiler_state_classes.push(@cls_names[ci])
+      @compiler_state_kinds.push(kind)
+      @compiler_state_names.push(fname)
+      k = k + 1
+    end
+  end
+
+  def collect_attributes_decl(ci, nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return
+    end
+    arg_ids = get_args(args_id)
+    k = 0
+    while k < arg_ids.length
+      aname = symbol_node_literal(arg_ids[k])
+      if aname == ""
+        $stderr.puts "Spinel: attributes requires symbol names"
+        exit(1)
+      end
+      append_attr_reader(ci, aname)
+      append_attr_writer(ci, aname)
+      iname = "@" + aname
+      if ivar_exists(ci, iname) == 0
+        add_ivar(ci, iname, "int", 0)
+      end
+      k = k + 1
+    end
+  end
+
+  def collect_define_method_body_params(blk)
+    result = "".split(",", -1)
+    if blk < 0
+      return result
+    end
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        k = 0
+        while k < reqs.length
+          result.push(@nd_name[reqs[k]])
+          k = k + 1
+        end
+      end
+    end
+    result
+  end
+
+  def append_compile_time_subst(ci, mname, body_id, blockvar, encoded)
+    @compile_time_subst_keys.push(compile_time_subst_key(ci, mname, body_id, blockvar))
+    @compile_time_subst_vals.push(encoded)
+  end
+
+  def append_compile_time_define_method(ci, mname, define_call, blockvar, encoded)
+    blk = @nd_block[define_call]
+    if blk < 0
+      return
+    end
+    body_id = @nd_body[blk]
+    params = collect_define_method_body_params(blk)
+    params_str = ""
+    ptypes_str = ""
+    k = 0
+    while k < params.length
+      if params_str != ""
+        params_str = params_str + ","
+        ptypes_str = ptypes_str + ","
+      end
+      params_str = params_str + params[k]
+      ptypes_str = ptypes_str + "int"
+      k = k + 1
+    end
+    append_cls_meth(ci, mname, params_str, ptypes_str, "int", body_id, "")
+    append_compile_time_subst(ci, mname, body_id, blockvar, encoded)
+  end
+
+  def subtree_contains_define_method(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "define_method"
+      return 1
+    end
+    if @nd_type[nid] == "DefNode" || @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return 0
+    end
+    children = []
+    push_child_ids(nid, children)
+    k = 0
+    while k < children.length
+      if subtree_contains_define_method(children[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+  def collect_compile_time_define_method_each(ci, nid)
+    if @nd_name[nid] != "each"
+      return 0
+    end
+    blk = @nd_block[nid]
+    has_define_method = 0
+    if blk >= 0
+      body_id = @nd_body[blk]
+      if body_id >= 0
+        has_define_method = subtree_contains_define_method(body_id)
+      end
+    end
+    recv = @nd_receiver[nid]
+    if recv < 0 || @nd_type[recv] != "ArrayNode"
+      if has_define_method == 1
+        $stderr.puts "Spinel: compile-time define_method.each requires a literal collection"
+        exit(1)
+      end
+      return 0
+    end
+    blockvar = get_block_param(nid, 0)
+    if blockvar == ""
+      if has_define_method == 1
+        $stderr.puts "Spinel: compile-time define_method.each requires a block parameter"
+        exit(1)
+      end
+      return 0
+    end
+    if blk < 0
+      return 0
+    end
+    body_id = @nd_body[blk]
+    if body_id < 0
+      return 0
+    end
+    body_stmts = get_stmts(body_id)
+    if body_stmts.length != 1
+      if has_define_method == 1
+        $stderr.puts "Spinel: compile-time define_method.each supports one define_method call in the block"
+        exit(1)
+      end
+      return 0
+    end
+    define_call = body_stmts[0]
+    if @nd_type[define_call] != "CallNode" || @nd_name[define_call] != "define_method"
+      if has_define_method == 1
+        $stderr.puts "Spinel: compile-time define_method.each supports one define_method call in the block"
+        exit(1)
+      end
+      return 0
+    end
+    args_id = @nd_arguments[define_call]
+    if args_id < 0
+      return 0
+    end
+    arg_ids = get_args(args_id)
+    if arg_ids.length < 1
+      return 0
+    end
+    elems = parse_id_list(@nd_elements[recv])
+    k = 0
+    while k < elems.length
+      encoded = compile_time_literal_from_node(elems[k])
+      if encoded == ""
+        $stderr.puts "Spinel: compile-time define_method.each requires a literal symbol/string/int collection"
+        exit(1)
+      end
+      mname = eval_static_name_expr(arg_ids[0], blockvar, encoded)
+      if mname == "" || mname == compile_time_invalid_name
+        $stderr.puts "Spinel: define_method requires a compile-time-known name"
+        exit(1)
+      end
+      append_compile_time_define_method(ci, mname, define_call, blockvar, encoded)
+      k = k + 1
+    end
+    1
+  end
+
   def collect_define_method(nid)
  # define_method(:name) { |args| body }
     args_id = @nd_arguments[nid]
@@ -13922,9 +14118,10 @@ class Compiler
     if arg_ids.length < 1
       return
     end
-    mname = @nd_content[arg_ids[0]]
-    if mname == ""
-      mname = @nd_name[arg_ids[0]]
+    mname = eval_static_name_expr(arg_ids[0], "", "")
+    if mname == "" || mname == compile_time_invalid_name
+      $stderr.puts "Spinel: define_method requires a compile-time-known name"
+      exit(1)
     end
     blk = @nd_block[nid]
     if blk < 0
@@ -22729,6 +22926,20 @@ class Compiler
         bid = -1
         if j < bodies.length
           bid = bodies[j].to_i
+        end
+        if compiler_state_synthetic_body_id?(bid) == 1
+          rt = "int"
+          if mnames[j] == "dump_compiler_state_ir"
+            rt = "string"
+          end
+          if j < returns.length
+            returns[j] = rt
+          end
+          @cls_meth_returns[i] = returns.join(";")
+          @cls_meth_return_cache = {}
+          pop_scope
+          j = j + 1
+          next
         end
  # Declare locals for better return type inference
         if bid >= 0
@@ -33947,173 +34158,21 @@ class Compiler
     buf + "INT " + name + " " + val.to_s + "\n"
   end
 
+  def ir_emit_str(buf, name, val)
+    buf + "STR " + name + " " + ir_escape(val) + "\n"
+  end
+
   def dump_analysis_buf
     buf = "SPINEL-IR v1\n"
 
- # Counters / scalars
-    buf = ir_emit_int(buf, "@nd_count", @nd_count)
-    buf = ir_emit_int(buf, "@root_id", @root_id)
-    buf = ir_emit_int(buf, "@analysis_frozen", @analysis_frozen)
-    buf = ir_emit_int(buf, "@ieval_counter", @ieval_counter)
+ # Compiler-state declaration metadata must be emitted before the
+ # declared state itself so codegen can use the synthetic IR setters
+ # while reading the following rows.
+    buf = ir_emit_sa(buf, "@compiler_state_classes", @compiler_state_classes)
+    buf = ir_emit_sa(buf, "@compiler_state_kinds", @compiler_state_kinds)
+    buf = ir_emit_sa(buf, "@compiler_state_names", @compiler_state_names)
 
- # Top-level method tables
-    buf = ir_emit_sa(buf, "@meth_names", @meth_names)
-    buf = ir_emit_sa(buf, "@meth_param_names", @meth_param_names)
-    buf = ir_emit_sa(buf, "@meth_param_types", @meth_param_types)
-    buf = ir_emit_sa(buf, "@meth_param_empty", @meth_param_empty)
-    buf = ir_emit_sa(buf, "@meth_return_types", @meth_return_types)
-    buf = ir_emit_ia(buf, "@meth_body_ids", @meth_body_ids)
-    buf = ir_emit_sa(buf, "@meth_has_defaults", @meth_has_defaults)
-    buf = ir_emit_ia(buf, "@meth_rest_index", @meth_rest_index)
-    buf = ir_emit_ia(buf, "@meth_kwrest_index", @meth_kwrest_index)
-    buf = ir_emit_ia(buf, "@meth_has_yield", @meth_has_yield)
-
- # Class tables
-    buf = ir_emit_sa(buf, "@cls_names", @cls_names)
-    buf = ir_emit_sa(buf, "@cls_parents", @cls_parents)
-    buf = ir_emit_sa(buf, "@cls_includes", @cls_includes)
-    buf = ir_emit_sa(buf, "@cls_ivar_names", @cls_ivar_names)
-    buf = ir_emit_sa(buf, "@cls_ivar_types", @cls_ivar_types)
-    buf = ir_emit_sa(buf, "@cls_ivar_init_definite", @cls_ivar_init_definite)
-    buf = ir_emit_sa(buf, "@cls_ivar_observed_types", @cls_ivar_observed_types)
-    buf = ir_emit_sa(buf, "@cls_meth_names", @cls_meth_names)
-    buf = ir_emit_sa(buf, "@cls_meth_params", @cls_meth_params)
-    buf = ir_emit_sa(buf, "@cls_meth_ptypes", @cls_meth_ptypes)
-    buf = ir_emit_sa(buf, "@cls_meth_returns", @cls_meth_returns)
-    buf = ir_emit_sa(buf, "@cls_meth_bodies", @cls_meth_bodies)
-    buf = ir_emit_sa(buf, "@cls_rest_keys", @cls_rest_keys)
-    buf = ir_emit_ia(buf, "@cls_rest_idxs", @cls_rest_idxs)
-    buf = ir_emit_sa(buf, "@dead_mod_cls_meths", @dead_mod_cls_meths)
-    buf = ir_emit_sa(buf, "@cls_meth_defaults", @cls_meth_defaults)
-    buf = ir_emit_sa(buf, "@cls_meth_ptypes_empty", @cls_meth_ptypes_empty)
-    buf = ir_emit_sa(buf, "@cls_meth_prep_chain", @cls_meth_prep_chain)
-    buf = ir_emit_sa(buf, "@cls_attr_readers", @cls_attr_readers)
-    buf = ir_emit_sa(buf, "@cls_attr_writers", @cls_attr_writers)
-    buf = ir_emit_sa(buf, "@cls_cmeth_names", @cls_cmeth_names)
-    buf = ir_emit_sa(buf, "@cls_cmeth_params", @cls_cmeth_params)
-    buf = ir_emit_sa(buf, "@cls_cmeth_ptypes", @cls_cmeth_ptypes)
-    buf = ir_emit_sa(buf, "@cls_cmeth_returns", @cls_cmeth_returns)
-    buf = ir_emit_sa(buf, "@cls_cmeth_bodies", @cls_cmeth_bodies)
-    buf = ir_emit_sa(buf, "@cls_cmeth_defaults", @cls_cmeth_defaults)
-    buf = ir_emit_sa(buf, "@cls_cmeth_scope_names", @cls_cmeth_scope_names)
-    buf = ir_emit_sa(buf, "@cls_cmeth_scope_types", @cls_cmeth_scope_types)
-    buf = ir_emit_ia(buf, "@cls_is_value_type", @cls_is_value_type)
-    buf = ir_emit_ia(buf, "@cls_is_sra", @cls_is_sra)
-    buf = ir_emit_sa(buf, "@cls_meth_has_yield", @cls_meth_has_yield)
-    buf = ir_emit_sa(buf, "@cls_method_adapters", @cls_method_adapters)
-
- # Constants / cvars / gvars
-    buf = ir_emit_sa(buf, "@const_names", @const_names)
-    buf = ir_emit_sa(buf, "@const_types", @const_types)
-    buf = ir_emit_ia(buf, "@const_expr_ids", @const_expr_ids)
-    buf = ir_emit_ia(buf, "@const_mutated", @const_mutated)
-    buf = ir_emit_sa(buf, "@const_scope_names", @const_scope_names)
-    buf = ir_emit_sa(buf, "@const_init_class", @const_init_class)
-    buf = ir_emit_sa(buf, "@cvar_names", @cvar_names)
-    buf = ir_emit_sa(buf, "@cvar_types", @cvar_types)
-    buf = ir_emit_sa(buf, "@cvar_init_values", @cvar_init_values)
-    buf = ir_emit_sa(buf, "@gvar_names", @gvar_names)
-    buf = ir_emit_sa(buf, "@gvar_types", @gvar_types)
-    buf = ir_emit_ia(buf, "@gvar_written", @gvar_written)
-
- # Modules
-    buf = ir_emit_sa(buf, "@module_names", @module_names)
-    buf = ir_emit_ia(buf, "@module_body_ids", @module_body_ids)
-    buf = ir_emit_sa(buf, "@module_includes", @module_includes)
-    buf = ir_emit_sa(buf, "@module_acc_keys", @module_acc_keys)
-    buf = ir_emit_sa(buf, "@module_acc_consts", @module_acc_consts)
-
- # FFI
-    buf = ir_emit_sa(buf, "@ffi_modules", @ffi_modules)
-    buf = ir_emit_sa(buf, "@ffi_module_libs", @ffi_module_libs)
-    buf = ir_emit_sa(buf, "@ffi_module_cflags", @ffi_module_cflags)
-    buf = ir_emit_sa(buf, "@ffi_func_modules", @ffi_func_modules)
-    buf = ir_emit_sa(buf, "@ffi_func_names", @ffi_func_names)
-    buf = ir_emit_sa(buf, "@ffi_func_arg_types", @ffi_func_arg_types)
-    buf = ir_emit_sa(buf, "@ffi_func_ret_types", @ffi_func_ret_types)
-    buf = ir_emit_sa(buf, "@ffi_func_arg_specs", @ffi_func_arg_specs)
-    buf = ir_emit_sa(buf, "@ffi_func_ret_specs", @ffi_func_ret_specs)
-    buf = ir_emit_sa(buf, "@ffi_buf_modules", @ffi_buf_modules)
-    buf = ir_emit_sa(buf, "@ffi_buf_names", @ffi_buf_names)
-    buf = ir_emit_ia(buf, "@ffi_buf_sizes", @ffi_buf_sizes)
-    buf = ir_emit_sa(buf, "@ffi_reader_modules", @ffi_reader_modules)
-    buf = ir_emit_sa(buf, "@ffi_reader_names", @ffi_reader_names)
-    buf = ir_emit_sa(buf, "@ffi_reader_kinds", @ffi_reader_kinds)
-    buf = ir_emit_ia(buf, "@ffi_reader_offsets", @ffi_reader_offsets)
-
- # Regexp / dyn-regex / local-regex
-    buf = ir_emit_sa(buf, "@regexp_patterns", @regexp_patterns)
-    buf = ir_emit_sa(buf, "@regexp_flags", @regexp_flags)
-    buf = ir_emit_ia(buf, "@dyn_regex_node_ids", @dyn_regex_node_ids)
-    buf = ir_emit_sa(buf, "@dyn_regex_flags", @dyn_regex_flags)
-    buf = ir_emit_sa(buf, "@local_regex_names", @local_regex_names)
-    buf = ir_emit_ia(buf, "@local_regex_idx", @local_regex_idx)
-    buf = ir_emit_ia(buf, "@local_regex_call_nids", @local_regex_call_nids)
-
- # Misc tables
-    buf = ir_emit_sa(buf, "@open_class_names", @open_class_names)
-    buf = ir_emit_sa(buf, "@method_ref_vars", @method_ref_vars)
-    buf = ir_emit_sa(buf, "@method_ref_names", @method_ref_names)
-    buf = ir_emit_sa(buf, "@galias_new", @galias_new)
-    buf = ir_emit_sa(buf, "@galias_old", @galias_old)
-    buf = ir_emit_ia(buf, "@undef_class_idx", @undef_class_idx)
-    buf = ir_emit_sa(buf, "@undef_method", @undef_method)
-    buf = ir_emit_sa(buf, "@sym_names", @sym_names)
-    buf = ir_emit_sa(buf, "@tuple_types", @tuple_types)
-    buf = ir_emit_sa(buf, "@poly_funcs", @poly_funcs)
-    buf = ir_emit_sa(buf, "@poly_param_types", @poly_param_types)
-    buf = ir_emit_ia(buf, "@ieval_class_idxs", @ieval_class_idxs)
-    buf = ir_emit_ia(buf, "@ieval_body_ids", @ieval_body_ids)
-    buf = ir_emit_sa(buf, "@ieval_return_types", @ieval_return_types)
-    buf = ir_emit_sa(buf, "@ieval_self_param_names", @ieval_self_param_names)
-    buf = ir_emit_sa(buf, "@ieval_extra_param_names", @ieval_extra_param_names)
-    buf = ir_emit_sa(buf, "@cls_with_internal_ieval_lift", @cls_with_internal_ieval_lift)
-    buf = ir_emit_ia(buf, "@pre_execution_blocks", @pre_execution_blocks)
-    buf = ir_emit_ia(buf, "@post_execution_blocks", @post_execution_blocks)
-    buf = ir_emit_sa(buf, "@toplevel_ivar_names", @toplevel_ivar_names)
-    buf = ir_emit_sa(buf, "@toplevel_ivar_types", @toplevel_ivar_types)
-    buf = ir_emit_sa(buf, "@lambda_var_ret_names", @lambda_var_ret_names)
-    buf = ir_emit_sa(buf, "@lambda_var_ret_types", @lambda_var_ret_types)
-    buf = ir_emit_sa(buf, "@multi_const_inits", @multi_const_inits)
-
- # Feature flags
-    buf = ir_emit_int(buf, "@needs_gc", @needs_gc)
-    buf = ir_emit_int(buf, "@needs_system", @needs_system)
-    buf = ir_emit_int(buf, "@needs_int_array", @needs_int_array)
-    buf = ir_emit_int(buf, "@needs_float_array", @needs_float_array)
-    buf = ir_emit_int(buf, "@needs_str_array", @needs_str_array)
-    buf = ir_emit_int(buf, "@needs_str_int_hash", @needs_str_int_hash)
-    buf = ir_emit_int(buf, "@needs_str_str_hash", @needs_str_str_hash)
-    buf = ir_emit_int(buf, "@needs_int_str_hash", @needs_int_str_hash)
-    buf = ir_emit_int(buf, "@needs_sym_int_hash", @needs_sym_int_hash)
-    buf = ir_emit_int(buf, "@needs_sym_str_hash", @needs_sym_str_hash)
-    buf = ir_emit_int(buf, "@needs_sym_intern", @needs_sym_intern)
-    buf = ir_emit_int(buf, "@needs_setjmp", @needs_setjmp)
-    buf = ir_emit_int(buf, "@needs_mutable_str", @needs_mutable_str)
-    buf = ir_emit_int(buf, "@needs_rb_value", @needs_rb_value)
-    buf = ir_emit_int(buf, "@needs_regexp", @needs_regexp)
-    buf = ir_emit_int(buf, "@needs_rand", @needs_rand)
-    buf = ir_emit_int(buf, "@needs_stringio", @needs_stringio)
-    buf = ir_emit_int(buf, "@needs_lambda", @needs_lambda)
-    buf = ir_emit_int(buf, "@needs_fiber", @needs_fiber)
-    buf = ir_emit_int(buf, "@needs_bigint", @needs_bigint)
- # @needs_* flags pre-initialized in `initialize` so spinel sees
- # them as struct fields when self-compiling spinel_analyze.rb.
-    buf = ir_emit_int(buf, "@needs_poly_array", @needs_poly_array)
-    buf = ir_emit_int(buf, "@needs_poly_poly_hash", @needs_poly_poly_hash)
-    buf = ir_emit_int(buf, "@needs_str_poly_hash", @needs_str_poly_hash)
-    buf = ir_emit_int(buf, "@needs_sym_poly_hash", @needs_sym_poly_hash)
-    buf = ir_emit_int(buf, "@needs_ptr_array", @needs_ptr_array)
-    buf = ir_emit_int(buf, "@needs_file_io", @needs_file_io)
-
- # Non-array string ivars (computed in analyze, consumed by emit)
-    buf = buf + "STR @cls_cmeth_live " + ir_escape(@cls_cmeth_live) + "\n"
-    buf = buf + "STR @cls_meth_live " + ir_escape(@cls_meth_live) + "\n"
- # Issue #750: switch to SA (string array) so each element is
- # escaped individually -- inner `|` in `int|int` no longer
- # collides with the outer separator on round-trip.
-    buf = ir_emit_sa(buf, "@meth_blk_param_types", @meth_blk_param_types)
-    buf = ir_emit_sa(buf, "@cls_cmeth_blk_param_types", @cls_cmeth_blk_param_types)
+    buf = dump_compiler_state_ir(buf)
 
  # Per-AST-node records (T / NM / NB / SN / ST) get accumulated
  # into a StrArray and joined once. Building them with `buf + ...`
@@ -35781,10 +35840,15 @@ class Compiler
       saved_ci = @current_class_idx
       @current_class_idx = ci
       bodies = @cls_meth_bodies[ci].split(";", -1)
+      mnames = @cls_meth_names[ci].split(";", -1)
+      saved_meth_inst = @current_method_name
       bj = 0
       while bj < bodies.length
         bid = bodies[bj].to_i
         if bid >= 0
+          if bj < mnames.length
+            @current_method_name = mnames[bj]
+          end
           push_scope
           pnames2 = cls_meth_pnames_get(ci, bj)
           ptypes2 = cls_meth_ptypes_get(ci, bj)
@@ -35806,6 +35870,7 @@ class Compiler
         end
         bj = bj + 1
       end
+      @current_method_name = saved_meth_inst
       cm_bodies = @cls_cmeth_bodies[ci].split(";", -1)
       cm_names = @cls_cmeth_names[ci].split(";", -1)
       saved_meth = @current_method_name

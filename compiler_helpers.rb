@@ -14,7 +14,209 @@
 #   stack only via methods both sides define, etc.)
 # - have identical semantics in both passes (drift between
 #   the two would re-introduce the original bug)
+
+# CRuby bootstrap shim for compiler_state_* declarations. Spinel's
+# analyzer/codegen consume these calls at compile time and emit concrete
+# methods; this shim only keeps the Ruby-hosted bootstrap compiler
+# executable while the compiled binaries are being rebuilt.
+if RUBY_ENGINE == "ruby"
+  class Module
+    def compiler_state_entries; @compiler_state_entries ||= []; end
+
+    def compiler_state_register(kind, names)
+      names.each do |raw_name|
+        compiler_state_entries << [kind.to_s, raw_name.to_s]
+      end
+      compiler_state_define_runtime_methods
+    end
+
+    def compiler_state_int(*names); compiler_state_register("int", names); end
+    def compiler_state_str(*names); compiler_state_register("str", names); end
+    def compiler_state_sa(*names); compiler_state_register("sa", names); end
+    def compiler_state_ia(*names); compiler_state_register("ia", names); end
+
+    def compiler_state_define_runtime_methods
+      return if @compiler_state_runtime_methods_defined
+
+      @compiler_state_runtime_methods_defined = true
+
+      define_method(:init_compiler_state) do
+        self.class.compiler_state_entries.each do |kind, name|
+          val = 0
+          if kind == "str"
+            val = ""
+          elsif kind == "sa"
+            val = []
+          elsif kind == "ia"
+            val = []
+          end
+          instance_variable_set("@" + name, val)
+        end
+        0
+      end
+
+      define_method(:dump_compiler_state_ir) do |buf|
+        self.class.compiler_state_entries.each do |kind, name|
+          ir_name = "@" + name
+          val = instance_variable_get(ir_name)
+          if kind == "int"
+            buf = ir_emit_int(buf, ir_name, val)
+          elsif kind == "str"
+            buf = ir_emit_str(buf, ir_name, val)
+          elsif kind == "sa"
+            buf = ir_emit_sa(buf, ir_name, val)
+          elsif kind == "ia"
+            buf = ir_emit_ia(buf, ir_name, val)
+          end
+        end
+        buf
+      end
+
+      define_method(:compiler_state_set_runtime) do |kind, name, val|
+        self.class.compiler_state_entries.each do |entry_kind, field|
+          if entry_kind == kind && name == "@" + field
+            instance_variable_set(name, val)
+          end
+        end
+        0
+      end
+
+      define_method(:compiler_state_set_int) { |name, val| compiler_state_set_runtime("int", name, val) }
+      define_method(:compiler_state_set_str) { |name, val| compiler_state_set_runtime("str", name, val) }
+      define_method(:compiler_state_set_sa) { |name, val| compiler_state_set_runtime("sa", name, val) }
+      define_method(:compiler_state_set_ia) { |name, val| compiler_state_set_runtime("ia", name, val) }
+    end
+  end
+end
+
 class Compiler
+
+ # ---- Compile-time class-body declaration helpers ----
+
+  compiler_state_int :nd_count, :root_id, :analysis_frozen, :ieval_counter, :needs_gc, :needs_system
+  compiler_state_int :needs_int_array, :needs_float_array, :needs_str_array, :needs_str_int_hash, :needs_str_str_hash, :needs_int_str_hash
+  compiler_state_int :needs_sym_int_hash, :needs_sym_str_hash, :needs_sym_intern, :needs_setjmp, :needs_mutable_str, :needs_rb_value
+  compiler_state_int :needs_regexp, :needs_rand, :needs_stringio, :needs_lambda, :needs_fiber, :needs_bigint
+  compiler_state_int :needs_poly_array, :needs_poly_poly_hash, :needs_str_poly_hash, :needs_sym_poly_hash, :needs_ptr_array, :needs_file_io
+
+  compiler_state_str :cls_cmeth_live, :cls_meth_live
+
+  compiler_state_sa :meth_names, :meth_param_names, :meth_param_types, :meth_param_empty, :meth_return_types, :meth_has_defaults
+  compiler_state_sa :cls_names, :cls_parents, :cls_includes, :cls_ivar_names, :cls_ivar_types, :cls_ivar_init_definite
+  compiler_state_sa :cls_ivar_observed_types, :cls_meth_names, :cls_meth_params, :cls_meth_ptypes, :cls_meth_returns, :cls_meth_bodies
+  compiler_state_sa :cls_rest_keys, :dead_mod_cls_meths, :cls_meth_defaults, :cls_meth_ptypes_empty, :cls_meth_prep_chain, :cls_attr_readers
+  compiler_state_sa :cls_attr_writers, :cls_cmeth_names, :cls_cmeth_params, :cls_cmeth_ptypes, :cls_cmeth_returns, :cls_cmeth_bodies
+  compiler_state_sa :cls_cmeth_defaults, :cls_cmeth_scope_names, :cls_cmeth_scope_types, :cls_meth_has_yield, :cls_method_adapters, :const_names
+  compiler_state_sa :const_types, :const_scope_names, :const_init_class, :cvar_names, :cvar_types, :cvar_init_values
+  compiler_state_sa :gvar_names, :gvar_types, :module_names, :module_includes, :module_acc_keys, :module_acc_consts
+  compiler_state_sa :ffi_modules, :ffi_module_libs, :ffi_module_cflags, :ffi_func_modules, :ffi_func_names, :ffi_func_arg_types
+  compiler_state_sa :ffi_func_ret_types, :ffi_func_arg_specs, :ffi_func_ret_specs, :ffi_buf_modules, :ffi_buf_names, :ffi_reader_modules
+  compiler_state_sa :ffi_reader_names, :ffi_reader_kinds, :regexp_patterns, :regexp_flags, :dyn_regex_flags, :local_regex_names
+  compiler_state_sa :open_class_names, :method_ref_vars, :method_ref_names, :galias_new, :galias_old, :undef_method
+  compiler_state_sa :sym_names, :tuple_types, :poly_funcs, :poly_param_types, :ieval_return_types, :ieval_self_param_names
+  compiler_state_sa :ieval_extra_param_names, :compile_time_subst_keys, :compile_time_subst_vals, :cls_with_internal_ieval_lift, :toplevel_ivar_names, :toplevel_ivar_types
+  compiler_state_sa :lambda_var_ret_names, :lambda_var_ret_types, :multi_const_inits, :meth_blk_param_types, :cls_cmeth_blk_param_types
+
+  compiler_state_ia :meth_body_ids, :meth_rest_index, :meth_kwrest_index, :meth_has_yield, :cls_rest_idxs, :cls_is_value_type
+  compiler_state_ia :cls_is_sra, :const_expr_ids, :const_mutated, :gvar_written, :module_body_ids, :ffi_buf_sizes, :ffi_reader_offsets
+  compiler_state_ia :dyn_regex_node_ids, :local_regex_idx, :local_regex_call_nids, :undef_class_idx, :ieval_class_idxs, :ieval_body_ids
+  compiler_state_ia :pre_execution_blocks, :post_execution_blocks
+
+  def compiler_state_init_body_id; -31; end
+  def compiler_state_dump_body_id; -32; end
+  def compiler_state_set_int_body_id; -33; end
+  def compiler_state_set_str_body_id; -34; end
+  def compiler_state_set_sa_body_id; -35; end
+  def compiler_state_set_ia_body_id; -36; end
+
+  def compiler_state_synthetic_body_id?(bid)
+    if bid <= compiler_state_init_body_id && bid >= compiler_state_set_ia_body_id
+      return 1
+    end
+    0
+  end
+
+  def compiler_state_macro_kind(mn)
+    return "int" if mn == "compiler_state_int"
+    return "str" if mn == "compiler_state_str"
+    return "sa" if mn == "compiler_state_sa"
+    return "ia" if mn == "compiler_state_ia"
+    ""
+  end
+
+  def compiler_state_field_type(kind)
+    return "string" if kind == "str"
+    return "str_array" if kind == "sa"
+    return "int_array" if kind == "ia"
+    "int"
+  end
+
+  def compile_time_subst_key(ci, mname, bid, varname)
+    ci.to_s + ":" + mname + ":" + bid.to_s + ":" + varname
+  end
+
+  def compile_time_subst_lookup(ci, mname, bid, varname)
+    if ci < 0 || mname == "" || varname == ""
+      return ""
+    end
+    key = compile_time_subst_key(ci, mname, bid, varname)
+    i = 0
+    while i < @compile_time_subst_keys.length
+      if @compile_time_subst_keys[i] == key
+        if i < @compile_time_subst_vals.length
+          return @compile_time_subst_vals[i]
+        end
+        return ""
+      end
+      i = i + 1
+    end
+    ""
+  end
+
+  def compile_time_subst_for_current(varname)
+    if @current_class_idx < 0 || @current_method_name == ""
+      return ""
+    end
+    midx = cls_find_method_direct(@current_class_idx, @current_method_name)
+    if midx < 0
+      return ""
+    end
+    bodies = @cls_meth_bodies[@current_class_idx].split(";", -1)
+    if midx >= bodies.length
+      return ""
+    end
+    compile_time_subst_lookup(@current_class_idx, @current_method_name, bodies[midx].to_i, varname)
+  end
+
+  def compile_time_literal_type(encoded)
+    if encoded.start_with?("sym:")
+      return "symbol"
+    end
+    if encoded.start_with?("str:")
+      return "string"
+    end
+    if encoded.start_with?("int:")
+      return "int"
+    end
+    ""
+  end
+
+  def compile_time_literal_payload(encoded)
+    parts = encoded.split(":", -1)
+    if parts.length < 2
+      return ""
+    end
+    payload = ""
+    i = 1
+    while i < parts.length
+      if i > 1
+        payload = payload + ":"
+      end
+      payload = payload + parts[i]
+      i = i + 1
+    end
+    payload
+  end
 
  # ---- Nil-guard narrow helpers (#550) ----
 
