@@ -744,6 +744,9 @@ class Compiler
  # and skip the narrowing -- the explicit RBS declaration is
  # authoritative over heuristic inference. Issue #613.
     @rbs_seeded_cls_meth = "".split(";", -1)
+    @inline_c_blocks = "".split(",", -1)
+    @macro_names = "".split(",", -1)
+    @macro_templates = "".split(",", -1)
   end
 
   def rbs_mark_cls_meth_seeded(ci, midx)
@@ -14160,6 +14163,27 @@ class Compiler
         cname_ffi = @nd_name[sid]
         if cname_ffi.length >= 4 && cname_ffi[0, 4] == "ffi_"
           scan_ffi_decl(mname, sid)
+        elsif cname_ffi == "inline_c"
+          args_id = @nd_arguments[sid]
+          if args_id >= 0
+            args = get_args(args_id)
+            if args.length >= 1 && @nd_type[args[0]] == "StringNode"
+              @inline_c_blocks.push(@nd_content[args[0]])
+            end
+          end
+        elsif cname_ffi == "def_macro"
+          args_id = @nd_arguments[sid]
+          if args_id >= 0
+            args = get_args(args_id)
+            if args.length >= 2
+              mac_name = ffi_arg_str(args[0])
+              template = ffi_arg_str(args[1])
+              if mac_name != "" && template != ""
+                @macro_names.push(mac_name)
+                @macro_templates.push(template)
+              end
+            end
+          end
         end
       end
  # `class << self; attr_accessor :foo; end` — register `foo` as a
@@ -33965,6 +33989,10 @@ class Compiler
     buf = ir_emit_sa(buf, "@const_types", @const_types)
     buf = ir_emit_ia(buf, "@const_expr_ids", @const_expr_ids)
     buf = ir_emit_ia(buf, "@const_mutated", @const_mutated)
+    # FFI
+    buf = ir_emit_sa(buf, "@inline_c_blocks", @inline_c_blocks)
+    buf = ir_emit_sa(buf, "@macro_names", @macro_names)
+    buf = ir_emit_sa(buf, "@macro_templates", @macro_templates)
     buf = ir_emit_sa(buf, "@const_scope_names", @const_scope_names)
     buf = ir_emit_sa(buf, "@const_init_class", @const_init_class)
     buf = ir_emit_sa(buf, "@cvar_names", @cvar_names)
