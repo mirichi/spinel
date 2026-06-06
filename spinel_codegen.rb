@@ -27313,6 +27313,20 @@ class Compiler
               tmp = new_temp
               emit("  sp_SymPolyHash *" + tmp + " = sp_SymPolyHash_merge_int(" + rc + ", " + compile_expr(aargs[0]) + ");")
               return tmp
+ # Empty `{}` default arg (str_int_hash) into a sym_poly_hash
+ # receiver: an options param never widened by a kwarg call site.
+ # Copy the receiver, then re-intern any str keys to symbols
+ # (the arg is the empty default in the common case, so the loop
+ # is a no-op and the result is just the receiver's defaults).
+            elsif arg_t == "str_int_hash"
+              @needs_sym_intern = 1
+              arg_tmp_mi = new_temp
+              tmp = new_temp
+              idx_mi = new_temp
+              emit("  sp_StrIntHash *" + arg_tmp_mi + " = " + compile_expr(aargs[0]) + ";")
+              emit("  sp_SymPolyHash *" + tmp + " = sp_SymPolyHash_merge(" + rc + ", sp_SymPolyHash_new());")
+              emit("  for (mrb_int " + idx_mi + " = 0; " + arg_tmp_mi + " && " + idx_mi + " < " + arg_tmp_mi + "->len; " + idx_mi + "++) sp_SymPolyHash_set(" + tmp + ", sp_sym_intern(" + arg_tmp_mi + "->order[" + idx_mi + "]), sp_box_int(sp_StrIntHash_get(" + arg_tmp_mi + ", " + arg_tmp_mi + "->order[" + idx_mi + "])));")
+              return tmp
             elsif arg_t == "poly"
  # Poly-typed local whose runtime value is a sym_poly_hash
  # (typical when an `is_a?` branch widened the static
@@ -29099,9 +29113,10 @@ class Compiler
                 end
  # Bundle-as-positional: when no positional/kwarg fills this
  # slot and the slot's ptype is a hash type, pack any unmatched
- # kwargs into a fresh sp_StrPolyHash and pass it here. Mirrors
+ # kwargs into a fresh sp_SymPolyHash and pass it here. Mirrors
  # the analyzer-side `widen_ptypes_from_args` fallback that
- # widens `attrs = {}` to str_poly_hash at the call site.
+ # widens `attrs = {}` to sym_poly_hash at the call site (CRuby
+ # folds trailing kwargs into a Symbol-keyed positional Hash).
                 if slot_expr_cm == "" && bundle_emitted_cm == 0
                   slot_pt_cm = ""
                   if kk < owner_pt.length
@@ -29119,12 +29134,12 @@ class Compiler
                     if have_unmatched_cm == 1
                       bundle_tmp_cm = new_temp
                       @needs_rb_value = 1
-                      emit("  sp_StrPolyHash *" + bundle_tmp_cm + " = sp_StrPolyHash_new();")
+                      @needs_sym_poly_hash = 1
+                      emit("  sp_SymPolyHash *" + bundle_tmp_cm + " = sp_SymPolyHash_new();")
                       bbi = 0
                       while bbi < kw_names_cm.length
                         if kw_matched_cm[bbi] == 0
-                          key_c_cm = "(&(\"\\xff\" \"" + kw_names_cm[bbi] + "\")[1])"
-                          emit("  sp_StrPolyHash_set(" + bundle_tmp_cm + ", " + key_c_cm + ", " + box_expr_to_poly(kw_arg_ids_cm[bbi]) + ");")
+                          emit("  sp_SymPolyHash_set(" + bundle_tmp_cm + ", " + compile_symbol_literal(kw_names_cm[bbi]) + ", " + box_expr_to_poly(kw_arg_ids_cm[bbi]) + ");")
                         end
                         bbi = bbi + 1
                       end
@@ -34005,6 +34020,56 @@ class Compiler
             result = result + av_cd
           end
         else
+ # Kwargs-as-positional-hash collapse: a trailing KeywordHashNode
+ # whose keys match no param folds into this positional slot as a
+ # Symbol-keyed Hash (CRuby semantics for a callee with no keyword
+ # params). The analyzer's scan_new_calls fallback widened the slot
+ # to sym_poly_hash; build the matching hash from the unmatched
+ # kwargs here so `configure(timeout: 5)` reaches `opts` populated
+ # rather than getting the empty `{}` default.
+          if kwrest_param_idx < 0 && k < ptypes.length && ptypes[k] == "sym_poly_hash" && kw_names.length > 0
+            kw_unmatched_cd = 0
+            uci_cd = 0
+            while uci_cd < kw_names.length
+              matched_pn_cd = 0
+              pjj_cd = 0
+              while pjj_cd < pnames.length
+                if pnames[pjj_cd] == kw_names[uci_cd]
+                  matched_pn_cd = 1
+                end
+                pjj_cd = pjj_cd + 1
+              end
+              if matched_pn_cd == 0
+                kw_unmatched_cd = 1
+              end
+              uci_cd = uci_cd + 1
+            end
+            if kw_unmatched_cd == 1
+              @needs_rb_value = 1
+              @needs_sym_poly_hash = 1
+              @needs_gc = 1
+              bundle_tmp_cd = new_temp
+              emit("  sp_SymPolyHash *" + bundle_tmp_cd + " = sp_SymPolyHash_new();")
+              bki_cd = 0
+              while bki_cd < kw_names.length
+                matched_pn2_cd = 0
+                pjj2_cd = 0
+                while pjj2_cd < pnames.length
+                  if pnames[pjj2_cd] == kw_names[bki_cd]
+                    matched_pn2_cd = 1
+                  end
+                  pjj2_cd = pjj2_cd + 1
+                end
+                if matched_pn2_cd == 0
+                  emit("  sp_SymPolyHash_set(" + bundle_tmp_cd + ", " + compile_symbol_literal(kw_names[bki_cd]) + ", " + box_expr_to_poly(kw_arg_ids[bki_cd]) + ");")
+                end
+                bki_cd = bki_cd + 1
+              end
+              result = result + bundle_tmp_cd
+              k = k + 1
+              next
+            end
+          end
  # Use default value
           if k < defaults.length
             def_id = defaults[k].to_i
@@ -34170,14 +34235,14 @@ class Compiler
  # `Article.new(title: "", body: "...")` lowered to
  # `sp_Article_new(0)` because no kwarg name matched the
  # `attrs` positional, then `attrs["title"]` dereferenced NULL.
-    if pnames.length == 1 && pk_kwarg_name_matches?(kw_names, pnames) == 0 && ptypes.length >= 1 && ptypes[0] == "str_poly_hash"
+    if pnames.length == 1 && pk_kwarg_name_matches?(kw_names, pnames) == 0 && ptypes.length >= 1 && ptypes[0] == "sym_poly_hash"
       @needs_rb_value = 1
+      @needs_sym_poly_hash = 1
       hash_tmp_530 = new_temp
-      emit("  sp_StrPolyHash *" + hash_tmp_530 + " = sp_StrPolyHash_new();")
+      emit("  sp_SymPolyHash *" + hash_tmp_530 + " = sp_SymPolyHash_new();")
       ki_530 = 0
       while ki_530 < kw_names.length
-        key_c = "(&(\"\\xff\" \"" + kw_names[ki_530] + "\")[1])"
-        emit("  sp_StrPolyHash_set(" + hash_tmp_530 + ", " + key_c + ", " + box_expr_to_poly(kw_exprs[ki_530]) + ");")
+        emit("  sp_SymPolyHash_set(" + hash_tmp_530 + ", " + compile_symbol_literal(kw_names[ki_530]) + ", " + box_expr_to_poly(kw_exprs[ki_530]) + ");")
         ki_530 = ki_530 + 1
       end
       return hash_tmp_530
@@ -34719,13 +34784,13 @@ class Compiler
         if target_slot >= 0
           bundle_tmp = new_temp
           @needs_rb_value = 1
-          emit("  sp_StrPolyHash *" + bundle_tmp + " = sp_StrPolyHash_new();")
+          @needs_sym_poly_hash = 1
+          emit("  sp_SymPolyHash *" + bundle_tmp + " = sp_SymPolyHash_new();")
           ubi = 0
           while ubi < unmatched_kw_idxs.length
             uk = unmatched_kw_idxs[ubi]
-            key_c_b = "(&(\"\\xff\" \"" + kw_name_keys[uk] + "\")[1])"
             val_id_b = kw_name_to_arg[uk].to_i
-            emit("  sp_StrPolyHash_set(" + bundle_tmp + ", " + key_c_b + ", " + box_expr_to_poly(val_id_b) + ");")
+            emit("  sp_SymPolyHash_set(" + bundle_tmp + ", " + compile_symbol_literal(kw_name_keys[uk]) + ", " + box_expr_to_poly(val_id_b) + ");")
             ubi = ubi + 1
           end
           while arg_ids.length <= target_slot

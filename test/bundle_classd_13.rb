@@ -60,24 +60,23 @@ end
 # #530. `Class.new(kw: val)` (Symbol-keyed kwargs) where the
 # class's initialize takes a single positional `attrs` param.
 # CRuby binds `attrs = {kw: val}` (the kwargs become a positional
-# hash). Spinel previously emitted `sp_Foo_new(0)` because the
-# kwarg name didn't match the positional param name -- the
-# kwarg got silently dropped and the param defaulted to int.
-# `attrs["title"]` inside initialize then segfaulted on the
-# NULL deref (on macOS; Linux glibc's zero-init happened to
-# hide it).
+# hash whose keys are the kwarg *symbols*). Spinel previously
+# emitted `sp_Foo_new(0)` because the kwarg name didn't match the
+# positional param name -- the kwarg got silently dropped and the
+# param defaulted to int.
 #
 # Fix: when a KeywordHashNode arg's keys match no param name
 # and there's still an unfilled positional, treat the whole
 # hash as that positional's value. analyze widens the param's
-# inferred type to `str_poly_hash` (string keys via sym->s
-# interning, poly values for kwarg-value variety) and codegen
-# builds the hash from the kwargs at the call site.
+# inferred type to `sym_poly_hash` (symbol keys, poly values for
+# kwarg-value variety) and codegen builds the hash from the
+# kwargs at the call site. Access is via the kwarg symbols
+# (`attrs[:title]`); string keys would not match, matching CRuby.
 
 class T_new_kwarg_bundle_Article
   def initialize(attrs)
-    @title = attrs["title"]
-    @body  = attrs["body"]
+    @title = attrs[:title]
+    @body  = attrs[:body]
   end
   attr_reader :title, :body
 end
@@ -87,16 +86,16 @@ puts a.title
 puts a.body
 
 # Two kwarg call sites with different value shapes -- both flow
-# into the same str_poly_hash widening.
+# into the same sym_poly_hash widening.
 b = T_new_kwarg_bundle_Article.new(title: "Second", body: "Post")
 puts b.title
 
-# T_new_kwarg_bundle_Mixed value types in one kwarg call: the str_poly_hash carries
+# T_new_kwarg_bundle_Mixed value types in one kwarg call: the sym_poly_hash carries
 # all the boxed values; consumers unbox at the use site.
 class T_new_kwarg_bundle_Mixed
   def initialize(opts)
-    @s = opts["name"]
-    @n = opts["count"]
+    @s = opts[:name]
+    @n = opts[:count]
   end
   attr_reader :s, :n
 end

@@ -6393,10 +6393,23 @@ class Compiler
                 @needs_rb_value = 1
                 return "sym_poly_hash"
               end
- # Cross-key-shape: sym recv + str arg -> result has mixed
- # keys. Promote to str_poly_hash; codegen-side merge dispatch
- # routes both sides through StrPolyHash converters.
-              if arg_t_mg == "str_int_hash" || arg_t_mg == "str_str_hash" || arg_t_mg == "str_poly_hash"
+ # sym recv + empty `{}` default arg: an options param that's
+ # never widened by a kwarg call site keeps its str_int_hash
+ # default type (`def m(opts = {}); SYM_CONST.merge(opts); end;
+ # m`). CRuby folds the (empty) hash into the receiver's symbol
+ # keys, so the result is sym_poly_hash; codegen re-interns any
+ # str arg keys to symbols.
+              if arg_t_mg == "str_int_hash"
+                @needs_rb_value = 1
+                @needs_sym_poly_hash = 1
+ # codegen re-interns the str arg's keys via sp_sym_intern.
+                @needs_sym_intern = 1
+                return "sym_poly_hash"
+              end
+ # Cross-key-shape: sym recv + str-keyed arg with genuine string
+ # keys -> result has mixed keys. Promote to str_poly_hash;
+ # codegen routes both sides through StrPolyHash converters.
+              if arg_t_mg == "str_str_hash" || arg_t_mg == "str_poly_hash"
                 @needs_rb_value = 1
                 return "str_poly_hash"
               end
@@ -15905,24 +15918,24 @@ class Compiler
         end
  # Bundle-as-positional fallback: no kwarg matched a param name
  # AND there's an unfilled positional slot still at the default
- # int type. Widen it to str_poly_hash (string keys from
- # Symbol-to-s conversion; poly values for kwarg mixing). The
- # body's `attrs[...]` accesses then resolve through the
- # str_poly_hash poly-recv dispatch instead of the unresolved
- # "[] on int" fallback.
+ # int type. The kwargs collapse into that positional slot as a
+ # Symbol-keyed hash (CRuby folds trailing unmatched kwargs into a
+ # positional Hash whose keys are the kwarg *symbols*). Widen the
+ # slot to sym_poly_hash so `attrs[:k]` resolves and the constant
+ # idiom `DEFAULTS.merge(attrs)` dispatches sym-keyed merge.
  #
  # Also fires when the slot is already a narrow hash type from a
  # `attrs = {}` default — `def self.create(attrs = {})` infers
  # `attrs` as `str_int_hash` from the literal default. A
  # `Class.create(article_id: 1, body: "...")` call site has
  # mixed-type values that don't fit str_int_hash; widen so the
- # codegen bundle emits sp_StrPolyHash_set with boxed values.
+ # codegen bundle emits sp_SymPolyHash_set with boxed values.
         if any_matched == 0 && pos_idx < ptypes.length
           pt_w = ptypes[pos_idx]
           if pt_w == "int" || pt_w == "nil" || is_hash_type(pt_w) == 1
             @needs_rb_value = 1
-            @needs_str_poly_hash = 1
-            ptypes[pos_idx] = "str_poly_hash"
+            @needs_sym_poly_hash = 1
+            ptypes[pos_idx] = "sym_poly_hash"
           end
           pos_idx = pos_idx + 1
         end
@@ -16077,9 +16090,13 @@ class Compiler
             while ak < arg_ids.length
               if @nd_type[arg_ids[ak]] == "KeywordHashNode"
                 elems = parse_id_list(@nd_elements[arg_ids[ak]])
+                any_matched_tl = 0
+                named_assoc_tl = 0
+                assoc_splat_tl = 0
                 ek = 0
                 while ek < elems.length
                   if @nd_type[elems[ek]] == "AssocNode"
+                    named_assoc_tl = 1
                     key_id = @nd_key[elems[ek]]
                     if key_id >= 0
                       kname = ""
@@ -16094,12 +16111,37 @@ class Compiler
                           if pi < ptypes.length
                             ptypes[pi] = unify_call_types(ptypes[pi], at, @nd_expression[elems[ek]])
                           end
+                          any_matched_tl = 1
                         end
                         pi = pi + 1
                       end
                     end
+                  elsif @nd_type[elems[ek]] == "AssocSplatNode"
+                    assoc_splat_tl = 1
                   end
                   ek = ek + 1
+                end
+ # Bundle-as-positional fallback for a top-level method whose
+ # callee has no matching keyword param (and no kwrest): CRuby
+ # folds the trailing unmatched kwargs into the next positional
+ # slot as a Symbol-keyed Hash. Mirror widen_ptypes_from_args so
+ # `configure(timeout: 5)` -> `def configure(opts = {})` widens
+ # `opts` to sym_poly_hash, letting `DEFAULTS.merge(opts)` resolve.
+ # Skip `foo(**h)`: a double-splat (AssocSplatNode) targets the
+ # callee's keyword params / **kwrest, never a positional hash.
+ # Require at least one named kwarg so a lone splat doesn't widen
+ # a keyword param's slot to sym_poly_hash.
+                tl_kwrest = -1
+                if mi < @meth_kwrest_index.length
+                  tl_kwrest = @meth_kwrest_index[mi]
+                end
+                if any_matched_tl == 0 && named_assoc_tl == 1 && assoc_splat_tl == 0 && rest_param_idx < 0 && tl_kwrest < 0 && ak < ptypes.length
+                  pt_tlw = ptypes[ak]
+                  if pt_tlw == "int" || pt_tlw == "nil" || is_hash_type(pt_tlw) == 1
+                    @needs_rb_value = 1
+                    @needs_sym_poly_hash = 1
+                    ptypes[ak] = "sym_poly_hash"
+                  end
                 end
               else
  # SplatNode: treat the splat source's element type as
