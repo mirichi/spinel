@@ -2889,13 +2889,36 @@ class Compiler
  # encoded `<descendant_ci>,<owner_ci>` separated by `;`. Empty
  # string when no overrides exist (caller stays on the
  # static-dispatch path). `kind` is "cmeth" or "imeth".
+ # Whether the body the dispatch arm would call (`sp_<class>_<mname>`,
+ # or `_cls_<mname>` for class methods) is actually emitted, mirroring
+ # the gates in emit_class_methods: a class skipped wholesale
+ # (cls_emit_skipped) emits no bodies, and an *instance* method on a
+ # class specialized into `__implicit_*` variants
+ # (implicit_specialization_template_class?) is pruned -- the live
+ # variants carry their own bodies and the template base's own bodies
+ # are never emitted. Class-method bodies are not pruned that way.
+ # Used to drop dispatch cases whose target body was never emitted,
+ # which would otherwise call an undeclared function. Issue #1344.
+  def cls_method_body_emitted?(ci, kind)
+    if ci < 0 || ci >= @cls_names.length
+      return 0
+    end
+    if cls_emit_skipped(ci) == 1
+      return 0
+    end
+    if kind != "cmeth" && implicit_specialization_template_class?(ci) == 1
+      return 0
+    end
+    1
+  end
+
   def cls_method_override_descendants(inner_ci, base_owner, mname, kind)
     out = ""
     ck = 0
     while ck < @cls_names.length
       if ck == inner_ci || cls_is_descendant(ck, inner_ci) == 1
         ow = cls_method_owner_for(ck, mname, kind)
-        if ow >= 0 && ow != base_owner
+        if ow >= 0 && ow != base_owner && cls_method_body_emitted?(ow, kind) == 1
           if out != ""
             out = out + ";"
           end
