@@ -45,6 +45,8 @@ static int sp_bt_n = 0;
 #include <windows.h>
 #include <process.h>
 #include <direct.h>
+#include <io.h>      /* _pipe (POSIX pipe(2) is absent on MinGW) */
+#include <fcntl.h>   /* _O_BINARY */
 /* POSIX compat shims for MinGW */
 #define mmap(a,l,p,f,fd,off) VirtualAlloc(NULL,(l),MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)
 #define munmap(a,l) (VirtualFree((a),0,MEM_RELEASE)?0:-1)
@@ -1823,6 +1825,15 @@ static sp_File *sp_File_open(const char *path, const char *mode) {
   f->path = path;
   f->mode = mode;
   return f;
+}
+/* pipe(2) portability: MinGW exposes _pipe(fds, size, mode) via <io.h>,
+   not the POSIX pipe(int[2]). Returns 0 on success, -1 on error. */
+static int sp_io_make_pipe(int fds[2]) {
+#ifdef _WIN32
+  return _pipe(fds, 65536, _O_BINARY);
+#else
+  return pipe(fds);
+#endif
 }
 /* IO.pipe end: wrap a raw pipe fd in a GC-managed sp_File so the
    sp_File_* I/O ops work on it. Same finalizer/scan as sp_File_open. */

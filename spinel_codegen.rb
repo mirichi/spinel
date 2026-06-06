@@ -29083,7 +29083,7 @@ class Compiler
         nm_pipe = tuple_c_name(tt_pipe)
         tmp_pipe = new_temp
         fds_pipe = "_pipefd" + tmp_pipe
-        emit("  int " + fds_pipe + "[2]; if (pipe(" + fds_pipe + ") != 0) sp_raise_cls(\"IOError\", \"pipe(2) failed\");")
+        emit("  int " + fds_pipe + "[2]; if (sp_io_make_pipe(" + fds_pipe + ") != 0) sp_raise_cls(\"IOError\", \"pipe(2) failed\");")
         emit("  " + nm_pipe + " *" + tmp_pipe + " = (" + nm_pipe + " *)sp_gc_alloc(sizeof(" + nm_pipe + "), NULL, " + tuple_scan_name(tt_pipe) + ");")
         emit("  " + tmp_pipe + "->_0 = sp_io_fdopen(" + fds_pipe + "[0], \"r\");")
         emit("  " + tmp_pipe + "->_1 = sp_io_fdopen(" + fds_pipe + "[1], \"w\");")
