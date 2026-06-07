@@ -3533,6 +3533,38 @@ class Compiler
         return "curried"
       end
     end
+ # Inside the inline window of a yield-using method, `yield` evaluates to
+ # the (statically known) literal block's body value. Type it as the
+ # block's return type — BEFORE honoring the cache, which analyze filled
+ # with the int default — so `"[" + yield + "]"` and the captured result
+ # temp use the real type. Bounded by @inline_yield_blk: no effect
+ # outside an inline window.
+    if @nd_type[nid] == "YieldNode" && @inline_yield_blk >= 0
+      yb_blk = @nd_body[@inline_yield_blk]
+      if yb_blk >= 0
+        yb_stmts = get_stmts(yb_blk)
+        if yb_stmts.length > 0
+          yb_t = infer_type(yb_stmts.last)
+          if yb_t != "" && yb_t != "void"
+            return yb_t
+          end
+        end
+      end
+      return "int"
+    end
+ # A yield-using method called with a literal block returns the inlined
+ # body's value (with `yield` resolving to the block's return type), not
+ # the method's declared return type. analyze caches the call as the int
+ # default, so compute and return the inline type BEFORE honoring that
+ # cache — otherwise `puts m { "x" }` / `x = m { "x" }` mistype the
+ # result. Gated on a literal block, so the hot no-block path is
+ # untouched.
+    if @nd_type[nid] == "CallNode" && @nd_block[nid] >= 0 && has_literal_block(nid) == 1
+      yci_t = yield_call_inline_type(nid)
+      if yci_t != ""
+        return yci_t
+      end
+    end
  # Cache lookup. analyze.rb's annotate_all_node_types fills
  # @nd_inferred_type for every reachable node OUTSIDE block bodies
  # (block-iteration scope is iterator-specific and dispatched at
@@ -10750,6 +10782,77 @@ class Compiler
       end
     end
     0
+  end
+
+ # 1 if `nid`'s subtree contains a *self*-call to `mname` -- a
+ # receiverless or `self.`-receiver call. Unlike node_calls_name? (which
+ # matches any CallNode by name, e.g. `@data.each` while inside `each`),
+ # this only flags genuine self-recursion, so the yield-inline guard
+ # doesn't wrongly refuse a method that delegates to a same-named method
+ # on another receiver (the T_enumerable#each -> @data.each shape).
+  def yield_body_self_recurses?(nid, mname)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == mname
+      rcv = @nd_receiver[nid]
+      if rcv < 0 || @nd_type[rcv] == "SelfNode"
+        return 1
+      end
+    end
+    if @nd_receiver[nid] >= 0 && yield_body_self_recurses?(@nd_receiver[nid], mname) == 1
+      return 1
+    end
+    args_id = @nd_arguments[nid]
+    if args_id >= 0
+      arr = get_args(args_id)
+      k = 0
+      while k < arr.length
+        if yield_body_self_recurses?(arr[k], mname) == 1
+          return 1
+        end
+        k = k + 1
+      end
+    end
+    if @nd_body[nid] >= 0 && yield_body_self_recurses?(@nd_body[nid], mname) == 1
+      return 1
+    end
+    if @nd_block[nid] >= 0 && yield_body_self_recurses?(@nd_block[nid], mname) == 1
+      return 1
+    end
+    if @nd_else_clause[nid] >= 0 && yield_body_self_recurses?(@nd_else_clause[nid], mname) == 1
+      return 1
+    end
+    stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts.length
+      if yield_body_self_recurses?(stmts[k], mname) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    if @nd_subsequent[nid] >= 0 && yield_body_self_recurses?(@nd_subsequent[nid], mname) == 1
+      return 1
+    end
+    0
+  end
+
+ # 1 if class ci's method midx body self-recurses on `mname`. Used to
+ # refuse inlining a self-recursive yield method, which would otherwise
+ # expand forever (the call count isn't const-folded).
+  def cls_meth_body_calls_self?(ci, midx, mname)
+    if ci < 0 || midx < 0
+      return 0
+    end
+    bodies = @cls_meth_bodies[ci].split(";", -1)
+    if midx >= bodies.length
+      return 0
+    end
+    bid = bodies[midx].to_i
+    if bid < 0
+      return 0
+    end
+    yield_body_self_recurses?(bid, mname)
   end
 
  # Should the emit pipeline skip class ci's struct + constructor +
@@ -20389,7 +20492,7 @@ class Compiler
  # `, NULL, NULL` yargs path below produces `sp_measure(, NULL, NULL)`
  # which doesn't compile. Mirror compile_yield_call_stmt's inline
  # path but capture the body's last expression into a result temp.
-      if @meth_has_yield[mi] == 1 && has_literal_block(nid) == 1 && meth_has_block_param(mi) == 0
+      if @meth_has_yield[mi] == 1 && has_literal_block(nid) == 1 && meth_has_block_param(mi) == 0 && yield_body_self_recurses?(@meth_body_ids[mi], mname) == 0
         return compile_yield_call_expr(nid, mi)
       end
       yargs = ""
@@ -31322,6 +31425,16 @@ class Compiler
           if oci2 >= 0
             midx2 = cls_find_method_direct(oci2, mname)
           end
+ # yield-using instance method called with a literal block in
+ # expression position: inline the body and capture the yielded
+ # value, mirroring the top-level compile_yield_call_expr path.
+ # Without this the call emits sp_<C>_<m>(recv, NULL, NULL) — the
+ # literal block is dropped and yield returns 0.
+          if oci2 >= 0 && midx2 >= 0 && has_literal_block(nid) == 1 &&
+             cls_method_has_yield(oci2, midx2) == 1 && cls_method_has_block_param(oci2, midx2) == 0 &&
+             cls_meth_body_calls_self?(oci2, midx2, mname) == 0
+            return compile_yield_method_call_expr(nid, oci2, midx2, mname)
+          end
  # Omit the trailing &block slot from default-padding when the
  # callee declares one — we'll fill it explicitly from the
  # call site's literal block below.
@@ -42001,7 +42114,7 @@ class Compiler
  # block local to `blk_y<N>` but leaves the body's `blk.call`
  # referencing the original `lv_blk`. Fall through to the regular
  # call path, which forwards the literal block into the &blk slot.
-          if @meth_has_yield[mi] == 1 && meth_has_block_param(mi) == 0
+          if @meth_has_yield[mi] == 1 && meth_has_block_param(mi) == 0 && yield_body_self_recurses?(@meth_body_ids[mi], mname) == 0
             compile_yield_call_stmt(nid, mi)
             return 1
           end
@@ -50174,7 +50287,27 @@ class Compiler
         kf = kf + 1
       end
     end
+ # Type the captured result by the inlined body's actual value type
+ # (yield window open so `yield` resolves to the block's return type)
+ # rather than the declared return type, which defaults to int and
+ # truncates a string/pointer body. Fall back to the declared type.
     rt_yc = @meth_return_types[mi]
+ # Only refine the int default (see compile_yield_method_call_expr).
+    if base_type(rt_yc) == "int" && bid >= 0
+      st_chk_yc = get_stmts(bid)
+      if st_chk_yc.length > 0
+        sv_iyb_yc = @inline_yield_blk
+        sv_iybp_yc = @inline_yield_bp_names
+        @inline_yield_blk = blk
+        @inline_yield_bp_names = bp_names
+        inf_rt_yc = infer_type(st_chk_yc.last)
+        @inline_yield_blk = sv_iyb_yc
+        @inline_yield_bp_names = sv_iybp_yc
+        if inf_rt_yc != "" && inf_rt_yc != "void"
+          rt_yc = inf_rt_yc
+        end
+      end
+    end
     result_tmp = new_temp
     emit("  " + c_type(rt_yc) + " " + result_tmp + " = " + c_return_default(rt_yc) + ";")
     saved_in_rmf = @inline_rename_map_from
@@ -50833,6 +50966,31 @@ class Compiler
           end
         end
         if mname == "+"
+ # String receiver: lower `s + x` to sp_str_concat (coercing an int
+ # rhs via sp_int_to_s) instead of raw C pointer `+`, which is a hard
+ # type error. Mirrors compile_call's string-`+` path for the inlined
+ # yield-body remap (e.g. `"[" + yield + "]"`).
+          recv_t_plus = base_type(infer_type(recv))
+          if recv_t_plus == "string" || recv_t_plus == "mutable_str"
+            lhs_plus = compile_expr_remap(recv, map_from, map_to)
+            arg0_plus = compile_expr_remap_arg0(nid, map_from, map_to)
+            arg_t_plus = "int"
+            args_id_plus = @nd_arguments[nid]
+            if args_id_plus >= 0
+              ap_plus = get_args(args_id_plus)
+              if ap_plus.length > 0
+                arg_t_plus = base_type(infer_type(ap_plus[0]))
+              end
+            end
+            if arg_t_plus == "string" || arg_t_plus == "mutable_str"
+              return "sp_str_concat(" + lhs_plus + ", " + arg0_plus + ")"
+            end
+            if arg_t_plus == "int"
+              return "sp_str_concat(" + lhs_plus + ", sp_int_to_s(" + arg0_plus + "))"
+            end
+            @needs_rb_value = 1
+            return "sp_str_concat(" + lhs_plus + ", sp_poly_to_s(" + arg0_plus + "))"
+          end
           return "(" + compile_expr_remap(recv, map_from, map_to) + " + " + compile_expr_remap_arg0(nid, map_from, map_to) + ")"
         end
         if mname == "-"
@@ -50954,7 +51112,7 @@ class Compiler
     if midx < 0
       return 0
     end
-    if cls_method_has_yield(cls_idx, midx) == 1 && cls_method_has_block_param(cls_idx, midx) == 0
+    if cls_method_has_yield(cls_idx, midx) == 1 && cls_method_has_block_param(cls_idx, midx) == 0 && cls_meth_body_calls_self?(cls_idx, midx, mname) == 0
       compile_yield_method_call_stmt(nid, cls_idx, midx, mname)
       return 1
     end
@@ -51326,6 +51484,267 @@ class Compiler
 
     @self_override = saved_self_override
     @current_class_idx = saved_ci
+  end
+
+ # Expression-position variant of compile_yield_method_call_stmt: inline
+ # a yield-using instance method called with a literal block and capture
+ # the method body's value into a temp, so `x = recv.m { ... }` /
+ # `puts recv.m { ... }` see the yielded value instead of a dropped
+ # `, NULL, NULL` block (returns 0). Mirrors compile_yield_call_expr's
+ # last-statement capture.
+  def compile_yield_method_call_expr(nid, cci, midx, mname)
+    blk = @nd_block[nid]
+    if blk < 0
+      return "0"
+    end
+    bp_names = "".split(",", -1)
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        k = 0
+        while k < reqs.length
+          bp_names.push(@nd_name[reqs[k]])
+          k = k + 1
+        end
+      end
+    end
+
+    recv = @nd_receiver[nid]
+    if recv < 0
+      rc = "self"
+    else
+      rc = compile_expr_gc_rooted(recv)
+    end
+
+    bodies = @cls_meth_bodies[cci].split(";", -1)
+    bid = -1
+    if midx < bodies.length
+      bid = bodies[midx].to_i
+    end
+
+    saved_ci = @current_class_idx
+    @current_class_idx = cci
+    saved_self_override = @self_override
+    if cci >= 0 && cci < @cls_is_value_type.length && @cls_is_value_type[cci] != 1
+      @self_override = "((sp_" + @cls_names[cci] + " *)" + rc + ")"
+    else
+      @self_override = rc
+    end
+
+    @block_counter = @block_counter + 1
+    suffix = "_y" + @block_counter.to_s
+
+    pnames = cls_meth_pnames_get(cci, midx)
+    ptypes = cls_meth_ptypes_get(cci, midx)
+
+    map_from = "".split(",", -1)
+    map_to = "".split(",", -1)
+    map_from.push("_self_")
+    map_to.push(rc)
+
+    args_id = @nd_arguments[nid]
+    arg_ids = []
+    if args_id >= 0
+      arg_ids = get_args(args_id)
+    end
+
+    k = 0
+    while k < pnames.length
+      pt = "int"
+      if k < ptypes.length
+        pt = ptypes[k]
+      end
+      tname = pnames[k] + suffix
+      val = c_default_val(pt)
+      if k < arg_ids.length
+        val = compile_expr(arg_ids[k])
+        arg_t_ym = infer_type(arg_ids[k])
+        if base_type(pt) == "bigint" && arg_t_ym == "int"
+          @needs_bigint = 1
+          val = "sp_bigint_new_int(" + val + ")"
+        elsif base_type(pt) == "int" && arg_t_ym == "bigint"
+          @needs_bigint = 1
+          val = "sp_bigint_to_int((sp_Bigint *)" + val + ")"
+        end
+      end
+      emit("  " + c_type(pt) + " lv_" + tname + " = " + val + ";")
+      map_from.push(pnames[k])
+      map_to.push(tname)
+      declare_var(tname, pt)
+      declare_var(pnames[k], pt)
+      k = k + 1
+    end
+
+    if bid >= 0
+      flocals_n = "".split(",", -1)
+      flocals_t = "".split(",", -1)
+      sn_f = @nd_scope_names[bid]
+      if sn_f != ""
+        flocals_n = sn_f.split("|", -1)
+        flocals_t = @nd_scope_types[bid].split("|", -1)
+      end
+      k = 0
+      while k < flocals_n.length
+        tname = flocals_n[k] + suffix
+        emit("  " + c_type(flocals_t[k]) + " lv_" + tname + " = " + c_default_val(flocals_t[k]) + ";")
+        map_from.push(flocals_n[k])
+        map_to.push(tname)
+        declare_var(tname, flocals_t[k])
+        declare_var(flocals_n[k], flocals_t[k])
+        k = k + 1
+      end
+    end
+
+ # Type the captured result by the inlined body's actual value type
+ # (with the yield window open so `yield` resolves to the block's
+ # return type) rather than the method's declared return type, which
+ # defaults to int and would truncate a string/pointer body. Fall back
+ # to the declared return type when the body type can't be resolved.
+    rt_ym = cls_method_return(cci, mname)
+ # Only refine the int default from the inlined body type; a concrete
+ # analyze return type is authoritative (recompute here lacks the
+ # method's local scope and could mis-resolve body locals).
+    if base_type(rt_ym) == "int" && bid >= 0
+      st_chk = get_stmts(bid)
+      if st_chk.length > 0
+        sv_iyb_t = @inline_yield_blk
+        sv_iybp_t = @inline_yield_bp_names
+        @inline_yield_blk = blk
+        @inline_yield_bp_names = bp_names
+        inf_rt = infer_type(st_chk.last)
+        @inline_yield_blk = sv_iyb_t
+        @inline_yield_bp_names = sv_iybp_t
+        if inf_rt != "" && inf_rt != "void"
+          rt_ym = inf_rt
+        end
+      end
+    end
+    result_tmp = new_temp
+    emit("  " + c_type(rt_ym) + " " + result_tmp + " = " + c_return_default(rt_ym) + ";")
+
+    saved_in_rmf = @inline_rename_map_from
+    saved_in_rmt = @inline_rename_map_to
+    @inline_rename_map_from = map_from
+    @inline_rename_map_to = map_to
+    saved_iyb = @inline_yield_blk
+    saved_iybp = @inline_yield_bp_names
+    @inline_yield_blk = blk
+    @inline_yield_bp_names = bp_names
+    if bid >= 0
+      stmts = get_stmts(bid)
+      n = stmts.length
+      ks = 0
+      while ks < n - 1
+        compile_stmt_with_block(stmts[ks], blk, bp_names, map_from, map_to)
+        ks = ks + 1
+      end
+      if n > 0
+        last_y = stmts.last
+        last_t = @nd_type[last_y]
+        if last_t == "YieldNode"
+          compile_yield_inline_capture(last_y, blk, bp_names, map_from, map_to, result_tmp, rt_ym)
+        elsif last_t == "IfNode" || last_t == "CaseNode" ||
+           last_t == "WhileNode" || last_t == "BeginNode" || last_t == "ReturnNode" ||
+           last_t == "LocalVariableWriteNode" || last_t == "InstanceVariableWriteNode" ||
+           last_t == "ClassVariableWriteNode" || last_t == "GlobalVariableWriteNode"
+          compile_stmt_with_block(last_y, blk, bp_names, map_from, map_to)
+        else
+          last_val = compile_expr_remap(last_y, map_from, map_to)
+          emit("  " + result_tmp + " = " + last_val + ";")
+        end
+      end
+    end
+    @inline_rename_map_from = saved_in_rmf
+    @inline_rename_map_to = saved_in_rmt
+    @inline_yield_blk = saved_iyb
+    @inline_yield_bp_names = saved_iybp
+    @self_override = saved_self_override
+    @current_class_idx = saved_ci
+    result_tmp
+  end
+
+ # Return type of a `m { ... }` call where `m` is a yield-using method
+ # (top-level or instance) with no &block param, called with a literal
+ # block: the inlined body's value type with `yield` resolving to the
+ # block's return type. Returns "" when the call isn't this shape (so
+ # infer_type falls through to the cache / declared return type). Used
+ # by infer_type so callers (`puts`, assignment) see the real type.
+  def yield_call_inline_type(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return ""
+    end
+    mname = @nd_name[nid]
+    recv = @nd_receiver[nid]
+    bid = -1
+    decl_rt = "int"
+    if recv < 0
+      mi = find_method_idx(mname)
+      if mi >= 0 && @meth_has_yield[mi] == 1 && meth_has_block_param(mi) == 0 && yield_body_self_recurses?(@meth_body_ids[mi], mname) == 0
+        bid = @meth_body_ids[mi]
+        decl_rt = @meth_return_types[mi]
+      end
+    else
+      rt = base_type(infer_type(recv))
+      if is_obj_type(rt) == 1
+        cn = rt[4, rt.length - 4]
+        cci = find_class_idx(cn)
+        if cci >= 0
+          owner = find_method_owner(cci, mname)
+          if owner != ""
+            oci = find_class_idx(owner)
+            midx = -1
+            if oci >= 0
+              midx = cls_find_method_direct(oci, mname)
+            end
+            if oci >= 0 && midx >= 0 && cls_method_has_yield(oci, midx) == 1 && cls_method_has_block_param(oci, midx) == 0 && cls_meth_body_calls_self?(oci, midx, mname) == 0
+              bodies = @cls_meth_bodies[oci].split(";", -1)
+              if midx < bodies.length
+                bid = bodies[midx].to_i
+              end
+              decl_rt = cls_method_return(oci, mname)
+            end
+          end
+        end
+      end
+    end
+    if bid < 0
+      return ""
+    end
+ # Only refine the unhelpful int default. When analyze already inferred
+ # a concrete return type (str_array from `free.push(yield); free`,
+ # string from a concat body, etc.) it is authoritative — recomputing
+ # here without the method's local scope would mis-resolve body locals.
+    if base_type(decl_rt) != "int"
+      return ""
+    end
+    st = get_stmts(bid)
+    if st.length == 0
+      return ""
+    end
+    bp_names = "".split(",", -1)
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        kbp = 0
+        while kbp < reqs.length
+          bp_names.push(@nd_name[reqs[kbp]])
+          kbp = kbp + 1
+        end
+      end
+    end
+    sv_iyb = @inline_yield_blk
+    sv_iybp = @inline_yield_bp_names
+    @inline_yield_blk = blk
+    @inline_yield_bp_names = bp_names
+    rt_inf = infer_type(st.last)
+    @inline_yield_blk = sv_iyb
+    @inline_yield_bp_names = sv_iybp
+    rt_inf
   end
 
  # Two-level yield inline: `outer do |x| yield x*2 end` appearing
