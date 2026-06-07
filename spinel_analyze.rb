@@ -3810,7 +3810,7 @@ class Compiler
  # int default (issue #508).
     if recv < 0 && @current_class_idx >= 0
       if cls_has_attr_reader(@current_class_idx, mname) == 1
-        ivt_attr = cls_ivar_type(@current_class_idx, "@" + mname)
+        ivt_attr = cls_ivar_type(@current_class_idx, "@" + attr_reader_ivar(@current_class_idx, mname))
         if ivt_attr != "int"
           return ivt_attr
         end
@@ -7692,7 +7692,7 @@ class Compiler
             gi = gi + 1
           end
           if cand_g == "" && cls_has_attr_reader(ci, mname) == 1
-            cand_g = cls_ivar_type(ci, "@" + mname)
+            cand_g = cls_ivar_type(ci, "@" + attr_reader_ivar(ci, mname))
           end
           if cand_g == "" && cls_find_method_direct(ci, mname) >= 0
             cand_g = cls_method_return(ci, mname)
@@ -7748,7 +7748,7 @@ class Compiler
           end
  # Check attr_readers (walks parent chain — issue #508).
           if cls_has_attr_reader(ci, mname) == 1
-            ivt = cls_ivar_type(ci, "@" + mname)
+            ivt = cls_ivar_type(ci, "@" + attr_reader_ivar(ci, mname))
             if ivt != "int" && ivt != ""
               if cand_rt_cross == ""
                 cand_rt_cross = ivt
@@ -7785,7 +7785,7 @@ class Compiler
  # attr_accessor's typed ivar resolves to the right token).
  # Issue #508 (analyze side).
           if cls_has_attr_reader(ci, mname) == 1
-            return cls_ivar_type(ci, "@" + mname)
+            return cls_ivar_type(ci, "@" + attr_reader_ivar(ci, mname))
           end
  # Check method
           mr = cls_method_return(ci, mname)
@@ -11478,6 +11478,19 @@ class Compiler
       end
     end
     if src < 0
+ # The source may be an attr_reader/attr_accessor-generated reader
+ # rather than a hand-written method. Those live in @cls_attr_readers,
+ # not @cls_meth_*, so register the alias as a reader too and record
+ # the source's backing ivar so `obj.<new>` reads the right slot
+ # (reader name == ivar name for the source, unless the source is
+ # itself an alias, in which case attr_reader_ivar resolves the chain).
+      if cls_has_attr_reader(ci, old_name) == 1
+        backing = attr_reader_ivar(ci, old_name)
+        append_attr_reader(ci, new_name)
+        @attr_alias_keys.push(@cls_names[ci] + "#" + new_name)
+        @attr_alias_ivars.push(backing)
+        return
+      end
       $stderr.puts "Spinel: alias `" + new_name + "` -> `" + old_name + "`: source method not found in class " + @cls_names[ci]
       exit(1)
     end
@@ -12686,7 +12699,9 @@ class Compiler
     readers = @cls_attr_readers[ci].split(";", -1)
     j = 0
     while j < readers.length
-      iname = "@" + readers[j]
+ # An aliased reader resolves to its source's backing ivar, which is
+ # already declared; only create a slot for genuine `@<reader>` readers.
+      iname = "@" + attr_reader_ivar(ci, readers[j])
       if ivar_exists(ci, iname) == 0
         add_ivar(ci, iname, "int")
       end
@@ -25191,7 +25206,7 @@ class Compiler
             while rk < readers.length
               if readers[rk] == mname
  # Resolve ivar type from initialize body
-                ivt = resolve_ivar_from_init(ci, "@" + mname)
+                ivt = resolve_ivar_from_init(ci, "@" + attr_reader_ivar(ci, mname))
                 if ivt != "" && ivt != "int"
                   return ivt
                 end

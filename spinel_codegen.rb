@@ -3446,7 +3446,7 @@ class Compiler
           if nci_nt >= 0
             mname_nt = @nd_name[nid]
             if cls_has_attr_reader(nci_nt, mname_nt) == 1
-              return cls_ivar_type(nci_nt, "@" + mname_nt)
+              return cls_ivar_type(nci_nt, "@" + attr_reader_ivar(nci_nt, mname_nt))
             end
           end
         end
@@ -3474,7 +3474,7 @@ class Compiler
           if cmt_ci >= 0
             cmt_mname = @nd_name[nid]
             if cls_has_attr_reader(cmt_ci, cmt_mname) == 1
-              return cls_ivar_type(cmt_ci, "@" + cmt_mname)
+              return cls_ivar_type(cmt_ci, "@" + attr_reader_ivar(cmt_ci, cmt_mname))
             end
           end
         end
@@ -3500,7 +3500,7 @@ class Compiler
           ci2 = 0
           while ci2 < @cls_names.length
             if cls_has_attr_reader(ci2, cmt_mname2) == 1
-              return cls_ivar_type(ci2, "@" + cmt_mname2)
+              return cls_ivar_type(ci2, "@" + attr_reader_ivar(ci2, cmt_mname2))
             end
             ci2 = ci2 + 1
           end
@@ -20423,7 +20423,7 @@ class Compiler
  # (ActionController.params / .request_format inherited across
  # roundhouse subclasses).
       if cls_has_attr_reader(@current_class_idx, mname) == 1
-        return self_arrow + sanitize_ivar(mname)
+        return self_arrow + sanitize_ivar(attr_reader_ivar(@current_class_idx, mname))
       end
     end
  # bare call inside a `def self.X` body resolves to a
@@ -20717,7 +20717,7 @@ class Compiler
                     at = "bigint"
                   end
                   if at != "bigint" && cls_has_attr_reader(ci_bgp, ar_mn_bg) == 1
-                    slot_bgp = cls_ivar_type(ci_bgp, "@" + ar_mn_bg)
+                    slot_bgp = cls_ivar_type(ci_bgp, "@" + attr_reader_ivar(ci_bgp, ar_mn_bg))
                     if base_type(slot_bgp) == "bigint"
                       at = "bigint"
                     end
@@ -20969,7 +20969,7 @@ class Compiler
               end
  # attr_reader on obj instance — return type is the ivar slot.
               if cls_has_attr_reader(cidx_eb_const, mn_eb) == 1
-                slot_eb_const = cls_ivar_type(cidx_eb_const, "@" + mn_eb)
+                slot_eb_const = cls_ivar_type(cidx_eb_const, "@" + attr_reader_ivar(cidx_eb_const, mn_eb))
                 if base_type(slot_eb_const) == "bigint"
                   return 1
                 end
@@ -20986,7 +20986,7 @@ class Compiler
         cls_eb_attr = rcv_t_eb_attr[4, rcv_t_eb_attr.length - 4]
         cidx_eb_attr = find_class_idx(cls_eb_attr)
         if cidx_eb_attr >= 0 && cls_has_attr_reader(cidx_eb_attr, mn_eb) == 1
-          slot_eb_attr = cls_ivar_type(cidx_eb_attr, "@" + mn_eb)
+          slot_eb_attr = cls_ivar_type(cidx_eb_attr, "@" + attr_reader_ivar(cidx_eb_attr, mn_eb))
           if base_type(slot_eb_attr) == "bigint"
             return 1
           end
@@ -30850,7 +30850,7 @@ class Compiler
  # attr_reader -- walks the parent chain for inherited
  # attr_accessor / attr_reader (issue #508).
         if cls_has_attr_reader(ci, mname) == 1
-          return rc + arrow + sanitize_ivar(mname)
+          return rc + arrow + sanitize_ivar(attr_reader_ivar(ci, mname))
         end
  # Struct#[] -- member access by symbol/string name or integer
  # index. Resolves against the class's attr_reader list (the
@@ -31178,7 +31178,7 @@ class Compiler
           j2 = j2 + 1
         end
         if found_reader == 1
-          return "((sp_" + cname2 + " *)" + rc + ")->" + sanitize_ivar(mname)
+          return "((sp_" + cname2 + " *)" + rc + ")->" + sanitize_ivar(attr_reader_ivar(ci2, mname))
         end
  # Check writers
         if mname.length > 1
@@ -32007,13 +32007,13 @@ class Compiler
  # An auto-registered attr_reader doesn't appear in
  # @cls_meth_names, so the explicit-method walk above misses it.
  # Read the ivar directly. .
-        ivar_expr = "((sp_" + cname + " *)" + recv_tmp + ".v.p)->" + sanitize_ivar("@" + mname)
+        ivar_expr = "((sp_" + cname + " *)" + recv_tmp + ".v.p)->" + sanitize_ivar("@" + attr_reader_ivar(i, mname))
         rhs = ivar_expr
         if is_poly_ret == 1
-          this_rt = cls_ivar_type(i, "@" + mname)
+          this_rt = cls_ivar_type(i, "@" + attr_reader_ivar(i, mname))
           rhs = box_val_to_poly(ivar_expr, this_rt)
         end
-        if narrowed_int_idx == 1 && cls_ivar_type(i, "@" + mname) != "int"
+        if narrowed_int_idx == 1 && cls_ivar_type(i, "@" + attr_reader_ivar(i, mname)) != "int"
  # skip non-int attr_reader arms on a narrowed `[]`
         else
           emit("    if (" + recv_tmp + ".cls_id == " + cls_id_for_user_internal(i).to_s + ") " + tmp + " = " + rhs + ";")

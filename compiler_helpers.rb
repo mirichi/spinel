@@ -117,6 +117,7 @@ class Compiler
   compiler_state_sa :ieval_extra_param_names, :compile_time_subst_keys, :compile_time_subst_vals, :cls_with_internal_ieval_lift, :toplevel_ivar_names, :toplevel_ivar_types
   compiler_state_sa :lambda_var_ret_names, :lambda_var_ret_types, :multi_const_inits, :meth_blk_param_types, :cls_cmeth_blk_param_types
   compiler_state_sa :iexec_block_pnames, :iexec_block_ptypes
+  compiler_state_sa :attr_alias_keys, :attr_alias_ivars
 
   compiler_state_ia :meth_body_ids, :meth_rest_index, :meth_kwrest_index, :meth_has_yield, :cls_rest_idxs, :cls_is_value_type
   compiler_state_ia :cls_is_sra, :const_expr_ids, :const_mutated, :gvar_written, :module_body_ids, :ffi_buf_sizes, :ffi_reader_offsets
@@ -1341,6 +1342,45 @@ class Compiler
       mi = mi + 1
     end
     acc
+  end
+
+ # Backing ivar base-name for an attr_reader. For a normal reader this
+ # is the reader name itself; for a reader created by `alias new old`
+ # (or `alias_method :new, :old`) where `old` is an attr_reader, it is
+ # `old`'s backing ivar so `obj.new` reads the source slot rather than a
+ # nonexistent `@new`. Walks the parent chain like cls_has_attr_reader.
+ # The identity default keeps every non-aliased reader unchanged, so
+ # this is purely additive for code that doesn't alias accessors.
+  def attr_reader_ivar(ci, mname)
+    if ci < 0
+      return mname
+    end
+    key = @cls_names[ci] + "#" + mname
+    i = 0
+    while i < @attr_alias_keys.length
+      if @attr_alias_keys[i] == key
+        return @attr_alias_ivars[i]
+      end
+      i = i + 1
+    end
+ # If `ci` declares this reader directly (a plain attr_reader, not via
+ # the parent), its backing ivar is the reader name itself — a subclass
+ # redeclaring a name must not inherit a parent's alias backing.
+    own = @cls_attr_readers[ci].split(";", -1)
+    di = 0
+    while di < own.length
+      if own[di] == mname
+        return mname
+      end
+      di = di + 1
+    end
+    if @cls_parents[ci] != ""
+      pi = find_class_idx(@cls_parents[ci])
+      if pi >= 0
+        return attr_reader_ivar(pi, mname)
+      end
+    end
+    mname
   end
 
   def im_push_names(acc, names, suffix)
