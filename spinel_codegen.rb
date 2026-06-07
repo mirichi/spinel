@@ -3958,6 +3958,24 @@ class Compiler
       if cmp_mname == "inspect"
         return "string"
       end
+ # Methods on a first-class exception recv. walk_and_cache skips
+ # proc/lambda bodies, so `e.message` inside a closure is recomputed
+ # here; without this it falls to the int default and a `#{e.message}`
+ # interp picks %lld on the string pointer. Mirrors spinel_analyze.rb's
+ # exception arm (3431) so cache and recompute agree.
+      if cmp_mname == "message" || cmp_mname == "full_message" || cmp_mname == "class"
+        cmp_exc_recv = @nd_receiver[nid]
+        if cmp_exc_recv >= 0 && base_type(infer_type(cmp_exc_recv)) == "exception"
+          return "string"
+        end
+      end
+      if cmp_mname == "backtrace"
+        cmp_bt_recv = @nd_receiver[nid]
+        if cmp_bt_recv >= 0 && base_type(infer_type(cmp_bt_recv)) == "exception"
+          @needs_str_array = 1
+          return "str_array"
+        end
+      end
  # `lv.call(...)` / `lv.()` on a lambda local — recover the
  # lambda's recorded return type from @lambda_var_ret_*.
  # walk_and_cache skips lambda bodies, so the call itself isn't
@@ -43062,11 +43080,34 @@ class Compiler
  # Every block param is in scope inside the body; only locals from
  # the outer scope read inside the body count as free.
     free_vars = "".split(",", -1)
+ # `rescue => e` inside the proc/lambda body binds `e` as a body local,
+ # not a capture of a same-named outer var. compile_rescue_chain emits a
+ # bare `lv_e = sp_exc_new(...)`, so the name must be declared (typed
+ # exception) as a body local and dropped from the capture set. Mirrors
+ # the Fiber-body handling.
+    rb_names_p = "".split(",", -1)
+    if bbody >= 0
+      collect_rescue_bound_names(bbody, rb_names_p)
+    end
     if bbody >= 0
  # scan_lambda_free_vars treats `params` as read-only, so bps can
  # be passed directly without an intermediate copy.
       proc_locals = "".split(",", -1)
       scan_lambda_free_vars(bbody, bps, proc_locals, free_vars)
+ # Drop rescue-bound names from the free-var set so they aren't captured.
+      rbpf = 0
+      while rbpf < rb_names_p.length
+        new_fv_p = "".split(",", -1)
+        fvk = 0
+        while fvk < free_vars.length
+          if free_vars[fvk] != rb_names_p[rbpf]
+            new_fv_p.push(free_vars[fvk])
+          end
+          fvk = fvk + 1
+        end
+        free_vars = new_fv_p
+        rbpf = rbpf + 1
+      end
     end
     captures = "".split(",", -1)
     capture_types = "".split(",", -1)
@@ -43139,6 +43180,19 @@ class Compiler
       end
       declare_var(bps[di], pt)
       di = di + 1
+    end
+ # Declare `rescue => e` bindings as body locals typed exception so the
+ # bare `lv_e = sp_exc_new(...)` compiles and `e.<exc method>` infers
+ # off the exception type rather than the int fallback. Both register the
+ # scope type (so find_var_type resolves `exception` on recompute) and
+ # emit the C declaration into the body (mirrors the fiber-body path).
+    rbpd = 0
+    while rbpd < rb_names_p.length
+      if not_in(rb_names_p[rbpd], bps) == 1
+        declare_var(rb_names_p[rbpd], "exception")
+        emit("  " + c_type("exception") + " lv_" + rb_names_p[rbpd] + " = " + c_default_val("exception") + ";")
+      end
+      rbpd = rbpd + 1
     end
     bexpr = "0"
     bexpr_t_proc = "int"
