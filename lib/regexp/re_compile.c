@@ -228,6 +228,26 @@ class_add_shorthand(re_charclass *cc, int ch)
     }
     cc->utf8_any = TRUE;
     break;
+  case 'h':
+    /* hex digit: [0-9a-fA-F] */
+    class_set_range(cc, '0', '9');
+    class_set_range(cc, 'a', 'f');
+    class_set_range(cc, 'A', 'F');
+    break;
+  case 'H':
+    /* non-hex-digit: complement of [0-9a-fA-F]. Built as an explicit
+       positive set so the top-level dispatcher can emit it as RE_CLASS
+       and the `[...]` path can add it directly -- both contexts need the
+       complement bits present (the uppercase->RE_NCLASS auto-route used
+       by \D/\W/\S is deliberately bypassed for \H). */
+    for (int i = 0; i < 128; i++) {
+      mrb_bool is_hex = (i >= '0' && i <= '9') ||
+                        (i >= 'a' && i <= 'f') ||
+                        (i >= 'A' && i <= 'F');
+      if (!is_hex) class_set_bit(cc, (uint8_t)i);
+    }
+    cc->utf8_any = TRUE;
+    break;
   }
 }
 
@@ -336,7 +356,8 @@ compile_charclass(re_compiler *c)
        intact. */
     if (peek(c) == '\\') {
       int esc = (c->p + 1 < c->src_end) ? (uint8_t)c->p[1] : -1;
-      if (esc == 'd' || esc == 'D' || esc == 'w' || esc == 'W' || esc == 's' || esc == 'S') {
+      if (esc == 'd' || esc == 'D' || esc == 'w' || esc == 'W' ||
+          esc == 's' || esc == 'S' || esc == 'h' || esc == 'H') {
         next_char(c);  /* '\\' */
         next_char(c);  /* spec  */
         class_add_shorthand(cc, esc);
@@ -658,6 +679,15 @@ compile_atom(re_compiler *c)
       uint16_t id = add_class(c);
       class_add_shorthand(&c->classes[id], ch);
       emit(c, (ch >= 'A' && ch <= 'Z') ? RE_NCLASS : RE_CLASS, (uint8_t)id, 0);
+    }
+    else if (ch == 'h' || ch == 'H') {
+      /* \h / \H both carry their full positive set (hex digits /
+         non-hex-digits), so emit RE_CLASS for both rather than routing
+         \H through the uppercase RE_NCLASS path. */
+      next_char(c);
+      uint16_t id = add_class(c);
+      class_add_shorthand(&c->classes[id], ch);
+      emit(c, RE_CLASS, (uint8_t)id, 0);
     }
     else if (ch == 'A') {
       next_char(c);
