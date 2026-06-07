@@ -119,6 +119,7 @@ class Compiler
   compiler_state_sa :iexec_block_pnames, :iexec_block_ptypes
   compiler_state_sa :attr_alias_keys, :attr_alias_ivars
   compiler_state_sa :cls_meth_blk_param_types
+  compiler_state_sa :lowered_yield_methods
 
   compiler_state_ia :meth_body_ids, :meth_rest_index, :meth_kwrest_index, :meth_has_yield, :cls_rest_idxs, :cls_is_value_type
   compiler_state_ia :cls_is_sra, :const_expr_ids, :const_mutated, :gvar_written, :module_body_ids, :ffi_buf_sizes, :ffi_reader_offsets
@@ -1066,6 +1067,35 @@ class Compiler
  # UndefNode -- list of SymbolNode names to undef.
       @nd_names[nid] = ids_str
     end
+  end
+
+ # Membership test for the self-recursive-yield registry (populated by
+ # analyze's detect_lowered_yield_methods, serialized to IR, read by
+ # both passes). `key` is "<ClassName>#<method>" / "#<method>".
+  def is_lowered_yield_method(key)
+    if @lowered_yield_methods == nil
+      return 0
+    end
+    if not_in(key, @lowered_yield_methods) == 0
+      return 1
+    end
+    0
+  end
+
+ # True when the method currently being emitted/analyzed is a lowered
+ # self-recursive yield method (its `yield`s call the synthetic
+ # `__yblk__` proc param). Built from @current_class_idx /
+ # @current_method_name so it stays valid inside a forwarded proc
+ # literal body (those don't reset the enclosing-method state).
+  def current_method_is_lowered?
+    if @current_method_name == nil || @current_method_name == ""
+      return 0
+    end
+    cls = ""
+    if @current_class_idx >= 0 && @current_class_idx < @cls_names.length
+      cls = @cls_names[@current_class_idx]
+    end
+    is_lowered_yield_method(cls + "#" + @current_method_name)
   end
 
  # ---- Convenience: get stmts of a body node ----

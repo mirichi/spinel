@@ -9320,6 +9320,35 @@ class Compiler
  # (`body_has_yield`) bail mid-iteration cleanly. A yielding
  # form would lock the call site into a yield-block-forwarding path
  # and complicate dispatch unnecessarily.
+ # Codegen mirror of analyze's body_has_yield: does the subtree under
+ # `nid` use `yield` / `block_given?` (not crossing nested DefNode
+ # boundaries)? Used to decide whether a forwarded proc literal must
+ # capture a lowered method's __yblk__ param.
+  def body_has_yield(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "YieldNode"
+      return 1
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "block_given?"
+      return 1
+    end
+    if @nd_type[nid] == "DefNode"
+      return 0
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      if body_has_yield(cs[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
   def push_child_ids(nid, acc)
     if @nd_body[nid] >= 0
       acc.push(@nd_body[nid])
@@ -15661,6 +15690,19 @@ class Compiler
         return raw_yc
       end
       return "(" + c_type(yt_yc) + ")(uintptr_t)(" + raw_yc + ")"
+    end
+ # Lowered self-recursive yield method: `yield` calls the synthetic
+ # `__yblk__` proc param via sp_proc_call. fiber_var_ref resolves
+ # __yblk__ to its capture cell when this yield sits inside a
+ # forwarded proc literal (`countdown(n - 1) { yield }`). Same
+ # value-carrying mrb_int ABI + type-aware cast as the ctor arm above.
+    if t == "YieldNode" && current_method_is_lowered? == 1
+      raw_ly = "sp_proc_call(" + fiber_var_ref("__yblk__") + ", (mrb_int[]){" + compile_proc_call_args(nid) + "})"
+      yt_ly = infer_type(nid)
+      if yt_ly == "int" || yt_ly == "bool" || yt_ly == "" || yt_ly == "void" || yt_ly == "nil" || yt_ly == "float"
+        return raw_ly
+      end
+      return "(" + c_type(yt_ly) + ")(uintptr_t)(" + raw_ly + ")"
     end
     if t == "UnsupportedNode"
  # The parser emitted this sentinel because it hit a Prism node
@@ -43920,6 +43962,17 @@ class Compiler
         self_captured_proc = 1
       end
     end
+ # A `{ yield }` block forwarded down a lowered self-recursive yield
+ # method: its `yield` is emitted as sp_proc_call(__yblk__), so the
+ # enclosing method's synthetic __yblk__ proc param must be captured.
+ # It is not a free-var read (yield isn't a LocalVariableRead), so
+ # scan_lambda_free_vars never sees it -- force it into the capture set.
+    if bbody >= 0 && current_method_is_lowered? == 1 && body_has_yield(bbody) == 1
+      if not_in("__yblk__", captures) == 1
+        captures.push("__yblk__")
+        capture_types.push("proc")
+      end
+    end
     has_captures = 0
     if captures.length > 0
       has_captures = 1
@@ -50493,6 +50546,12 @@ class Compiler
   end
 
   def compile_yield_stmt(nid)
+ # Lowered self-recursive yield method: a statement-position `yield`
+ # (value discarded) still calls the synthetic __yblk__ proc.
+    if current_method_is_lowered? == 1
+      emit("  sp_proc_call(" + fiber_var_ref("__yblk__") + ", (mrb_int[]){" + compile_proc_call_args(nid) + "});")
+      return
+    end
     args_id = @nd_arguments[nid]
     emitted = "".split(",", -1)
  # Per-position projected block param types from analyze. When the
@@ -52298,6 +52357,12 @@ class Compiler
   def check_block_call_expr(expr, bpname, decl_body_id, depth)
     if expr < 0 || depth > 4
       return -1
+    end
+ # A bare `yield` is the block call too: a lowered self-recursive yield
+ # method (and any `def m(&b); yield end`) returns the block's value
+ # through yield. Its args feed the same block-param binding below.
+    if @nd_type[expr] == "YieldNode"
+      return expr
     end
     if @nd_type[expr] != "CallNode" || @nd_name[expr] != "call"
       return -1

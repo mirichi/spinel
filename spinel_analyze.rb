@@ -16463,6 +16463,114 @@ class Compiler
   end
 
  # ---- Yield detection ----
+ # Pass 2.65 driver: populate @lowered_yield_methods with the keys of
+ # self-recursive yield methods (a body that both uses `yield` and calls
+ # itself by name). Key is "<ClassName>#<method>" for instance methods,
+ # "#<method>" for top-level. Codegen reads the registry from IR and
+ # lowers these methods to forward the implicit block as an sp_Proc.
+  def detect_lowered_yield_methods
+    @lowered_yield_methods = "".split(",", -1)
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0 && body_has_yield(bid) == 1 && body_calls_self?(bid, @meth_names[mi]) == 1
+        @lowered_yield_methods.push("#" + @meth_names[mi])
+ # Turn it into an &block method: append the synthetic proc param and
+ # drop the yield-ABI flag, so it emits with an sp_Proc param and its
+ # call sites forward the literal block as a proc. The yield nodes in
+ # the body are emitted as `__yblk__.call` (sp_proc_call) by codegen,
+ # gated on the registry.
+        if @meth_param_names[mi] == ""
+          @meth_param_names[mi] = "__yblk__"
+        else
+          @meth_param_names[mi] = @meth_param_names[mi] + ",__yblk__"
+        end
+        if @meth_param_types[mi] == ""
+          @meth_param_types[mi] = "proc"
+        else
+          @meth_param_types[mi] = @meth_param_types[mi] + ",proc"
+        end
+        @meth_has_yield[mi] = 0
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      mnames = @cls_meth_names[ci].split(";", -1)
+      bodies = @cls_meth_bodies[ci].split(";", -1)
+      params_arr = @cls_meth_params[ci].split("|", -1)
+      ptypes_arr = @cls_meth_ptypes[ci].split("|", -1)
+      hy_arr = @cls_meth_has_yield[ci].split(";", -1)
+      changed_ci = 0
+      bj = 0
+      while bj < mnames.length
+        if bj < bodies.length
+          bid = bodies[bj].to_i
+          if bid >= 0 && body_has_yield(bid) == 1 && body_calls_self?(bid, mnames[bj]) == 1
+            @lowered_yield_methods.push(@cls_names[ci] + "#" + mnames[bj])
+ # Inject the synthetic proc param into the bj-th method's entry and
+ # clear its yield flag, mirroring the top-level lowering above.
+            if bj < params_arr.length
+              if params_arr[bj] == ""
+                params_arr[bj] = "__yblk__"
+              else
+                params_arr[bj] = params_arr[bj] + ",__yblk__"
+              end
+            end
+            if bj < ptypes_arr.length
+              if ptypes_arr[bj] == ""
+                ptypes_arr[bj] = "proc"
+              else
+                ptypes_arr[bj] = ptypes_arr[bj] + ",proc"
+              end
+            end
+            if bj < hy_arr.length
+              hy_arr[bj] = "0"
+            end
+            changed_ci = 1
+          end
+        end
+        bj = bj + 1
+      end
+      if changed_ci == 1
+        @cls_meth_params[ci] = params_arr.join("|")
+        @cls_meth_ptypes[ci] = ptypes_arr.join("|")
+        @cls_meth_has_yield[ci] = hy_arr.join(";")
+      end
+      ci = ci + 1
+    end
+  end
+
+ # True when `nid`'s subtree contains a self-call to `mname` — a
+ # receiverless call or one on explicit `self` (receiver-aware so a
+ # call to a different object's same-named method isn't counted).
+ # Stops at nested DefNode boundaries (that's a different method).
+  def body_calls_self?(nid, mname)
+    if nid < 0
+      return 0
+    end
+    t = @nd_type[nid]
+    if t == "DefNode"
+      return 0
+    end
+    if t == "CallNode" && @nd_name[nid] == mname
+      r = @nd_receiver[nid]
+      if r < 0 || @nd_type[r] == "SelfNode"
+        return 1
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      if body_calls_self?(cs[k], mname) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
   def body_has_yield(nid)
     if nid < 0
       return 0
@@ -28529,6 +28637,13 @@ class Compiler
     compute_live_cls_methods
     compute_live_instance_methods
     compute_dead_module_class_methods
+ # Flag + lower self-recursive yield methods late: after the param-type
+ # rebuilders (widen_param_types_from_body_writes /
+ # infer_param_array_type_from_body) have run, so the injected synthetic
+ # `__yblk__` proc param isn't dropped, and before scope-decl /
+ # block-param-type passes so the &block plumbing sees it. Registry is
+ # serialized to IR; codegen reads it to emit `yield` as sp_proc_call.
+    detect_lowered_yield_methods
     @analysis_frozen = 1
     precompute_all_scope_decls
  # Widen LV slots whose declared *_ptr_array gets a wider rhs
