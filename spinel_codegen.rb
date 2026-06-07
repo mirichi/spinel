@@ -30395,14 +30395,22 @@ class Compiler
           @needs_bigint = 1
           rc_oc = "sp_bigint_to_int((sp_Bigint *)" + rc + ")"
         end
-        ca = compile_call_args(nid)
+ # Fill omitted trailing optional params with their default
+ # expressions (and cast supplied args to the slot type), the same
+ # way the normal typed-call path does. Without this, a call that
+ # leaves an optional default unsupplied emits one fewer argument
+ # than the sp___oc_<Class>_<m> signature declares ("too few
+ # arguments"). oc_mi is the flat method index, and the open-class
+ # `self` is prepended separately by compile_open_class_call_expr,
+ # so the explicit-param list is exactly what this returns.
+        ca = compile_call_args_with_defaults(nid, oc_mi)
         return compile_open_class_call_expr(oc_name, oc_mi, recv_type, rc_oc, ca, infer_type(nid))
       end
     end
     oc_name_obj = "__oc_Object_" + mname
     oc_mi_obj = find_method_idx(oc_name_obj)
     if oc_mi_obj >= 0
-      ca_obj = compile_call_args(nid)
+      ca_obj = compile_call_args_with_defaults(nid, oc_mi_obj)
       return compile_open_class_call_expr(oc_name_obj, oc_mi_obj, recv_type, rc, ca_obj, infer_type(nid))
     end
     ""
@@ -30448,7 +30456,24 @@ class Compiler
     if has_true == false && has_false == false && has_obj == false
       return ""
     end
-    ca = compile_call_args(nid)
+ # Pad omitted optional params with their defaults (mirrors the
+ # non-bool open-class path). The TRUE / FALSE branches share one
+ # compiled `ca` so any GC-root temporaries are emitted once; resolve
+ # the param signature from whichever concrete method exists (the
+ # reopened method has the same arity on both branches in practice).
+    sig_mi = find_method_idx("__oc_TrueClass_" + mname)
+    if sig_mi < 0
+      sig_mi = find_method_idx("__oc_FalseClass_" + mname)
+    end
+    if sig_mi < 0
+      sig_mi = find_method_idx("__oc_Object_" + mname)
+    end
+    ca = ""
+    if sig_mi >= 0
+      ca = compile_call_args_with_defaults(nid, sig_mi)
+    else
+      ca = compile_call_args(nid)
+    end
     target_type = infer_type(nid)
     if @nd_type[@nd_receiver[nid]] == "TrueNode"
       return compile_bool_open_class_branch_expr(mname, "TRUE", ca, target_type)

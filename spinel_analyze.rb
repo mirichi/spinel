@@ -11166,7 +11166,10 @@ class Compiler
     @meth_return_types.push("int")
     @meth_body_ids.push(@nd_body[sid])
     @meth_has_yield.push(0)
-    @meth_has_defaults.push("0")
+ # Record the actual default expressions (parallel to params) rather
+ # than a "0" placeholder, so a call site that omits an optional arg
+ # gets its default filled in instead of emitting too-few arguments.
+    @meth_has_defaults.push(collect_defaults_str(sid))
     @meth_rest_index.push(collect_rest_index(sid))
     @meth_kwrest_index.push(collect_kwrest_index(sid))
   end
