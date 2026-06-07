@@ -40676,7 +40676,14 @@ class Compiler
  # functions don't have self; their bare returns fall through
  # to `c_return_default` (value-type classes get
  # `(sp_<C>){0}`, pointer-typed obj returns get NULL).
-      if @current_method_has_self == 1
+ # Only return `self` when the method's return type is actually
+ # self's own class (the constructor-synthesis / returns-self case).
+ # When inference typed the return as a DIFFERENT obj class (e.g. a
+ # side-effect method whose last expression is `x.attr = Other.new`),
+ # `return self` would return self's type into the other class's slot
+ # (incompatible-pointer-types). A bare `return` is Ruby nil, so emit
+ # the type default (NULL) there.
+      if @current_method_has_self == 1 && @current_class_idx >= 0 && @current_method_return == "obj_" + @cls_names[@current_class_idx]
         emit("  return self;")
       else
         emit("  return " + c_return_default(@current_method_return) + ";")
