@@ -28,9 +28,10 @@ def t
 end
 puts t { "hi" }
 
-# NOTE: `local = m { "string" }` works at runtime (pointer-sized mrb_int)
-# but emits a -Wint-conversion warning, so it is omitted here to keep the
-# test clean under -Werror. Tracked as a known limitation under #1362.
+# string yield stored in a local: the pointer round-trips through the
+# int slot and reads back as a string (no -Wint-conversion).
+sv = W.new.s { "str" }
+puts sv
 
 # assignment context with an int yield (no pointer round-trip)
 n = W.new.s { 11 }

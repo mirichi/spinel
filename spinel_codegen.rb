@@ -376,6 +376,14 @@ class Compiler
  # ---- Scope stack for local variables ----
     @scope_names = "".split(",", -1)
     @scope_types = "".split(",", -1)
+ # Parallel to `@scope_names`, seeded at declare_var and NEVER mutated
+ # by set_var_type: the variable's immutable declared type, i.e. the C
+ # storage type the hoist actually emitted. `@scope_types` tracks the
+ # current value's type (it flips to "nil"/"int"/etc. on each write),
+ # so it is NOT a reliable proxy for the slot's C type. Use this when a
+ # decision must hinge on the real declaration (e.g. is the slot a
+ # plain `mrb_int` that needs a pointer round-trip cast on assignment).
+    @scope_decl_types = "".split(",", -1)
  # Parallel to `@scope_names`: when a local was assigned directly
  # from an ivar read (`lv = @ivar`), record the ivar name here so
  # later sites that need ivar-side metadata (notably the
@@ -1579,6 +1587,7 @@ class Compiler
     @scope_names.push("---")
     @scope_types.push("---")
     @scope_ivar_alias.push("---")
+    @scope_decl_types.push("---")
     0
   end
 
@@ -1589,11 +1598,13 @@ class Compiler
         @scope_names.pop
         @scope_types.pop
         @scope_ivar_alias.pop
+        @scope_decl_types.pop
         return
       end
       @scope_names.pop
       @scope_types.pop
       @scope_ivar_alias.pop
+      @scope_decl_types.pop
     end
   end
 
@@ -1601,7 +1612,22 @@ class Compiler
     @scope_names.push(name)
     @scope_types.push(vtype)
     @scope_ivar_alias.push("")
+    @scope_decl_types.push(vtype)
     0
+  end
+
+ # The variable's immutable declared type (the C storage type the hoist
+ # emitted), bypassing set_var_type's per-write mutations of
+ # @scope_types. "" when the name isn't in scope.
+  def find_var_decl_ctype_type(name)
+    i = @scope_names.length - 1
+    while i >= 0
+      if @scope_names[i] == name
+        return @scope_decl_types[i]
+      end
+      i = i - 1
+    end
+    ""
   end
 
  # Emit a 1-arg `raise <arg>` -- handle three shapes:
@@ -37533,6 +37559,20 @@ class Compiler
           cname_unbox = base_type(vt)[4, base_type(vt).length - 4]
           val = "(sp_" + cname_unbox + " *)(" + val + ").v.p"
           kept_typed_unbox = 1
+        end
+ # The local's C slot is a plain `mrb_int` (analyze typed it int —
+ # e.g. a yield-using method whose return type defaulted to int)
+ # but the value codegen actually produced is a pointer (a string
+ # yield body, an array, etc.). Round-trip the pointer through the
+ # int slot; the read side already casts it back via the tracked
+ # type set just below. Without the cast the assignment trips
+ # -Wint-conversion under -Werror (bench / test builds). Gate on the
+ # IMMUTABLE declared slot type, not `vt` (the tracked type flips to
+ # "nil"/"int" on each write, and c_type("nil") is also "mrb_int" —
+ # using it would misfire on a pointer slot that was momentarily nil,
+ # e.g. `root = nil; root = insert(...)` in bm_rbtree).
+        if c_type(find_var_decl_ctype_type(lname)) == "mrb_int" && type_is_pointer(rhs_t) == 1
+          val = "(mrb_int)(uintptr_t)(" + val + ")"
         end
         emit("  " + vref + " = " + val + ";")
       end
