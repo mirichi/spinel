@@ -330,6 +330,15 @@ class Compiler
     @implicit_new_site_classes = "".split(",", -1)
     @implicit_new_local_names = "".split(",", -1)
     @implicit_new_local_classes = "".split(",", -1)
+ # Enclosing DefNode id for each implicit-new local binding, so the
+ # name-keyed lookup can stay method-scoped. A local's type never
+ # comes from another method's local, so resolving `conn` in one
+ # method to an implicit-new class registered for a same-named
+ # `conn` in a different method is always wrong.
+    @implicit_new_local_defs = []
+ # Current method being walked by scan_new_calls (-1 = main / module
+ # body / outside any def). Used to method-scope implicit_new_local_class.
+    @snc_cur_def = -1
     @implicit_new_signature_keys = "".split(",", -1)
     @implicit_new_signature_classes = "".split(",", -1)
     @implicit_new_site_arg_type_ids = []
@@ -810,7 +819,12 @@ class Compiler
     result = ""
     k = 0
     while k < @implicit_new_local_names.length
-      if @implicit_new_local_names[k] == name
+ # Method-scope the match: when scan_new_calls has pinned the
+ # current def (@snc_cur_def >= 0), only consider bindings from
+ # that same method. Outside a def context (-1) fall back to the
+ # name-only match (load-time / other passes that already carry
+ # proper local scope via @scope_*).
+      if @implicit_new_local_names[k] == name && (@snc_cur_def < 0 || @implicit_new_local_defs[k] == @snc_cur_def)
         cls = @implicit_new_local_classes[k]
         if result == ""
           result = cls
@@ -10601,9 +10615,12 @@ class Compiler
     @cls_cmeth_params_version = @cls_cmeth_params_version + 1
   end
 
-  def collect_implicit_new_local_bindings(nid)
+  def collect_implicit_new_local_bindings(nid, cur_def = -1)
     if nid < 0
       return
+    end
+    if @nd_type[nid] == "DefNode"
+      cur_def = nid
     end
     if @nd_type[nid] == "LocalVariableWriteNode"
       expr = @nd_expression[nid]
@@ -10611,13 +10628,14 @@ class Compiler
       if cls != ""
         @implicit_new_local_names.push(@nd_name[nid])
         @implicit_new_local_classes.push(cls)
+        @implicit_new_local_defs.push(cur_def)
       end
     end
     cs = []
     push_child_ids(nid, cs)
     k = 0
     while k < cs.length
-      collect_implicit_new_local_bindings(cs[k])
+      collect_implicit_new_local_bindings(cs[k], cur_def)
       k = k + 1
     end
   end
@@ -16546,6 +16564,22 @@ class Compiler
         pop_scope
       end
       @current_lexical_scope = saved_scope2
+      return
+    end
+ # Pin the current method while walking its body so the name-keyed
+ # implicit_new_local_class lookup stays method-scoped: a local
+ # `conn` here must not resolve to a same-named `conn` bound to an
+ # implicit-new class in a sibling method (which would mis-widen a
+ # callee param against the wrong class -- e.g. a Fiber-typed arg
+ # read as a WebSocket::Connection).
+    if @nd_type[nid] == "DefNode"
+      snc_saved_def = @snc_cur_def
+      @snc_cur_def = nid
+      def_body = @nd_body[nid]
+      if def_body >= 0
+        scan_new_calls(def_body)
+      end
+      @snc_cur_def = snc_saved_def
       return
     end
  # IfNode (incl. ternary). When the predicate is
