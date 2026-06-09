@@ -11,6 +11,22 @@ class NodeTableLoader
 
   def read_text_ast(data)
     lines = data.split(10.chr)
+    # Strip trailing \r/\n from each line using safe character scanning
+    idx = 0
+    while idx < lines.length
+      line = lines[idx].to_s
+      clean_line = ""
+      ch_idx = 0
+      while ch_idx < line.length
+        ch = line[ch_idx].to_s
+        if ch != "\r" && ch != "\n"
+          clean_line << ch
+        end
+        ch_idx = ch_idx + 1
+      end
+      lines[idx] = clean_line.to_s
+      idx = idx + 1
+    end
  # Pass 1: find max node ID
     max_id = 0
     i = 0

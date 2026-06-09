@@ -3842,7 +3842,31 @@ static sp_Time sp_file_mtime(const char *path) {
 #endif
 #endif
 }
-static const char *sp_backtick(const char *cmd) { FILE *p = popen(cmd, "r"); if (!p) return sp_str_empty; char *buf = sp_str_alloc_raw(4096); size_t n = fread(buf, 1, 4095, p); buf[n] = 0; pclose(p); return buf; }
+static const char *sp_backtick(const char *cmd) {
+  FILE *p = popen(cmd, "r");
+  if (!p) return sp_str_empty;
+  size_t cap = 4096;
+  char *temp = (char *)malloc(cap);
+  if (!temp) { pclose(p); sp_oom_die(); }
+  size_t total = 0;
+  while (1) {
+    size_t n = fread(temp + total, 1, cap - total - 1, p);
+    if (n == 0) break;
+    total += n;
+    if (total >= cap - 1) {
+      cap *= 2;
+      char *new_temp = (char *)realloc(temp, cap);
+      if (!new_temp) { free(temp); pclose(p); sp_oom_die(); }
+      temp = new_temp;
+    }
+  }
+  temp[total] = 0;
+  pclose(p);
+  char *buf = sp_str_alloc(total);
+  memcpy(buf, temp, total);
+  free(temp);
+  return buf;
+}
 static const char *sp_file_basename(const char *path) {
   const char *s = strrchr(path, '/');
   const char *base = s ? s + 1 : path;

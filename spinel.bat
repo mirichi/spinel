@@ -22,6 +22,8 @@ if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
 
 set "PARSE_RB=%DIR%\spinel_parse.rb"
 set "PARSE_BIN=%DIR%\spinel_parse.exe"
+set "ANALYZE_RB=%DIR%\spinel_analyze.rb"
+set "ANALYZE_BIN=%DIR%\spinel_analyze.exe"
 set "CODEGEN_RB=%DIR%\spinel_codegen.rb"
 set "CODEGEN_BIN=%DIR%\spinel_codegen.exe"
 
@@ -30,7 +32,22 @@ set "OUTPUT="
 set "C_ONLY=0"
 set "STDOUT_MODE=0"
 set "OPT_LEVEL=2"
-set "CC_CMD=cc"
+set "CC_CMD="
+where gcc >nul 2>&1
+if not errorlevel 1 (
+  set "CC_CMD=gcc"
+) else (
+  where cc >nul 2>&1
+  if not errorlevel 1 (
+    set "CC_CMD=cc"
+  ) else (
+    where clang >nul 2>&1
+    if not errorlevel 1 (
+      set "CC_CMD=clang"
+    )
+  )
+)
+if not defined CC_CMD set "CC_CMD=cc"
 set "EXTRA_FLAGS="
 
 :parse
@@ -71,6 +88,7 @@ if not exist "%SOURCE%" (
 for %%F in ("%SOURCE%") do set "BASENAME=%%~nF"
 
 set "AST_TMP=%TEMP%\spinel_ast_%RANDOM%%RANDOM%.tmp"
+set "IR_TMP=%TEMP%\spinel_ir_%RANDOM%%RANDOM%.tmp"
 
 rem ---- Step 1: parse ----
 if exist "%PARSE_BIN%" (
@@ -81,6 +99,19 @@ if exist "%PARSE_BIN%" (
 if errorlevel 1 (
   echo spinel: parse failed 1>&2
   if exist "%AST_TMP%" del "%AST_TMP%"
+  exit /b 1
+)
+
+rem ---- Step 1.5: analyze ----
+if exist "%ANALYZE_BIN%" (
+  "%ANALYZE_BIN%" "%AST_TMP%" "%IR_TMP%"
+) else (
+  ruby -E UTF-8:UTF-8 "%ANALYZE_RB%" "%AST_TMP%" "%IR_TMP%"
+)
+if errorlevel 1 (
+  echo spinel: analyze failed 1>&2
+  if exist "%AST_TMP%" del "%AST_TMP%"
+  if exist "%IR_TMP%" del "%IR_TMP%"
   exit /b 1
 )
 
@@ -102,17 +133,19 @@ if defined OUTPUT (
 
 :do_codegen
 if exist "%CODEGEN_BIN%" (
-  "%CODEGEN_BIN%" "%AST_TMP%" "%C_FILE%"
+  "%CODEGEN_BIN%" "%AST_TMP%" "%IR_TMP%" "%C_FILE%"
 ) else (
-  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%" "%C_FILE%"
+  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%" "%IR_TMP%" "%C_FILE%"
 )
 if errorlevel 1 (
   echo spinel: codegen failed 1>&2
   if exist "%AST_TMP%" del "%AST_TMP%"
+  if exist "%IR_TMP%" del "%IR_TMP%"
   if defined C_TMP if exist "%C_TMP%" del "%C_TMP%"
   exit /b 1
 )
 if exist "%AST_TMP%" del "%AST_TMP%"
+if exist "%IR_TMP%" del "%IR_TMP%"
 
 if "%C_ONLY%"=="1" (
   echo Wrote %C_FILE% 1>&2
@@ -149,10 +182,11 @@ exit /b 0
 
 :stdout_codegen
 if exist "%CODEGEN_BIN%" (
-  "%CODEGEN_BIN%" "%AST_TMP%"
+  "%CODEGEN_BIN%" "%AST_TMP%" "%IR_TMP%"
 ) else (
-  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%"
+  ruby -E UTF-8:UTF-8 "%CODEGEN_RB%" "%AST_TMP%" "%IR_TMP%"
 )
 set "EC=%ERRORLEVEL%"
 if exist "%AST_TMP%" del "%AST_TMP%"
+if exist "%IR_TMP%" del "%IR_TMP%"
 exit /b %EC%
